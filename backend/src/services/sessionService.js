@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
-import { SEED_QUESTIONS } from '../data/questions.js';
+import { getDailyDeck } from './deckService.js';
 import { broadcastSessionUpdate } from './socketService.js';
+import { logEvent } from './analyticsService.js';
 
 // In-memory store for Phase 1
 const sessions = new Map();
@@ -11,16 +12,22 @@ const MAX_LIFESPAN_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const createSession = () => {
   const sessionId = uuidv4();
   const now = Date.now();
+  
+  // Use daily deck service
+  const deck = getDailyDeck();
+  
   const newSession = {
     id: sessionId,
     mode: null, // 'single_phone' | 'dual_phone'
     currentQuestionIndex: 0,
     isRevealed: false,
-    questions: [...SEED_QUESTIONS],
+    questions: deck,
     createdAt: now,
     lastActiveAt: now
   };
+  
   sessions.set(sessionId, newSession);
+  logEvent('session_started', newSession);
   return newSession;
 };
 
@@ -28,12 +35,17 @@ export const getSession = (sessionId) => {
   const session = sessions.get(sessionId);
   if (!session) return null;
   
-  // Update last active on read? 
-  // PRD says "Idle timeout: 30 minutes". Usually implies interaction. 
-  // Simply reading state (reconnect) should probably count or not?
-  // Let's say only actions count for "Active".
-  // But reconnecting implies user is there. Let's update it to be safe.
+  // Reconnect logic
   session.lastActiveAt = Date.now();
+  
+  // We log reconnects if we can distinguish them, but `getSession` is called on simple API fetch too.
+  // The socket `join_session` is a better place for 'reconnect_occurred', 
+  // OR we can infer it if the session exists and is being fetched. 
+  // But standard REST get isn't always a "reconnect". 
+  // Let's rely on socket for "reconnect" or explicit intent. 
+  // However, PRD says "reconnect_occurred" is an event.
+  // We'll log it in the socketService when a user joins an existing session.
+  
   return session;
 };
 
@@ -42,9 +54,6 @@ export const setMode = (sessionId, mode) => {
   if (!session) return null;
   
   if (session.mode && session.mode !== mode) {
-    // PRD: "Lock mode after selection". 
-    // If user tries to select a different mode, throw error.
-    // If user selects SAME mode (re-click or sync race), it's idempotent.
      throw new Error('Mode already selected');
   }
   
@@ -57,6 +66,7 @@ export const setMode = (sessionId, mode) => {
     session.mode = mode;
     session.lastActiveAt = Date.now();
     broadcastSessionUpdate(sessionId, session);
+    logEvent('mode_selected', session);
   }
   
   return session;
@@ -71,6 +81,8 @@ export const revealQuestion = (sessionId) => {
     session.isRevealed = true;
     session.lastActiveAt = Date.now();
     broadcastSessionUpdate(sessionId, session);
+    // Note: 'question_revealed' isn't in minimum events list, but good for debug. 
+    // PRD only asks for 'question_advanced'.
   }
   return session;
 };
@@ -83,26 +95,15 @@ export const nextQuestion = (sessionId) => {
     throw new Error('Current question not revealed yet');
   }
 
-  // If next is called multiple times, we need to be careful.
-  // We can track a "lastActionId" or just rely on state.
-  // If User A clicks Next, index increments, isRevealed becomes false.
-  // If User B clicks Next immediately after, the state is now (index+1, hidden).
-  // User B's request will fail "revealed check" if they are out of sync?
-  // OR if they send "next for index 0", we can check provided index.
-  // But strict requirement: "First valid action wins".
-  // If A wins, state changes. B's request comes in. 
-  // If B's request is "Next", check if current state allows Next.
-  // Current state is (Index+1, Hidden). "Next" requires Revealed.
-  // So B's request will fail with "Current question not revealed yet".
-  // This IS correct conflict handling (reject invalid actions).
-  
   if (session.currentQuestionIndex < session.questions.length - 1) {
     session.currentQuestionIndex++;
     session.isRevealed = false;
     session.lastActiveAt = Date.now();
     broadcastSessionUpdate(sessionId, session);
+    logEvent('question_advanced', session);
   } else {
     // End of deck
+    logEvent('session_completed', session);
     return session; 
   }
 

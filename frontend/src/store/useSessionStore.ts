@@ -3,11 +3,15 @@ import { io, Socket } from 'socket.io-client';
 import { Session } from '../types';
 import { sessionApi } from '@/api/client';
 
+const SOCKET_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 interface SessionState {
   session: Session | null;
   isLoading: boolean;
   error: string | null;
   socket: Socket | null;
+  participantCount: number;
+  isConnected: boolean;
   
   createSession: () => Promise<void>;
   fetchSession: (sessionId: string) => Promise<void>;
@@ -23,6 +27,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isLoading: false,
   error: null,
   socket: null,
+  participantCount: 0,
+  isConnected: false,
 
   createSession: async () => {
     set({ isLoading: true, error: null });
@@ -50,12 +56,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { socket } = get();
     if (socket && socket.connected) return;
 
-    // Use default URL or from env
-    const newSocket = io('http://localhost:3000'); // In prod, this should be relative or env based
+    // Use URL from env
+    const newSocket = io(SOCKET_URL); 
 
     newSocket.on('connect', () => {
       console.log('Socket connected');
       newSocket.emit('join_session', sessionId);
+      set({ isConnected: true, error: null });
+    });
+
+    newSocket.on('disconnect', () => {
+      console.log('Socket disconnected');
+      set({ isConnected: false });
     });
 
     newSocket.on('session_update', (updatedSession: Session) => {
@@ -63,8 +75,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ session: updatedSession });
     });
     
+    newSocket.on('participant_count', (count: number) => {
+      console.log('Participant count:', count);
+      set({ participantCount: count });
+    });
+
     newSocket.on('error', (err) => {
       console.error('Socket error:', err);
+      // Optional: set({ error: 'Connection error' });
     });
 
     set({ socket: newSocket });
@@ -74,7 +92,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { socket } = get();
     if (socket) {
       socket.disconnect();
-      set({ socket: null });
+      set({ socket: null, isConnected: false, participantCount: 0 });
     }
   },
 

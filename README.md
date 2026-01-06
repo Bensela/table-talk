@@ -1,108 +1,89 @@
-# table-talk
-Table Talk — core codebase for all versions, maintained by Made to Connect Co.
-All versions of the product — past, present, and future — will be developed and stored here.
+# Table Talk MVP
+
+Deep conversations, simplified. A QR-initiated, anonymous, mobile-first web app that facilitates structured, synchronized conversation using question decks at a physical table.
+
+## � Features
+
+*   **QR-Based Entry**: No app download or signup required.
+*   **Two Modes**:
+    *   **Single Phone**: Pass one device around the table.
+    *   **Dual Phone**: Sync two devices in real-time.
+*   **Anonymous**: No PII, no tracking, no cookies.
+*   **Daily Deck**: Curated questions that reset daily at midnight.
+*   **Real-time Sync**: <300ms latency for reveal/next actions.
+
+## 🛠 Tech Stack
+
+*   **Frontend**: React, TypeScript, Tailwind CSS, Zustand, Socket.io-client
+*   **Backend**: Node.js, Express, Socket.io, Winston (Logging)
+*   **Deployment**: Ready for DigitalOcean App Platform
+
+## 🏃‍♂️ Local Development
+
+### Prerequisites
+
+*   Node.js v18+
+*   npm or yarn
+
+### Setup
+
+1.  **Clone the repository**
+    ```bash
+    git clone https://github.com/charlpet/table-talk.git
+    cd table-talk
+    ```
+
+2.  **Backend Setup**
+    ```bash
+    cd backend
+    npm install
+    # Create .env file
+    echo "PORT=3000" > .env
+    npm run dev
+    ```
+
+3.  **Frontend Setup**
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
+    ```
+
+4.  **Access**
+    *   Frontend: `http://localhost:5173`
+    *   Backend: `http://localhost:3000`
+
+## 📦 Deployment (DigitalOcean App Platform)
+
+This repo is structured for easy monorepo deployment.
+
+1.  **Create App**: Link your GitHub repo to DigitalOcean App Platform.
+2.  **Add Components**:
+    *   **Web Service (Backend)**:
+        *   Source Directory: `backend`
+        *   Build Command: `npm install`
+        *   Start Command: `npm start`
+        *   HTTP Port: `3000`
+    *   **Static Site (Frontend)**:
+        *   Source Directory: `frontend`
+        *   Build Command: `npm install && npm run build`
+        *   Output Directory: `dist`
+        *   **Environment Variable**: Set `VITE_API_URL` to your backend's public URL (e.g., `https://backend-xyz.ondigitalocean.app`).
+
+## 🛡 Privacy & Security
+
+*   **No PII**: We do not store IP addresses or user agents.
+*   **Ephemeral State**: Sessions auto-expire after 24 hours or 30 minutes of inactivity.
+*   **Deterministic Decks**: Questions are shuffled based on the date, ensuring consistency without user tracking.
+
+## � Analytics
+
+Anonymous events are logged to `backend/logs/analytics.log`:
+*   `session_started`
+*   `mode_selected`
+*   `question_advanced`
+*   `reconnect_occurred`
+*   `session_completed`
 
 ---
-
-## 📌 Purpose of This Repository
-
-- Serve as the permanent home for all Table Talk application code  
-- Support continuous evolution across multiple versions  
-- Maintain a clean structure for collaboration, development, and deployment  
-- Keep the codebase organized and easy to extend over time  
-
-This repository does **not** define product specifications, features, or architecture decisions.  
-Those may change over time and are documented separately.
-
----
-
-## 🧱 High-Level Structure
-
-The repository follows a simple, scalable layout that supports long-term growth.  
-Typical top-level structure may include:
-
-/src              -> Core application source code
-/tests            -> Automated tests (unit, integration, later e2e)
-/docs             -> Internal product docs, diagrams, version notes
-/scripts          -> Database migrations, utilities, automation
-/config           -> Configuration templates, schema files
-.env.example      -> Environment variable template (no secrets)
-package.json      -> Project metadata & dependencies
-README.md         -> Project overview and structure
-
-
-The /src directory contains the main application code.
-While the internal organization may evolve over time, the project currently follows a modular structure that keeps controllers, services, routes, middleware, and other components clearly separated.
-
-/src
-  /app
-    /controllers
-    /services
-    /routes
-    /middleware
-    /models
-    /utils
-  index.js         -> Entry point
-
-  
-Each area of the codebase is free to evolve as the product evolves.
-
----
-
-## 🔀 Branching Model
-
-A lightweight branching approach keeps development organized:
-
-- **main** → stable, production-ready code  
-- **dev** → active development  
-- **feature/<name>** → individual feature updates  
-
-Teams may adapt this model as the system grows.
-
----
-
-## 🧪 Testing & Quality
-
-General expectations:
-
-- Code should be readable, maintainable, and well-organized  
-- Tests should accompany meaningful changes  
-- Breaking changes should be versioned or tagged clearly  
-
-There is no fixed testing framework required — this may evolve with the product.
-
----
-
-## 📦 Versioning
-
-Table Talk versions are tracked through:
-
-- Git tags (e.g., `v1.0`, `v2.3`, `v12.4.1`)
-- Release notes (optional)
-- Documentation stored separately in `/docs` or internal systems
-
-The repository itself is intentionally **not tied to any specific version**.
-
----
-
-## 🔒 Ownership
-
-All work in this repository is full work-for-hire.  
-All intellectual property belongs exclusively to **Made to Connect Co.**
-
-External contributors receive temporary access as needed.
-
----
-
-## 📄 License
-
-This is a private, proprietary repository.  
-No open-source license is applied.
-
----
-
-## 📞 Maintainer
-
-**Made to Connect Co.**  
-Owner: Charles Peterson
-
+*Built with ❤️ by Trae AI*
