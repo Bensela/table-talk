@@ -11,9 +11,9 @@ services:
           property: connectionString
       - key: NODE_VERSION
         value: 18.17.0
-  - type: psql
-    name: table-talk-db
-    env: docker
+
+databases:
+  - name: table-talk-db
     plan: free
     databaseName: tabletalk
     user: tabletalk
