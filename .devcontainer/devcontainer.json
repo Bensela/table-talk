@@ -1,0 +1,18 @@
+{
+	"name": "Table-Talk Dev",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "app",
+	"workspaceFolder": "/workspaces/table-talk",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"dbaeumer.vscode-eslint",
+				"esbenp.prettier-vscode",
+				"dsznajder.es7-react-js-snippets"
+			]
+		}
+	},
+	"forwardPorts": [5173, 5000, 5432],
+	"postCreateCommand": "npm install && cd client && npm install && cd ../server && npm install && cp .env.example .env && sed -i 's/localhost/db/g' .env && sed -i 's/your_password/postgrespassword/g' .env && npm run setup:db",
+	"remoteUser": "node"
+}
