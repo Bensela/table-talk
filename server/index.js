@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const sessionRoutes = require('./routes/sessionRoutes');
 const db = require('./db');
@@ -27,6 +28,22 @@ app.use('/api/sessions', sessionRoutes);
 // Health Check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
+});
+
+// Serve static files from client/dist (for Monolith deployment)
+// Check if dist folder exists to avoid errors in dev if not built
+const clientDistPath = path.join(__dirname, '../client/dist');
+app.use(express.static(clientDistPath));
+
+// Handle React routing, return all non-API requests to React app
+app.get('*', (req, res) => {
+  // If it's an API request that didn't match above, it will fall through to here
+  // But since we want to support React Router, we send index.html
+  // EXCEPT if it starts with /api (which means 404 API)
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+  res.sendFile(path.join(clientDistPath, 'index.html'));
 });
 
 // Socket.io Logic
