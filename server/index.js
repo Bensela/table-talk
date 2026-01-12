@@ -36,7 +36,7 @@ const clientDistPath = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDistPath));
 
 // Handle React routing, return all non-API requests to React app
-app.get('*', (req, res) => {
+app.get('(.*)', (req, res) => {
   // If it's an API request that didn't match above, it will fall through to here
   // But since we want to support React Router, we send index.html
   // EXCEPT if it starts with /api (which means 404 API)
