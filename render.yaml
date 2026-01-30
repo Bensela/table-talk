@@ -3,7 +3,7 @@ services:
     name: table-talk
     env: node
     buildCommand: ./render-build.sh
-    startCommand: cd server && npm start
+    startCommand: cd backend && npm start
     envVars:
       - key: DATABASE_URL
         fromDatabase:

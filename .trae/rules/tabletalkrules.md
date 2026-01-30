@@ -5,7 +5,8 @@
 **Project Name:** Table-Talk MVP  
 **Client:** Charles Peterson (Made to Connect Co)  
 **Project Type:** QR-based conversation starter web application  
-**Development Model:** Work-for-hire (all IP belongs to client)
+**Development Model:** Work-for-hire (all IP belongs to client)  
+**Version:** 1.1 (Updated from PRD.md)
 
 ---
 
@@ -13,9 +14,11 @@
 
 Table-Talk helps people have meaningful conversations at restaurants and social gatherings by providing thought-provoking questions accessed via QR codes placed on tables.
 
+**Mission:** Transform ordinary meals into opportunities for deeper connection and discovery through thoughtfully curated questions that adapt to relationship stages.
+
 ### Primary Use Cases
-1. **Single-Phone Mode**: One person scans QR, group shares one device
-2. **Dual-Phone Mode**: Two people scan same QR, synchronized experience across devices
+1. **Single-Phone Mode (Conversation-First)**: One person scans QR, group shares one device, minimal phone interaction
+2. **Dual-Phone Mode (Synchronized Experience)**: Two people scan same QR, synchronized experience with private reflection moments
 
 ---
 
@@ -28,11 +31,12 @@ Table-Talk helps people have meaningful conversations at restaurants and social 
 - **Repository:** GitHub (client-owned)
 
 ### Technology Stack Constraints
-- **Frontend:** Modern JavaScript framework (React/Vue/Svelte)
-- **Backend:** Node.js or Python-based API
-- **Database:** PostgreSQL only
-- **Real-time:** WebSocket or SSE for Dual-Phone sync
-- **Mobile-First:** Responsive design, iOS and Android tested
+- **Frontend:** Modern JavaScript framework (React/Vue/Svelte) - mobile-first
+- **Backend:** Node.js + Express OR Python + FastAPI
+- **Database:** PostgreSQL only (DigitalOcean Managed)
+- **Real-time:** WebSocket (Socket.io) or Server-Sent Events for Dual-Phone sync
+- **Mobile-First:** Responsive design, tested on iOS Safari and Android Chrome
+- **Styling:** Tailwind CSS or similar utility-first framework
 
 ### Performance Requirements
 - **Latency:** <300ms for all user actions
@@ -73,74 +77,162 @@ Table-Talk helps people have meaningful conversations at restaurants and social 
 ### 1. QR Code Scanning & Session Creation
 ```
 FLOW:
-User scans QR → Extract table_id → Create/join session → Show mode selection
+User scans QR → Extract table_token → Show welcome screen → Context selection → Mode selection → Create/join session
 ```
 
 **Rules:**
-- Each QR code contains unique `table_id`
-- QR format: `https://tabletalk.app/t/{table_id}`
-- First scan creates new session
-- Subsequent scans join existing session
-- Sessions tied to table + date (one deck per table per day)
+- Each QR code contains unique `table_token` (e.g., table_042, venue_123_table_8)
+- QR format: `https://tabletalk.app/t/{table_token}`
+- Welcome screen shows brief message: "Welcome to Table Talk. Thoughtful questions designed to spark meaningful conversation between two people. Explore new topics together... and stay curious."
+- First scan creates new session after welcome and selections
+- Subsequent scans join existing session (same table, same service day)
+- Sessions tied to: restaurant_id + table_token + relationship_context + service_day
 
-### 2. Mode Selection
+### 2. Relationship Context Selection (REQUIRED)
+**Three Contexts:**
+- **Exploring**: A personal connection - new or existing - oriented toward discovery (first dates, new friendships, getting-to-know-you)
+- **Established**: An ongoing, committed romantic relationship (couples with history, intentional reconnection)
+- **Mature**: A long-term romantic relationship marked by shared history and depth (20+ years together, philosophical exploration)
+
+**Rules:**
+- Context selection required before any questions display
+- Selection determines which questions are eligible (filters question set)
+- Context displayed subtly during session (e.g., header icon)
+- Cannot change context mid-session (maintains deck integrity)
+- Context replaces previous "category" concept
+
+### 3. Mode Selection
 **Single-Phone Mode:**
 - One device for entire group
 - Simple "Next Question" button
 - No synchronization needed
+- Conversation-first, minimal device interaction
 
 **Dual-Phone Mode:**
 - Two devices connect to same session
-- Real-time sync of question reveals
+- Real-time sync of question reveals and progression
 - Coordinated "Next" button (both must click)
 - Automatic reconnection handling
+- Connection status indicators visible
 
 **Rules:**
-- Mode chosen once at session start
+- Mode chosen once at session start (after context selection)
 - Cannot switch modes mid-session
 - UI adapts based on selected mode
 
 ### 3. Question Loop Logic
 ```
 CORE ALGORITHM:
-1. Load daily deck for this table (shuffled once per day)
-2. Display questions sequentially
-3. Track position in deck
-4. Prevent repeats within same day
-5. Reset deck at midnight (server time)
+1. User selects Relationship Context (Exploring/Established/Mature)
+2. Load eligible questions for selected context
+3. Apply deterministic shuffle using stored seed
+4. Display questions sequentially (virtual deck)
+5. Track position_index in deck_sessions table
+6. Prevent repeats within same deck context
+7. Reset deck at midnight UTC (new service day)
 ```
 
 **Question Display Rules:**
-- Show one question at a time
-- "Reveal Answer" button (optional, collapses to show answer)
+- Show one question at a time (full-screen focus)
+- Optional answer/hint text (collapsed by default, expandable)
 - "Next Question" button advances deck
 - Progress indicator (e.g., "Question 5 of 50")
 - No back button (forward-only progression)
+- Smooth transitions between questions (300ms fade)
 
-**Daily Deck Logic:**
-- Each table gets same shuffled deck for entire day
-- Deck order generated using: `seed = hash(table_id + date)`
-- New shuffle at midnight server time
-- If deck exhausted, cycle back to start
+**Question Types:**
+1. **Open-Ended** (Primary format):
+   - Conversational prompts requiring discussion
+   - Optional hint/reflection text
+   - No typed input required
+   
+2. **Multiple-Choice** (Variety format):
+   - 3-5 answer options
+   - Private selection in Dual-Phone mode
+   - Reveal ritual shows selections with checkmarks
 
-### 4. Dual-Phone Synchronization
-**Sync Events:**
-- Question reveal (both see answer simultaneously)
-- Next question trigger (requires both users to click)
-- Session join/leave notifications
+**Daily Deck Logic (Deterministic Randomization):**
+- Each unique deck context gets deterministic shuffle
+- Deck context = hash(restaurant_id + table_token + relationship_context + service_day)
+- Seed stored in deck_sessions table
+- Same seed always produces same question order
+- Position_index tracks current location (0-based)
+- Deck wraps to beginning if exhausted
+- New service day (midnight UTC) creates new deck context
+- Virtual deck generated on-demand, never stored as full list
+
+### 4. Dual-Phone Synchronization & Interaction Rituals
+
+**Design Principle:** State changes annotate existing content rather than replacing it. This maintains context and keeps conversation primary.
+
+#### 4.1 Open-Ended Questions - Shared Readiness Ritual
+
+**Intent:** Signal mutual readiness to talk without requiring typed input.
+
+**Flow:**
+1. Both devices display same open-ended question
+2. No text input required
+3. Each participant sees [Ready] button
+4. When one taps [Ready], UI shows "✓ Ready" locally, partner sees "Partner is ready ⏳"
+5. When both tap [Ready]:
+   - Brief confirmation: "Both Ready ✓✓" (2 seconds)
+   - Confirmation fades automatically
+   - Question text remains visible but de-emphasized (50% opacity, gray #8E8E93)
+   - Screen enters "conversation state" with subtle message: "Conversation in progress..."
+   - [Next] button becomes available
+6. Both must click [Next] to advance (standard Dual-Phone logic)
+
+**Visual State After "Both Ready":**
+- Question de-emphasized visually (not removed)
+- Focus shifts from reading to conversation
+- No answer content stored in database
+
+#### 4.2 Multiple-Choice Questions - Shared Reveal Ritual
+
+**Intent:** Allow brief private selection with shared reveal moment for comparison and conversation.
+
+**Flow:**
+1. Both devices display same multiple-choice question + options (3-5 options)
+2. Each participant selects option(s) privately (not visible to partner)
+3. Selected option highlighted locally (e.g., blue border)
+4. [Final Answer] button appears after selection
+5. First user taps [Final Answer] → sees "Waiting for partner... ⏳"
+6. Second user taps [Final Answer] → both see reveal state simultaneously
+7. **Reveal State:**
+   - Original question and all options remain on screen (no screen change)
+   - Checkmarks (✓) appear inline next to/on selected options
+   - Example: "● Invisibility ✓ ✓" (both selected)
+   - Example: "○ Time travel ✓" (one selected)
+   - Checkmarks identical for both users (no color differentiation in MVP)
+   - No scoring or judgment displayed
+8. Conversation occurs comparing choices
+9. [Next] button active, both must click to advance
+
+**Important Notes:**
+- Answer options annotated, not replaced
+- No indication of who selected what (anonymous in MVP)
+- No answer content stored in database (only event logged)
+- Future enhancement: color-coded checkmarks, percentage stats (deferred)
+
+#### 4.3 Sync Events (WebSocket/SSE)
+- `session_joined` - Second user connects
+- `question_displayed` - Both see new question
+- `ready_toggled` - Open-ended readiness state change
+- `both_ready` - Both users ready (trigger conversation state)
+- `answer_submitted` - Multiple-choice selection submitted
+- `reveal_answers` - Both submitted, show checkmarks
+- `next_requested` - User clicked Next
+- `question_advanced` - Both users clicked, advance together
+- `user_disconnected` - Partner lost connection
+- `user_reconnected` - Partner rejoined
 
 **Sync Rules:**
 - Use WebSockets or Server-Sent Events
 - <300ms sync latency requirement
 - Handle disconnections gracefully
 - Auto-reconnect with session ID
-- Show "waiting for other person" state
-
-**"Both Click Next" Logic:**
-```
-User 1 clicks Next → Show "Waiting for partner..."
-User 2 clicks Next → Both advance to next question
-```
+- Show "waiting for other person" state clearly
+- Connection status indicator (green dot = connected)
 
 ### 5. Reconnection Handling
 **Scenarios:**
@@ -148,13 +240,24 @@ User 2 clicks Next → Both advance to next question
 - Network interruption
 - Device sleep/wake
 - Tab switching
+- WebSocket disconnection
 
 **Rules:**
 - Store session_id in sessionStorage
 - Auto-reconnect on page load
-- Resume at current question
+- Resume at current question (using position_index)
 - Show reconnection status to user
 - Timeout after 30 minutes of inactivity
+- Exponential backoff for reconnection attempts (3 max)
+- Session expires after 24 hours
+
+**Reconnection Flow:**
+1. Check sessionStorage for session_id
+2. Show "Reconnecting..." indicator
+3. Fetch session from API: GET /api/sessions/{session_id}
+4. If valid: restore state, resume at current position
+5. If expired: redirect to landing with message
+6. If failed: show retry button after 3 attempts
 
 ---
 
@@ -182,28 +285,45 @@ Track these events without PII:
 
 ### Mobile-First Design
 - Design for 375px width minimum (iPhone SE)
-- Touch targets minimum 44px × 44px
-- Readable text (16px minimum body)
-- High contrast for outdoor use
+- Test down to 320px width
+- Touch targets minimum 44px × 44px (iOS guideline) or 48px × 48px (Material Design)
+- Readable text (16px minimum body, 24px question text)
+- High contrast for outdoor restaurant use
 - Large, obvious CTA buttons
 
-### Visual Hierarchy
-1. **Primary:** Question text (large, bold)
-2. **Secondary:** Answer text (revealed on tap)
-3. **Tertiary:** Navigation (Next button, progress)
-4. **Background:** Minimal chrome, focus on content
+### Visual Hierarchy & Typography
+1. **Primary:** Question text (24px, bold, #1C1C1E)
+2. **Secondary:** Answer/hint text (18px, medium, #1C1C1E)
+3. **Tertiary:** Navigation and progress (16px, #8E8E93)
+4. **Background:** Clean white (#FFFFFF) or light gray (#F2F2F7)
+
+### Color System
+- **Primary CTA:** Blue #007AFF (iOS blue, familiar)
+- **Success/Ready:** Green #34C759 (positive confirmation)
+- **Error:** Red #FF3B30 (errors, warnings)
+- **Text Primary:** Near Black #1C1C1E (high contrast)
+- **Text Secondary:** Gray #8E8E93 (de-emphasized)
+- **Border:** Light Gray #D1D1D6 (subtle dividers)
 
 ### Interaction Patterns
-- Single tap to reveal answer
-- Obvious button for Next question
-- Loading states for all async actions
-- Error messages in plain language
-- Success confirmations (subtle)
+- Single tap to reveal answer/hint
+- Obvious button for Next question (fixed bottom position, 48px height)
+- Loading states for all async actions (spinner or skeleton)
+- Error messages in plain language with retry buttons
+- Success confirmations subtle (toast notifications, 2 seconds)
+- Smooth transitions (300ms fade animations)
+
+### Spacing System (8px grid)
+- xs: 8px (tight spacing)
+- sm: 16px (related elements)
+- md: 24px (section spacing)
+- lg: 32px (major sections)
+- xl: 48px (page-level spacing)
 
 ### Responsive Breakpoints
-- **Mobile:** 320px - 767px
-- **Tablet:** 768px - 1024px
-- **Desktop:** 1025px+ (center content, max-width 600px)
+- **Mobile:** 320px - 767px (primary design target)
+- **Tablet:** 768px - 1024px (centered content, max-width 600px)
+- **Desktop:** 1025px+ (centered content, max-width 600px, generous margins)
 
 ---
 
@@ -213,31 +333,72 @@ Track these events without PII:
 
 **sessions**
 ```sql
-- session_id (UUID, primary key)
-- table_id (string, indexed)
-- mode (enum: 'single', 'dual')
-- created_at (timestamp)
-- expires_at (timestamp)
-- current_question_index (integer)
-- deck_seed (string) -- for daily shuffle
+CREATE TABLE sessions (
+  session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  table_token VARCHAR(100) NOT NULL,
+  restaurant_id VARCHAR(100) NOT NULL,
+  mode VARCHAR(20) NOT NULL CHECK (mode IN ('single-phone', 'dual-phone')),
+  context VARCHAR(20) NOT NULL CHECK (context IN ('Exploring', 'Established', 'Mature')),
+  created_at TIMESTAMP DEFAULT NOW(),
+  expires_at TIMESTAMP NOT NULL,
+  last_activity_at TIMESTAMP DEFAULT NOW(),
+  
+  INDEX idx_table_token (table_token),
+  INDEX idx_expires_at (expires_at),
+  INDEX idx_restaurant (restaurant_id)
+);
 ```
 
-**analytics_events**
+**deck_sessions** (Deterministic shuffle tracking)
 ```sql
-- event_id (UUID, primary key)
-- session_id (UUID, foreign key)
-- event_type (string, indexed)
-- event_data (JSONB)
-- timestamp (timestamp, indexed)
+CREATE TABLE deck_sessions (
+  deck_context_id VARCHAR(64) PRIMARY KEY,  -- SHA256 hash
+  restaurant_id VARCHAR(100) NOT NULL,
+  table_token VARCHAR(100) NOT NULL,
+  relationship_context VARCHAR(20) NOT NULL CHECK (relationship_context IN ('Exploring', 'Established', 'Mature')),
+  service_day DATE NOT NULL,
+  seed VARCHAR(64) NOT NULL,              -- UUID for deterministic shuffle
+  position_index INTEGER DEFAULT 0,       -- Current position in virtual deck
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  
+  UNIQUE (restaurant_id, table_token, relationship_context, service_day),
+  INDEX idx_lookup (restaurant_id, table_token, relationship_context, service_day)
+);
 ```
 
 **questions** (seed data)
 ```sql
-- question_id (integer, primary key)
-- question_text (text)
-- answer_text (text, nullable)
-- category (string, nullable)
-- difficulty (enum: 'easy', 'medium', 'deep')
+CREATE TABLE questions (
+  question_id SERIAL PRIMARY KEY,
+  question_text TEXT NOT NULL,
+  answer_text TEXT,                        -- Optional hint/reflection prompt
+  question_type VARCHAR(20) NOT NULL CHECK (question_type IN ('open-ended', 'multiple-choice')),
+  context VARCHAR(20) NOT NULL CHECK (context IN ('Exploring', 'Established', 'Mature')),
+  difficulty VARCHAR(10) CHECK (difficulty IN ('easy', 'medium', 'deep')),
+  options JSONB,                           -- For multiple-choice: [{"id": "a", "text": "Option A"}, ...]
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  active BOOLEAN DEFAULT TRUE,
+  
+  INDEX idx_context (context, active),
+  INDEX idx_type (question_type)
+);
+```
+
+**analytics_events**
+```sql
+CREATE TABLE analytics_events (
+  event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  event_type VARCHAR(50) NOT NULL,
+  event_data JSONB,
+  timestamp TIMESTAMP DEFAULT NOW(),
+  
+  INDEX idx_event_type (event_type),
+  INDEX idx_timestamp (timestamp),
+  INDEX idx_session (session_id)
+);
 ```
 
 ### Schema Rules
@@ -393,36 +554,46 @@ LOG_LEVEL=info
 
 ### Stage 1: Setup & Session Flow (~20 hrs)
 - [ ] GitHub repo initialized with proper structure
-- [ ] Database schema created and migrated
+- [ ] Database schema created and migrated (all 4 tables)
 - [ ] QR code scanning functional
+- [ ] Welcome screen with brief message
+- [ ] Relationship Context selection UI (Exploring/Established/Mature with definitions)
+- [ ] Mode selection UI (Single-Phone/Dual-Phone)
 - [ ] Session creation working
-- [ ] Mode selection UI complete
-- [ ] Basic frontend routing
+- [ ] Basic frontend routing (landing → welcome → context → mode → questions)
+- [ ] Sessions stored with context field
 
 ### Stage 2: Core Q&A Logic (~35 hrs)
 - [ ] Question display component
-- [ ] Answer reveal functionality
+- [ ] Answer/hint reveal functionality
 - [ ] Next question navigation
-- [ ] Daily deck logic implemented
+- [ ] Deterministic deck logic implemented (seed-based shuffle)
+- [ ] deck_sessions table managing position_index
 - [ ] Single-Phone mode fully functional
-- [ ] Dual-Phone sync working (basic)
-- [ ] Progress tracking
+- [ ] Dual-Phone WebSocket/SSE sync working
+- [ ] Open-ended "Shared Readiness Ritual" implemented
+- [ ] Multiple-choice "Shared Reveal Ritual" with checkmarks
+- [ ] Progress tracking accurate
+- [ ] 50+ questions seeded across all contexts
 
 ### Stage 3: Testing, Analytics, UI Polish (~25 hrs)
-- [ ] All test scenarios passing
-- [ ] Analytics events logged correctly
-- [ ] Mobile UI polished and responsive
-- [ ] Reconnection logic working
+- [ ] All test scenarios passing (Single + Dual modes)
+- [ ] Analytics events logged correctly (all event types)
+- [ ] Mobile UI polished and responsive (iOS + Android tested)
+- [ ] Reconnection logic robust (exponential backoff)
 - [ ] Error states handled gracefully
 - [ ] Loading states implemented
+- [ ] Connection status indicators (Dual-Phone)
 - [ ] Cross-browser testing complete
+- [ ] Performance optimized (<300ms latency)
 
 ### Stage 4: Deployment & Support (~20 hrs)
-- [ ] Application deployed to DigitalOcean
+- [ ] Application deployed to DigitalOcean App Platform
 - [ ] Production database seeded
-- [ ] Documentation complete
+- [ ] QR codes generated (printable, high-resolution)
+- [ ] Documentation complete (README, DEPLOYMENT, API docs)
 - [ ] Client handoff demonstration
-- [ ] 10 hours support available
+- [ ] 10 hours support available (30 days)
 
 ---
 
@@ -552,3 +723,49 @@ LOG_LEVEL=info
 **Version:** 1.0  
 **Last Updated:** January 2026  
 **Owner:** Charles Peterson (Made to Connect Co)
+
+
+
+
+
+
+# Table-Talk MVP - Development Rules v1.2
+
+**Client:** Charles Peterson (Made to Connect Co) | **Budget:** 110hrs @ $10/hr | **Platform:** DigitalOcean
+
+## Core Features
+1. **QR Scan** → Welcome → **Context Selection** (Exploring/Established) → **Mode** (Single/Dual-Phone) → Questions
+2. **Deterministic Deck**: Seed-based shuffle, no repeats per table/day, wraps at end
+3. **Dual-Phone Sync**: WebSocket <300ms latency, "Both Ready" ritual (open-ended), checkmark reveal (multiple-choice)
+
+## Tech Stack
+- Frontend: React + Tailwind, mobile-first (375px min)
+- Backend: Node.js/Express + Socket.io
+- Database: PostgreSQL (sessions, deck_sessions, questions, analytics_events)
+- Hosting: DigitalOcean App Platform + Managed Postgres
+
+## Privacy (CRITICAL)
+❌ NEVER store: names, emails, phones, IPs, answer content
+✅ Store only: session_id (UUID), timestamps (UTC), question_id, anonymous events
+
+## Database Schema
+```sql
+sessions: session_id, table_token, restaurant_id, mode, context, expires_at
+deck_sessions: deck_context_id, seed, position_index, service_day
+questions: question_id, text, answer_text, type, context, difficulty, options
+analytics_events: event_id, session_id, event_type, event_data, timestamp
+```
+
+## Relationship Contexts (v1.2)
+- **Exploring**: Personal connection - new or existing - oriented toward discovery
+- **Established**: Ongoing, committed romantic relationship
+
+## Milestones
+- Phase 1 (20h): Setup, QR, welcome, context/mode selection
+- Phase 2 (35h): Deck logic, questions, Single+Dual modes, sync
+- Phase 3 (25h): Testing (70% coverage), analytics, UI polish
+- Phase 4 (20h): Deploy, docs, QR codes, handoff + 10h support
+
+## Quality Standards
+- Touch targets: 48px min | Latency: <300ms | Mobile-first | No PII | UTC timestamps
+- Code: camelCase (JS), snake_case (DB), parameterized queries only

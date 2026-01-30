@@ -2,9 +2,9 @@
 # Exit on error
 set -o errexit
 
-npm install --prefix server
-npm install --prefix client
-npm run build --prefix client
+npm install --prefix backend
+npm install --prefix frontend
+npm run build --prefix frontend
 
 # Run migrations
-npm run migrate --prefix server
+npm run migrate --prefix backend
