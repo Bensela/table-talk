@@ -28,6 +28,7 @@ services:
     success_threshold: 1
     failure_threshold: 3
 
+static_sites:
 - name: frontend
   github:
     repo: easymssolutions/table-talk
