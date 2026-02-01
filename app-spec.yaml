@@ -1,0 +1,49 @@
+name: Table-Talk
+region: nyc
+services:
+- name: backend
+  github:
+    repo: easymssolutions/table-talk
+    branch: main
+    deploy_on_push: true
+  source_dir: backend
+  build_command: npm install
+  run_command: npm start
+  http_port: 8080
+  envs:
+  - key: NODE_ENV
+    value: production
+  - key: LOG_LEVEL
+    value: info
+  - key: FRONTEND_URL
+    value: ${APP_URL}
+  - key: DATABASE_URL
+    scope: run_time
+    value: ${db.DATABASE_URL}
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 10
+    period_seconds: 10
+    timeout_seconds: 5
+    success_threshold: 1
+    failure_threshold: 3
+
+- name: frontend
+  github:
+    repo: easymssolutions/table-talk
+    branch: main
+    deploy_on_push: true
+  source_dir: frontend
+  build_command: npm install && npm run build
+  output_dir: dist
+  envs:
+  - key: VITE_API_URL
+    value: ${backend.PUBLIC_URL}/api
+  routes:
+  - path: /
+
+databases:
+- name: db
+  engine: PG
+  production: true
+  version: "14"

@@ -105,20 +105,29 @@ export default function Home() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.6 }}
-            className="mt-20 pt-12 border-t border-gray-100 grid grid-cols-3 gap-4 text-center scroll-mt-32"
+            className="mt-20 pt-16 border-t border-gray-100 flex flex-col md:flex-row justify-center items-center md:items-start gap-12 scroll-mt-32 relative"
           >
-             <div className="space-y-2">
-               <div className="text-2xl">📷</div>
-               <div className="text-xs font-bold uppercase tracking-widest text-gray-400">Scan</div>
-             </div>
-             <div className="space-y-2">
-               <div className="text-2xl">🌱</div>
-               <div className="text-xs font-bold uppercase tracking-widest text-gray-400">Pick Context</div>
-             </div>
-             <div className="space-y-2">
-               <div className="text-2xl">💬</div>
-               <div className="text-xs font-bold uppercase tracking-widest text-gray-400">Talk</div>
-             </div>
+             {/* Connecting Line (Desktop) */}
+             <div className="hidden md:block absolute top-[5.5rem] left-[20%] right-[20%] h-0.5 bg-gradient-to-r from-transparent via-gray-200 to-transparent -z-10"></div>
+
+             {[
+               { icon: "📷", title: "Scan", desc: "Use your camera to join instantly" },
+               { icon: "🌱", title: "Context", desc: "Choose your relationship vibe" },
+               { icon: "💬", title: "Talk", desc: "Answer curated questions together" }
+             ].map((step, i) => (
+               <motion.div 
+                 key={i}
+                 className="flex flex-col items-center text-center group cursor-default"
+                 whileHover={{ y: -5 }}
+                 transition={{ type: "spring", stiffness: 300 }}
+               >
+                 <div className="w-16 h-16 rounded-2xl bg-white border border-gray-100 shadow-sm group-hover:shadow-md group-hover:border-blue-100 flex items-center justify-center text-3xl mb-4 transition-all duration-300 relative z-10">
+                   {step.icon}
+                 </div>
+                 <h3 className="font-bold text-gray-900 mb-1">{step.title}</h3>
+                 <p className="text-xs font-medium text-gray-400 max-w-[120px]">{step.desc}</p>
+               </motion.div>
+             ))}
           </motion.div>
 
         </section>
