@@ -6,9 +6,8 @@ services:
     repo: easymssolutions/table-talk
     branch: main
     deploy_on_push: true
-  source_dir: backend
-  build_command: npm install
-  run_command: npm start
+  build_command: cd backend && npm install
+  run_command: cd backend && npm start
   http_port: 8080
   envs:
   - key: NODE_ENV
