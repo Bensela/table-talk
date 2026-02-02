@@ -7,9 +7,11 @@ services:
     branch: main
     deploy_on_push: true
   source_dir: backend
-  build_command: rm -rf node_modules && npm install --include=dev
+  build_command: npm ci
   run_command: npm start
   http_port: 5000
+  routes:
+  - path: /api
   envs:
   - key: NODE_ENV
     value: production
@@ -39,7 +41,7 @@ static_sites:
   output_dir: dist
   envs:
   - key: VITE_API_URL
-    value: ${backend.PUBLIC_URL}/api
+    value: /api
   routes:
   - path: /
 

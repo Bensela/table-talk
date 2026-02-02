@@ -27,12 +27,12 @@ app.use(express.json());
 app.use('/api/sessions', sessionRoutes);
 
 // Health Check
-app.get('/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
 // Root Endpoint
-app.get('/', (req, res) => {
+app.get('/api', (req, res) => {
   res.send('Table Talk API is running. Please visit the frontend application.');
 });
 
