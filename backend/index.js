@@ -6,7 +6,12 @@ const { Server } = require('socket.io');
 const sessionRoutes = require('./routes/sessionRoutes');
 const db = require('./db');
 const deckService = require('./services/deckService');
-require('dotenv').config();
+try {
+  require('dotenv').config();
+} catch (e) {
+  // .env file is missing, but that's okay in production where env vars are injected
+  console.log('No .env file found, relying on environment variables');
+}
 
 const app = express();
 const server = http.createServer(app);
