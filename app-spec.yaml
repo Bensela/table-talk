@@ -7,7 +7,7 @@ services:
     branch: main
     deploy_on_push: true
   source_dir: backend
-  build_command: npm install
+  build_command: npm install --include=dev
   run_command: npm start
   http_port: 5000
   envs:
