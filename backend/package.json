@@ -31,5 +31,8 @@
   "jest": {
     "testEnvironment": "node",
     "verbose": true
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
