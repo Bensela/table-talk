@@ -23,7 +23,7 @@ services:
     scope: run_time
     value: ${db.DATABASE_URL}
   health_check:
-    http_path: /health
+    http_path: /api/health
     initial_delay_seconds: 30
     period_seconds: 15
     timeout_seconds: 5
