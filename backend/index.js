@@ -31,6 +31,11 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
+// Root Endpoint
+app.get('/', (req, res) => {
+  res.send('Table Talk API is running. Please visit the frontend application.');
+});
+
 // Socket.io Logic
 // Store pending states
 const pendingNextClicks = new Map();
