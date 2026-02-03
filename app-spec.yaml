@@ -20,8 +20,7 @@ services:
   - key: FRONTEND_URL
     value: ${APP_URL}
   - key: DATABASE_URL
-    scope: run_time
-    value: ${db.DATABASE_URL}
+    value: postgresql://postgres:Barbie198320132025@db.qqgmjdrmupbrueaucwcp.supabase.co:5432/postgres
   health_check:
     http_path: /api/health
     initial_delay_seconds: 30
