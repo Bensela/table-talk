@@ -44,9 +44,3 @@ static_sites:
     value: /api
   routes:
   - path: /
-
-databases:
-- name: db
-  engine: PG
-  production: true
-  version: "14"
