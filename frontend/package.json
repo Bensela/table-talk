@@ -42,5 +42,8 @@
     "globals": "^16.0.0",
     "jsdom": "^27.0.1",
     "vitest": "^4.0.17"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.55.1"
   }
 }
