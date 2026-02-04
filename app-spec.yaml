@@ -36,7 +36,7 @@ static_sites:
     branch: main
     deploy_on_push: true
   source_dir: frontend
-  build_command: npm install && npm run build
+  build_command: rm -f package-lock.json && npm install && npm run build
   output_dir: dist
   envs:
   - key: VITE_API_URL
