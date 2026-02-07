@@ -170,13 +170,13 @@ io.on('connection', (socket) => {
           socket.emit('waiting_for_partner');
         }
 
-        // Timeout (30s)
+        // Timeout (2 minutes)
         setTimeout(() => {
            if (pendingNextClicks.has(sessionId)) {
              pendingNextClicks.delete(sessionId);
              io.to(sessionId).emit('wait_timeout'); 
            }
-        }, 30000);
+        }, 120000);
       }
     } catch (err) {
       console.error('Socket error:', err);

@@ -5,6 +5,7 @@ import api from '../api';
 import QuestionCard from '../components/QuestionCard';
 import ProgressBar from '../components/ProgressBar';
 import Button from '../components/ui/Button';
+import Modal from '../components/ui/Modal';
 
 export default function SessionGame() {
   const { sessionId } = useParams();
@@ -17,6 +18,13 @@ export default function SessionGame() {
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [mode, setMode] = useState('single');
   const [isConnected, setIsConnected] = useState(false);
+  const [modalState, setModalState] = useState({ 
+    isOpen: false, 
+    title: '', 
+    message: '', 
+    action: null,
+    icon: null
+  });
   
   const socketRef = useRef(null);
   const reconnectAttempts = useRef(0);
@@ -99,7 +107,13 @@ export default function SessionGame() {
     
     socket.on('wait_timeout', () => {
       setWaitingForPartner(false);
-      alert('Sync timeout. Try clicking Next again.');
+      setModalState({
+        isOpen: true,
+        title: 'Sync Timeout',
+        message: 'It seems your partner is taking a while. You can try clicking Next again.',
+        action: () => setModalState(prev => ({ ...prev, isOpen: false })),
+        icon: '⏳'
+      });
     });
 
     return () => {
@@ -143,7 +157,13 @@ export default function SessionGame() {
       if (socketRef.current && isConnected) {
         socketRef.current.emit('request_next', { sessionId });
       } else {
-        alert('Connection lost. Please wait for reconnection.');
+        setModalState({
+          isOpen: true,
+          title: 'Connection Lost',
+          message: 'We lost connection to the server. Please check your internet or wait for automatic reconnection.',
+          action: () => setModalState(prev => ({ ...prev, isOpen: false })),
+          icon: '🔌'
+        });
       }
     }
   };
@@ -185,9 +205,24 @@ export default function SessionGame() {
       <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-40" />
       <div className="absolute bottom-[-20%] right-[-20%] w-[500px] h-[500px] bg-purple-50/60 rounded-full blur-3xl pointer-events-none opacity-40" />
 
+      {/* Modal Popup */}
+      <Modal
+        isOpen={modalState.isOpen}
+        onClose={() => setModalState(prev => ({ ...prev, isOpen: false }))}
+        title={modalState.title}
+        actionLabel="OK"
+        onAction={modalState.action}
+        icon={modalState.icon}
+      >
+        {modalState.message}
+      </Modal>
+
       {/* Header */}
       <header className="flex justify-between items-center mb-8 relative z-10">
-        <div className="flex items-center gap-2">
+        <div 
+          className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
+          onClick={() => navigate('/')}
+        >
           <span className="text-xl">💬</span>
           <span className="text-sm font-bold text-gray-900 tracking-wider">TABLE-TALK</span>
         </div>
