@@ -57,8 +57,13 @@ export default function SessionGame() {
 
   // Socket Connection Logic
   useEffect(() => {
-    const socketUrl = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
+    const isDev = import.meta.env.DEV;
+    const socketUrl = isDev 
+      ? 'http://localhost:5000' 
+      : 'https://sea-lion-app-6mjje.ondigitalocean.app';
+
     const socket = io(socketUrl, {
+      transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
