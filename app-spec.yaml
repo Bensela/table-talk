@@ -3,7 +3,7 @@ region: nyc
 services:
 - name: backend
   github:
-    repo: easymssolutions/table-talk
+    repo: charlpet/table-talk
     branch: main
     deploy_on_push: true
   source_dir: backend
@@ -33,7 +33,7 @@ services:
 static_sites:
 - name: frontend
   github:
-    repo: easymssolutions/table-talk
+    repo: charlpet/table-talk
     branch: main
     deploy_on_push: true
   source_dir: frontend
