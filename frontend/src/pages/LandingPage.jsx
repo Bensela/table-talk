@@ -18,7 +18,7 @@ export default function LandingPage() {
       }
 
       try {
-        const response = await createSession(tableId);
+        const response = await createSession({ table_token: tableId });
         const { session_id, mode } = response.data;
         
         sessionStorage.setItem('session_id', session_id);
