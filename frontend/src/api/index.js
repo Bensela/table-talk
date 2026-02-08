@@ -4,7 +4,7 @@ const isDev = import.meta.env.DEV;
 
 const api = axios.create({
   // In production (served by backend), use relative path. In dev, use explicit URL.
-  baseURL: import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000/api' : '/api'),
+  baseURL: import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api'),
 });
 
 // Updated createSession to accept table_token, context, and mode

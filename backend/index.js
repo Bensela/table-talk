@@ -29,15 +29,15 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
-app.use('/api/sessions', sessionRoutes);
+app.use('/sessions', sessionRoutes);
 
 // Health Check
-app.get('/api/health', (req, res) => {
+app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
 // Root Endpoint
-app.get('/api', (req, res) => {
+app.get('/', (req, res) => {
   res.send('Table Talk API is running. Please visit the frontend application.');
 });
 
