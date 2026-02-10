@@ -45,6 +45,7 @@ app.get('/', (req, res) => {
 // Store pending states
 const pendingNextClicks = new Map();
 const sessionStates = new Map(); // sessionId -> { ready: Map<userId, bool>, answers: Map<userId, optionId> }
+const socketToSession = new Map(); // socketId -> sessionId
 
 function getSessionState(sessionId) {
   if (!sessionStates.has(sessionId)) {
@@ -66,6 +67,7 @@ io.on('connection', (socket) => {
 
   socket.on('join_session', (sessionId) => {
     socket.join(sessionId);
+    socketToSession.set(socket.id, sessionId);
     console.log(`Socket ${socket.id} joined session ${sessionId}`);
     
     // Notify room about new user (for connection status)
@@ -185,9 +187,19 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-    // Notify room?
-    // We don't have sessionId easily available here unless we track socket->session mapping
-    // But socket.rooms is empty on disconnect usually.
+    const sessionId = socketToSession.get(socket.id);
+    
+    if (sessionId) {
+      // Notify partner
+      socket.to(sessionId).emit('partner_disconnected');
+      
+      // Update connection count
+      const room = io.sockets.adapter.rooms.get(sessionId);
+      const size = room ? room.size : 0;
+      io.to(sessionId).emit('partner_joined', { users_connected: size });
+      
+      socketToSession.delete(socket.id);
+    }
   });
 });
 

@@ -112,14 +112,28 @@ const advanceDeck = async (session) => {
     session.context
   );
 
+  // Get total questions to handle wraparound
+  const allQuestions = await getAllQuestions();
+  const deckQuestions = allQuestions.filter(q => 
+    !q.context || q.context === session.context
+  );
+  const totalQuestions = deckQuestions.length;
+
+  let newIndex = deckSession.position_index + 1;
+  
+  // Wraparound logic
+  if (totalQuestions > 0 && newIndex >= totalQuestions) {
+    newIndex = 0;
+  }
+
   await db.query(
     `UPDATE deck_sessions 
-     SET position_index = position_index + 1, updated_at = NOW()
-     WHERE deck_context_id = $1`,
-    [deckSession.deck_context_id]
+     SET position_index = $1, updated_at = NOW()
+     WHERE deck_context_id = $2`,
+    [newIndex, deckSession.deck_context_id]
   );
   
-  return deckSession.position_index + 1;
+  return newIndex + 1; // Return 1-based index for display
 };
 
 module.exports = {

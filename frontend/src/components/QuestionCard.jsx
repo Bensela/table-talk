@@ -19,6 +19,7 @@ export default function QuestionCard({
   const [ready, setReady] = useState(false);
   const [partnerReady, setPartnerReady] = useState(false);
   const [bothReady, setBothReady] = useState(false);
+  const [conversationState, setConversationState] = useState(false);
   
   // Multiple Choice State
   const [selectedOption, setSelectedOption] = useState(null);
@@ -34,6 +35,7 @@ export default function QuestionCard({
     setReady(false);
     setPartnerReady(false);
     setBothReady(false);
+    setConversationState(false);
     setSelectedOption(null);
     setSubmitted(false);
     setPartnerSelections({});
@@ -50,7 +52,7 @@ export default function QuestionCard({
 
     const onBothReady = () => {
       setBothReady(true);
-      setTimeout(() => setLocalRevealed(true), 1500); 
+      setTimeout(() => setConversationState(true), 2000); 
     };
 
     const onRevealAnswers = ({ selections }) => {
@@ -123,9 +125,16 @@ export default function QuestionCard({
 
         {/* Question Text */}
         <div className="my-8 text-center relative z-10">
-          <h2 className={`text-3xl font-extrabold leading-tight text-gray-900 ${bothReady ? 'opacity-50' : ''}`}>
+          <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-500 ${
+            conversationState ? 'text-gray-400 opacity-50' : 'text-gray-900'
+          }`}>
             {question.question_text}
           </h2>
+          {conversationState && (
+             <p className="mt-4 text-sm text-gray-500 font-medium animate-fade-in">
+               Conversation in progress...
+             </p>
+          )}
         </div>
 
         {/* CONTENT AREA (Hint or Options) */}
@@ -195,11 +204,11 @@ export default function QuestionCard({
         )}
       </motion.div>
 
-      {/* ACTION BAR (Bottom) */}
-      <div className="mt-8 space-y-4">
-        {/* DUAL MODE: Interaction Buttons */}
-        {mode === 'dual-phone' && !localRevealed && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+        {/* ACTION BAR (Bottom) */}
+        <div className="mt-8 space-y-4">
+          {/* DUAL MODE: Interaction Buttons */}
+          {mode === 'dual-phone' && !localRevealed && !conversationState && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             {!isMultipleChoice ? (
               // Open Ended Ready Button
               <div className="space-y-3">
