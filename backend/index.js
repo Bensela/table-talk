@@ -15,17 +15,42 @@ try {
 
 const app = express();
 const server = http.createServer(app);
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "https://september-internation-overelliptically.ngrok-free.dev"
+];
+
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check against whitelist or allow ngrok subdomains
+    if (allowedOrigins.includes(origin) || origin.endsWith('.ngrok-free.dev')) {
+      callback(null, true);
+    } else {
+      // For MVP, default to allow to prevent blocking unexpected valid sources
+      callback(null, true);
+    }
+  },
+  methods: ["GET", "POST", "PATCH"],
+  credentials: true
+};
+
 const io = new Server(server, {
-  cors: {
-    origin: "*", // Allow all origins for MVP
-    methods: ["GET", "POST", "PATCH"]
-  }
+  cors: corsOptions
 });
 
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Routes
