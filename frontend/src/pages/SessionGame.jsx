@@ -159,9 +159,15 @@ export default function SessionGame() {
         console.error('Error advancing deck:', err);
       }
     } else {
-      if (socketRef.current && isConnected) {
+      // Check socket connection status directly from the socket instance
+      if (socketRef.current?.connected) {
         socketRef.current.emit('request_next', { sessionId });
       } else {
+        console.warn('Socket not connected when requesting next:', { 
+          socketExists: !!socketRef.current, 
+          connected: socketRef.current?.connected,
+          stateIsConnected: isConnected 
+        });
         setModalState({
           isOpen: true,
           title: 'Connection Lost',
