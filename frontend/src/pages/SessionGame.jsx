@@ -60,7 +60,7 @@ export default function SessionGame() {
     const isDev = import.meta.env.DEV;
     const socketUrl = isDev 
       ? 'http://localhost:5000' 
-      : 'https://sea-lion-app-6mjje.ondigitalocean.app';
+      : 'https://octopus-app-ibal3.ondigitalocean.app';
 
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'], // Enable polling fallback

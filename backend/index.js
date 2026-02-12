@@ -21,7 +21,8 @@ const allowedOrigins = [
   "http://localhost:4173",
   "https://september-internation-overelliptically.ngrok-free.dev",
   "https://sea-lion-app-6mjje.ondigitalocean.app",
-  "https://orca-app-be8he.ondigitalocean.app"
+  "https://orca-app-be8he.ondigitalocean.app",
+  "https://octopus-app-ibal3.ondigitalocean.app"
 ];
 
 if (process.env.FRONTEND_URL) {
