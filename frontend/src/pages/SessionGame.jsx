@@ -151,6 +151,8 @@ export default function SessionGame() {
       });
     } catch (err) { console.error(err); }
   };
+
+  const handleNext = async () => {
     if (waitingForPartner) return;
 
     if (mode === 'single-phone' || mode === 'single') {
