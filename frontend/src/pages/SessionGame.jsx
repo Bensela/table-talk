@@ -71,6 +71,8 @@ export default function SessionGame() {
       reconnectionDelayMax: 5000,
       timeout: 20000,
       path: '/socket.io/',
+      secure: !isDev,
+      rejectUnauthorized: false
     });
     
     socketRef.current = socket;
