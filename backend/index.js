@@ -19,7 +19,9 @@ const server = http.createServer(app);
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:4173",
-  "https://september-internation-overelliptically.ngrok-free.dev"
+  "https://september-internation-overelliptically.ngrok-free.dev",
+  "https://sea-lion-app-6mjje.ondigitalocean.app",
+  "https://orca-app-be8he.ondigitalocean.app"
 ];
 
 if (process.env.FRONTEND_URL) {

@@ -63,12 +63,15 @@ export default function SessionGame() {
       : 'https://sea-lion-app-6mjje.ondigitalocean.app';
 
     const socket = io(socketUrl, {
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'], // Enable polling fallback
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
+      path: '/socket.io/', // Explicit path
+      secure: !isDev,
+      rejectUnauthorized: false
     });
     
     socketRef.current = socket;
