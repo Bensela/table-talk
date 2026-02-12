@@ -47,10 +47,24 @@ const corsOptions = {
 };
 
 const io = new Server(server, {
-  cors: corsOptions,
-  pingTimeout: 30000, // 30 seconds
-  pingInterval: 10000, // Send heartbeat every 10s
-  transports: ['websocket'] // Force websocket on backend too
+  // MUST match the frontend exactly
+  path: "/api/socket.io/",
+  cors: {
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:4173",
+      "https://september-internation-overelliptically.ngrok-free.dev",
+      "https://sea-lion-app-6mjje.ondigitalocean.app",
+      "https://orca-app-be8he.ondigitalocean.app",
+      "https://octopus-app-ibal3.ondigitalocean.app"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ["websocket"],
+  allowUpgrades: false,
+  pingTimeout: 30000,
+  pingInterval: 10000
 });
 
 const PORT = process.env.PORT || 5000;
