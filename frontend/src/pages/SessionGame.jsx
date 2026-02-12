@@ -63,13 +63,14 @@ export default function SessionGame() {
       : window.location.origin;
 
     const socket = io(socketUrl, {
-      transports: ['websocket'], // Strict WebSocket for DO
+      transports: ['websocket'], // Force websocket
+      upgrade: false, // Disable upgrade from polling
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
-      path: '/socket.io/', // Explicit path
+      path: '/socket.io/',
     });
     
     socketRef.current = socket;

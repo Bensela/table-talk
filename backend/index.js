@@ -47,7 +47,10 @@ const corsOptions = {
 };
 
 const io = new Server(server, {
-  cors: corsOptions
+  cors: corsOptions,
+  pingTimeout: 30000, // 30 seconds
+  pingInterval: 10000, // Send heartbeat every 10s
+  transports: ['websocket'] // Force websocket on backend too
 });
 
 const PORT = process.env.PORT || 5000;
