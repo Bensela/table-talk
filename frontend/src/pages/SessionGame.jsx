@@ -131,9 +131,26 @@ export default function SessionGame() {
     };
   }, [sessionId]); // Removed 'mode' dependency to prevent reconnects
 
-  // ... (rest of the code)
+  const fetchCurrentQuestion = async () => {
+    try {
+      const res = await api.get(`/sessions/${sessionId}/questions/current`);
+      setQuestion(res.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
-  const handleNext = async () => {
+  const handleReveal = async () => {
+    setIsRevealed(true);
+    if (socketRef.current && isConnected) {
+      socketRef.current.emit('reveal_answer', { sessionId });
+    }
+    try {
+      await api.post(`/sessions/${sessionId}/answer/reveal`, { 
+        question_id: question.question_id 
+      });
+    } catch (err) { console.error(err); }
+  };
     if (waitingForPartner) return;
 
     if (mode === 'single-phone' || mode === 'single') {
