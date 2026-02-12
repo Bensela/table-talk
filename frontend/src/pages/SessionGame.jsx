@@ -60,18 +60,16 @@ export default function SessionGame() {
     const isDev = import.meta.env.DEV;
     const socketUrl = isDev 
       ? 'http://localhost:5000' 
-      : 'https://octopus-app-ibal3.ondigitalocean.app';
+      : window.location.origin;
 
     const socket = io(socketUrl, {
-      transports: ['websocket', 'polling'], // Enable polling fallback
+      transports: ['websocket'], // Strict WebSocket for DO
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
       path: '/socket.io/', // Explicit path
-      secure: !isDev,
-      rejectUnauthorized: false
     });
     
     socketRef.current = socket;
