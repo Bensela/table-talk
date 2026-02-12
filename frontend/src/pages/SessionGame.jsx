@@ -58,19 +58,21 @@ export default function SessionGame() {
   // Socket Connection Logic
   useEffect(() => {
     const isDev = import.meta.env.DEV;
+    
+    // 1. Force the URL to the base domain in production
     const socketUrl = isDev 
       ? 'http://localhost:5000' 
-      : window.location.origin;
+      : 'https://octopus-app-ibal3.ondigitalocean.app';
 
     const socket = io(socketUrl, {
-      transports: ['websocket'], // Force websocket
-      upgrade: false, // Disable upgrade from polling
+      // 2. CRITICAL: Add the /api prefix to the path to match DO Routing
+      path: '/api/socket.io/',
+      transports: ['websocket'],
+      upgrade: false,
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
       timeout: 20000,
-      path: '/socket.io/',
       secure: !isDev,
       rejectUnauthorized: false
     });
@@ -78,23 +80,21 @@ export default function SessionGame() {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('Connected to socket server');
+      console.log('✅ Connected to socket server via /api/socket.io/');
       setIsConnected(true);
       reconnectAttempts.current = 0;
       socket.emit('join_session', sessionId);
     });
 
-    socket.on('disconnect', (reason) => {
-      console.log('Disconnected:', reason);
+    socket.on('connect_error', (err) => {
+      // This will now show the actual reason in your console
+      console.error('❌ Socket Connection Error:', err.message);
       setIsConnected(false);
-      if (reason === 'io server disconnect') {
-        socket.connect();
-      }
     });
 
-    socket.on('connect_error', (err) => {
-      console.error('Connection error:', err);
-      reconnectAttempts.current++;
+    socket.on('disconnect', (reason) => {
+      console.log('🔌 Disconnected:', reason);
+      setIsConnected(false);
     });
 
     socket.on('answer_revealed', () => {
@@ -109,11 +109,6 @@ export default function SessionGame() {
     });
 
     socket.on('waiting_for_partner', () => {
-      // Logic inside socket listener should depend on ref or state correctly
-      // We can use the functional update or just check the mode ref if needed
-      // For now, simple check is fine as listener is recreated if dependencies change
-      // BUT we are removing dependencies, so we need to be careful.
-      // Actually, 'waiting_for_partner' event is just a signal.
       setWaitingForPartner(true);
     });
     
@@ -129,7 +124,7 @@ export default function SessionGame() {
     });
 
     return () => {
-      socket.disconnect();
+      if (socket) socket.disconnect();
     };
   }, [sessionId]); // Removed 'mode' dependency to prevent reconnects
 
