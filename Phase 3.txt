@@ -1,0 +1,363 @@
+You are building Phase 3 of Table-Talk MVP v1.2: testing, analytics, UI polish, and AUTOMATED CLEANUP JOBS.
+
+CONTEXT:
+Core functionality complete. Now ensure quality, verify analytics, polish UI, and implement cleanup jobs for session groups, expired codes, and inactive participants.
+
+PHASE 3 GOALS:
+1. Comprehensive testing (unit, integration, E2E) - 70% coverage
+2. Verify all analytics events
+3. Polish mobile UI with animations and feedback
+4. Implement robust reconnection logic
+5. Cross-device testing (iOS, Android)
+6. Performance optimization (<300ms)
+7. **NEW:** Automated cleanup jobs for session lifecycle
+8. Error handling for all edge cases
+9. Join code security testing
+10. Session group isolation testing
+
+CRITICAL NEW REQUIREMENT:
+Implement automated cleanup jobs to handle:
+- Expired waiting dual sessions (>10 min)
+- Inactive sessions (>30 min no activity)
+- Disconnected participants (>5 min no heartbeat)
+- Hard session expiry (>24 hours)
+
+DELIVERABLES:
+
+□ Automated Cleanup Jobs:
+
+  **Cleanup Cron Job (runs every 5 minutes):**
+````javascript
+  const cron = require('node-cron');
+
+  async function cleanupSessions() {
+    console.log('[CLEANUP] Starting session cleanup job...');
+
+    // Rule 1: Expire waiting dual sessions after 10 minutes
+    const expiredWaiting = await db.query(`
+      UPDATE sessions
+      SET dual_status = 'ended',
+          expires_at = NOW(),
+          pairing_code_hash = NULL  -- Clear code hash
+      WHERE dual_status = 'waiting'
+        AND pairing_expires_at < NOW()
+      RETURNING session_id
+    `);
+    console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
+
+    // Rule 2: Expire inactive sessions (30 min no activity)
+    const expiredInactive = await db.query(`
+      UPDATE sessions
+      SET expires_at = NOW()
+      WHERE last_activity_at < NOW() - INTERVAL '30 minutes'
+        AND expires_at > NOW()
+      RETURNING session_id
+    `);
+    console.log(`[CLEANUP] Expired ${expiredInactive.rowCount} inactive sessions`);
+
+    // Rule 3: Mark disconnected participants (5 min no heartbeat)
+    const disconnectedParticipants = await db.query(`
+      UPDATE session_participants
+      SET disconnected_at = NOW()
+      WHERE last_seen_at < NOW() - INTERVAL '5 minutes'
+        AND disconnected_at IS NULL
+      RETURNING participant_id
+    `);
+    console.log(`[CLEANUP] Marked ${disconnectedParticipants.rowCount} participants as disconnected`);
+
+    // Rule 4: Hard delete sessions expired >1 hour ago
+    const deletedSessions = await db.query(`
+      DELETE FROM sessions
+      WHERE expires_at < NOW() - INTERVAL '1 hour'
+      RETURNING session_id
+    `);
+    console.log(`[CLEANUP] Deleted ${deletedSessions.rowCount} old sessions`);
+
+    // Log cleanup analytics
+    await logAnalyticsEvent('cleanup_job_completed', {
+      expired_waiting: expiredWaiting.rowCount,
+      expired_inactive: expiredInactive.rowCount,
+      disconnected_participants: disconnectedParticipants.rowCount,
+      deleted_sessions: deletedSessions.rowCount
+    });
+
+    console.log('[CLEANUP] Cleanup job completed');
+  }
+
+  // Schedule: every 5 minutes
+  cron.schedule('*/5 * * * *', cleanupSessions);
+
+  // Also run once on server start
+  cleanupSessions();
+````
+
+□ Enhanced Analytics Validation:
+
+  **New Events to Track:**
+````javascript
+  // Join code events
+  logEvent('join_code_generated', { session_id, expires_at });
+  logEvent('join_code_used', { session_id, success: true });
+  logEvent('join_code_failed', { table_token, reason: 'invalid_code' });
+  logEvent('join_code_expired', { session_id });
+
+  // Session group events
+  logEvent('session_group_created', { session_group_id, table_token, context });
+  logEvent('session_joined_existing_group', { session_group_id, minutes_since_last_activity });
+
+  // Cleanup events
+  logEvent('session_expired_auto', { session_id, reason: 'inactivity' });
+  logEvent('cleanup_job_completed', { stats });
+````
+
+  **Verification Queries:**
+````sql
+  -- Join code success rate
+  SELECT 
+    COUNT(*) FILTER (WHERE event_type = 'join_code_used') as successful,
+    COUNT(*) FILTER (WHERE event_type = 'join_code_failed') as failed,
+    ROUND(
+      100.0 * COUNT(*) FILTER (WHERE event_type = 'join_code_used') / 
+      NULLIF(COUNT(*), 0), 
+      2
+    ) as success_rate_pct
+  FROM analytics_events
+  WHERE event_type IN ('join_code_used', 'join_code_failed')
+    AND timestamp > NOW() - INTERVAL '24 hours';
+
+  -- Session groups per table
+  SELECT 
+    table_token,
+    COUNT(DISTINCT session_group_id) as concurrent_groups,
+    COUNT(session_id) as total_sessions
+  FROM sessions
+  WHERE created_at::date = CURRENT_DATE
+  GROUP BY table_token
+  ORDER BY concurrent_groups DESC;
+
+  -- Cleanup effectiveness
+  SELECT 
+    event_data->>'expired_waiting' as waiting_expired,
+    event_data->>'expired_inactive' as inactive_expired,
+    event_data->>'disconnected_participants' as participants_disconnected,
+    event_data->>'deleted_sessions' as sessions_deleted,
+    timestamp
+  FROM analytics_events
+  WHERE event_type = 'cleanup_job_completed'
+  ORDER BY timestamp DESC
+  LIMIT 10;
+````
+
+□ Security Testing:
+
+  **Join Code Brute Force Test:**
+````javascript
+  describe('Join Code Security', () => {
+    test('Rate limiting blocks after 5 attempts', async () => {
+      for (let i = 0; i < 5; i++) {
+        await request(app)
+          .post('/api/sessions/join-dual')
+          .send({ table_token: 'table_042', code: '000000' })
+          .expect(403);
+      }
+
+      // 6th attempt should be rate limited
+      await request(app)
+        .post('/api/sessions/join-dual')
+        .send({ table_token: 'table_042', code: '000000' })
+        .expect(429);
+    });
+
+    test('Expired codes rejected', async () => {
+      const session = await createDualSession();
+      
+      // Simulate 11 minutes passing
+      await db.query(`
+        UPDATE sessions 
+        SET pairing_expires_at = NOW() - INTERVAL '11 minutes' 
+        WHERE session_id = $1
+      `, [session.session_id]);
+
+      await request(app)
+        .post('/api/sessions/join-dual')
+        .send({ table_token: 'table_042', code: session.pairing_code })
+        .expect(404);
+    });
+
+    test('Code hash cleared after successful join', async () => {
+      const session = await createDualSession();
+      
+      await request(app)
+        .post('/api/sessions/join-dual')
+        .send({ code: session.pairing_code })
+        .expect(200);
+
+      // Verify hash cleared
+      const result = await db.query(`
+        SELECT pairing_code_hash FROM sessions WHERE session_id = $1
+      `, [session.session_id]);
+      
+      expect(result.rows[0].pairing_code_hash).toBeNull();
+    });
+  });
+````
+
+□ Session Group Isolation Testing:
+````javascript
+  describe('Session Group Isolation', () => {
+    test('Two groups at same table get different decks', async () => {
+      // Group A
+      const sessionA = await createSession({ 
+        table_token: 'table_042', 
+        context: 'Exploring' 
+      });
+      
+      // Wait 20 minutes (simulate different party)
+      await simulateInactivity(sessionA.session_id, 20);
+      
+      // Group B
+      const sessionB = await createSession({ 
+        table_token: 'table_042', 
+        context: 'Exploring' 
+      });
+      
+      // Verify different groups
+      expect(sessionA.session_group_id).not.toBe(sessionB.session_group_id);
+      
+      // Verify different deck contexts
+      const decks = await db.query(`
+        SELECT deck_context_id, session_group_id FROM deck_sessions
+        WHERE session_group_id IN ($1, $2)
+      `, [sessionA.session_group_id, sessionB.session_group_id]);
+      
+      expect(decks.rows[0].deck_context_id).not.toBe(decks.rows[1].deck_context_id);
+    });
+
+    test('WebSocket events isolated between groups', async () => {
+      const sessionA = await createDualSession({ table_token: 'table_042' });
+      await simulateInactivity(sessionA.session_id, 20);
+      const sessionB = await createDualSession({ table_token: 'table_042' });
+      
+      const socketA = io.connect({ sessionId: sessionA.session_id });
+      const socketB = io.connect({ sessionId: sessionB.session_id });
+      
+      let receivedEvent = false;
+      socketB.on('ready_status_update', () => { receivedEvent = true; });
+      
+      socketA.emit('ready_toggled', { ready: true });
+      
+      await sleep(1000);
+      expect(receivedEvent).toBe(false); // Isolation confirmed
+    });
+  });
+````
+
+□ UI Polish:
+
+  **Join Code Display with Timer:**
+````jsx
+  function PairingCodeDisplay({ code, expiresAt }) {
+    const [timeLeft, setTimeLeft] = useState(null);
+
+    useEffect(() => {
+      const timer = setInterval(() => {
+        const seconds = Math.floor((new Date(expiresAt) - new Date()) / 1000);
+        setTimeLeft(seconds);
+        
+        if (seconds <= 0) {
+          clearInterval(timer);
+        }
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [expiresAt]);
+
+    return (
+      <div className="text-center space-y-6">
+        <h2 className="text-xl font-bold">Share This Code</h2>
+        
+        <div className="bg-blue-50 p-8 rounded-lg border-2 border-blue-200">
+          <div className="text-6xl font-bold tracking-widest text-blue-600 font-mono">
+            {code}
+          </div>
+        </div>
+
+        {timeLeft > 0 ? (
+          <div className="text-sm text-gray-500">
+            Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+          </div>
+        ) : (
+          <div className="text-sm text-red-500 font-bold">
+            Code expired. Please start a new session.
+          </div>
+        )}
+      </div>
+    );
+  }
+````
+
+□ Monitoring Dashboard Queries:
+````sql
+  -- Active sessions by table (real-time)
+  SELECT 
+    table_token,
+    session_group_id,
+    context,
+    mode,
+    dual_status,
+    COUNT(*) as participants,
+    MAX(last_activity_at) as last_active,
+    EXTRACT(EPOCH FROM (NOW() - MAX(last_activity_at))) / 60 as minutes_inactive
+  FROM sessions s
+  LEFT JOIN session_participants p ON s.session_id = p.session_id
+  WHERE s.expires_at > NOW()
+  GROUP BY table_token, session_group_id, context, mode, dual_status
+  ORDER BY last_active DESC;
+
+  -- Join code performance
+  SELECT 
+    DATE_TRUNC('hour', timestamp) as hour,
+    AVG(CASE 
+      WHEN event_type = 'dual_phone_paired' THEN
+        EXTRACT(EPOCH FROM (timestamp - (event_data->>'created_at')::timestamp))
+      END
+    ) as avg_pairing_time_seconds,
+    COUNT(*) FILTER (WHERE event_type = 'dual_phone_paired') as pairings,
+    COUNT(*) FILTER (WHERE event_type = 'join_code_expired') as expired_codes
+  FROM analytics_events
+  WHERE timestamp > NOW() - INTERVAL '24 hours'
+  GROUP BY hour
+  ORDER BY hour DESC;
+````
+
+TESTING CHECKLIST (Complete):
+- [ ] 70%+ code coverage
+- [ ] All analytics events verified
+- [ ] Join code generation cryptographically random
+- [ ] Join code hashing with salt verified
+- [ ] Rate limiting blocks brute force (5 attempts/min)
+- [ ] Expired codes rejected (>10 min)
+- [ ] Code hash cleared after successful join
+- [ ] Session groups isolate different parties
+- [ ] WebSocket events don't cross groups
+- [ ] Cleanup job expires waiting dual (10 min)
+- [ ] Cleanup job expires inactive (30 min)
+- [ ] Cleanup job marks disconnected participants (5 min)
+- [ ] Cleanup job deletes old sessions (1 hour)
+- [ ] Mobile UI polished (iOS + Android)
+- [ ] Reconnection robust (exponential backoff)
+- [ ] Performance <300ms (API + WebSocket)
+
+DEFINITION OF DONE:
+1. Test suite passes with 70%+ coverage
+2. All analytics verified in database
+3. Join code security validated
+4. Session group isolation confirmed
+5. Cleanup jobs running every 5 minutes
+6. Mobile UI smooth on real devices
+7. No console errors or warnings
+8. Monitoring queries documented
+9. Performance meets <300ms target
+10. Client demo successful
+
+Begin implementation now.

@@ -64,6 +64,10 @@ export default function ModeSelection() {
     }
   };
 
+  const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
+
+  // ...
+
   const handleStartDual = async () => {
     setLoading(true);
     try {
@@ -74,6 +78,7 @@ export default function ModeSelection() {
       });
       storeParticipant(data.participant_id, data.session_id);
       setPairingCode(data.pairing_code);
+      setPairingExpiresAt(data.pairing_expires_at); // Store expiry time
       setView('show-code');
     } catch (err) {
       console.error(err);
@@ -83,6 +88,67 @@ export default function ModeSelection() {
     }
   };
 
+// ...
+
+function PairingCodeDisplay({ code, expiresAt, onContinue }) {
+    const [timeLeft, setTimeLeft] = useState(null);
+
+    useEffect(() => {
+      const timer = setInterval(() => {
+        const seconds = Math.floor((new Date(expiresAt) - new Date()) / 1000);
+        setTimeLeft(seconds);
+        
+        if (seconds <= 0) {
+          clearInterval(timer);
+        }
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [expiresAt]);
+
+    return (
+      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
+        <div className="max-w-md w-full text-center space-y-8">
+          <h2 className="text-3xl font-extrabold text-gray-900">Share This Code</h2>
+          
+          <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 shadow-xl">
+            <div className="text-6xl font-black tracking-widest text-blue-600 font-mono">
+              {code}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-gray-600 text-lg">
+              Have your partner scan the same QR code and select <br/>
+              <span className="font-bold text-gray-900">"Join Dual-Phone Session"</span>
+            </p>
+            
+            {timeLeft !== null && timeLeft > 0 ? (
+                <p className="text-sm text-gray-400 font-medium uppercase tracking-wide">
+                Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                </p>
+            ) : (
+                 <p className="text-sm text-red-500 font-bold uppercase tracking-wide">
+                 Code expired. Please start a new session.
+                 </p>
+            )}
+          </div>
+
+          <Button 
+            onClick={onContinue}
+            variant="primary"
+            size="xl"
+            fullWidth
+            className="mt-8"
+          >
+            Continue to Questions →
+          </Button>
+        </div>
+      </div>
+    );
+}
+
+// ... in main render ...
   const handleJoinDual = async () => {
     if (joinCode.length !== 6) return;
     setLoading(true);
@@ -128,42 +194,8 @@ export default function ModeSelection() {
 
   // --- RENDER VIEWS ---
 
-  if (view === 'show-code') {
-    return (
-      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
-        <div className="max-w-md w-full text-center space-y-8">
-          <h2 className="text-3xl font-extrabold text-gray-900">Share This Code</h2>
-          
-          <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 shadow-xl">
-            <div className="text-6xl font-black tracking-widest text-blue-600 font-mono">
-              {pairingCode}
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <p className="text-gray-600 text-lg">
-              Have your partner scan the same QR code and select <br/>
-              <span className="font-bold text-gray-900">"Join Dual-Phone Session"</span>
-            </p>
-            <p className="text-sm text-gray-400 font-medium uppercase tracking-wide">
-              Code expires in 10 minutes
-            </p>
-          </div>
-
-          <Button 
-            onClick={handleContinueToGame}
-            variant="primary"
-            size="xl"
-            fullWidth
-            className="mt-8"
-          >
-            Continue to Questions →
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
+  // view === 'show-code' is handled above by PairingCodeDisplay component check
+  
   if (view === 'enter-code') {
     return (
       <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
