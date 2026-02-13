@@ -341,7 +341,7 @@ export default function SessionGame() {
           mode={mode}
           socket={socketRef.current}
           sessionId={sessionId}
-          userId={socketRef.current?.id}
+          userId={participantId}
         />
       </div>
     </div>
