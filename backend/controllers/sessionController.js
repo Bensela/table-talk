@@ -123,10 +123,13 @@ const createSession = async (req, res) => {
 
     // 6. Create Participant
     const participantId = crypto.randomUUID();
+    const participantToken = crypto.randomBytes(32).toString('hex');
+    const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
+
     await db.query(
-      `INSERT INTO session_participants (participant_id, session_id, role)
-       VALUES ($1, $2, $3)`,
-      [participantId, sessionId, 'A'] // First user is Role A
+      `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash)
+       VALUES ($1, $2, $3, $4)`,
+      [participantId, sessionId, 'A', participantTokenHash] // First user is Role A
     );
 
     // 7. Log analytics
@@ -148,6 +151,7 @@ const createSession = async (req, res) => {
     const response = {
       ...newSession.rows[0],
       participant_id: participantId,
+      participant_token: participantToken, // Return raw token once
       pairing_code: pairingCode // Only return raw code here!
     };
     
@@ -215,11 +219,21 @@ const joinDualPhoneSession = async (req, res) => {
 
     // 4. Create Participant (Role B)
     const participantId = crypto.randomUUID();
-    await db.query(
-      `INSERT INTO session_participants (participant_id, session_id, role)
-       VALUES ($1, $2, $3)`,
-      [participantId, validSession.session_id, 'B']
-    );
+    const participantToken = crypto.randomBytes(32).toString('hex');
+    const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
+
+    try {
+      await db.query(
+        `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash)
+         VALUES ($1, $2, $3, $4)`,
+        [participantId, validSession.session_id, 'B', participantTokenHash]
+      );
+    } catch (err) {
+      if (err.code === '23505') { // Unique constraint violation (session_id, role)
+         return res.status(409).json({ error: 'SESSION_FULL' });
+      }
+      throw err;
+    }
 
     // 5. Log analytics
     await db.query(
@@ -237,6 +251,7 @@ const joinDualPhoneSession = async (req, res) => {
     res.json({
       session_id: validSession.session_id,
       participant_id: participantId,
+      participant_token: participantToken,
       session_group_id: validSession.session_group_id,
       context: validSession.context,
       mode: validSession.mode,
@@ -392,4 +407,48 @@ const heartbeat = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, getSession, updateSession, endSession, getSessionByTable, heartbeat };
+const resumeSessionByQr = async (req, res) => {
+  const { table_token, restaurant_id, participant_token } = req.body;
+
+  if (!table_token || !participant_token) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
+
+    // Find active session for this table where the participant belongs
+    // Join sessions and session_participants
+    const result = await db.query(`
+      SELECT s.*, sp.participant_id, sp.role
+      FROM sessions s
+      JOIN session_participants sp ON s.session_id = sp.session_id
+      WHERE s.table_token = $1
+        AND s.restaurant_id = $2
+        AND sp.participant_token_hash = $3
+        AND s.expires_at > NOW()
+      ORDER BY s.created_at DESC
+      LIMIT 1
+    `, [table_token, restaurant_id || 'default', participantTokenHash]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No active session found for this participant.' });
+    }
+
+    const session = result.rows[0];
+
+    res.json({
+      session_id: session.session_id,
+      participant_id: session.participant_id,
+      role: session.role,
+      mode: session.mode,
+      context: session.context,
+      dual_status: session.dual_status
+    });
+  } catch (err) {
+    console.error('Error resuming session by QR:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat };
