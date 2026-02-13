@@ -12,10 +12,8 @@ const getCurrentQuestion = async (req, res) => {
 
     const session = sessionResult.rows[0];
     
-    // Ensure deck session exists if context is present
-    if (session.context) {
-      await deckService.getDeckSession(session.restaurant_id || 'default', session.table_token, session.context);
-    }
+    // Ensure deck session exists via getCurrentQuestion logic internally
+    // (Removed redundant incorrect call to getDeckSession)
 
     const question = await deckService.getCurrentQuestion(session);
 
