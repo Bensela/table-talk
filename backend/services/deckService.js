@@ -99,6 +99,7 @@ const getCurrentQuestion = async (session) => {
   const shuffledDeck = shuffle(deckQuestions, deckSession.seed);
 
   // 4. Get Current Position
+  // If position_index is greater than deck length (e.g. deck shrank or changed), wrap it
   const index = deckSession.position_index % shuffledDeck.length;
   
   return {
