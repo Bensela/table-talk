@@ -1,0 +1,285 @@
+Tasks
+
+Build a traceability matrix for REQ-001 (QR scanning and session creation), REQ-003 (play modes), REQ-006 (deterministic deck), REQ-007 (reconnection), and Security/Privacy requirements. 
+
+# Product Requirements Document…
+
+Locate code paths for:
+
+Extracting table_token from route /t/{table_token}
+
+POST /api/sessions creation behavior and any “join existing session” logic
+
+Dual-Phone websocket join handshake and “partner joined” event
+
+Reconnection flow using sessionStorage session_id and GET /api/sessions/:id 
+
+# Product Requirements Document…
+
+Identify whether “join existing session” is keyed by table_token alone, or by (table_token + context + service_day), or by session_id, and where it is enforced.
+
+Identify any DB constraints or indexes that enforce one active session per table (explicitly or implicitly).
+
+Output
+
+File list and exact functions/queries that cause the lock.
+
+A concise statement: what is happening vs what should happen, tied back to the PRD.
+
+Acceptance criteria
+
+We can point to the exact backend query or decision branch that forces new scans into an existing session.
+
+Phase 1 prompt: design update, PRD-compatible join semantics
+
+Design a minimal-change solution that preserves PRD features and eliminates table lock.
+
+Requirements
+
+New scan must allow “Start new session” even if other sessions exist.
+
+Reconnection must remain: if sessionStorage has session_id, resume that session. 
+
+# Product Requirements Document…
+
+Dual-Phone must remain synchronized and secure. Auto-join by scanning QR is allowed only if it is unambiguous and safe; otherwise implement a join code displayed on Device A with short TTL.
+
+No PII, no device identifiers, no IP logging beyond rate limiting. 
+
+# Product Requirements Document…
+
+Keep deterministic deck behavior; deck_sessions uniqueness is not a session lock. 
+
+# Product Requirements Document…
+
+Deliverables
+
+Updated session joining rules (plain English plus pseudo-code).
+
+Data model delta (minimal).
+
+API contract delta (minimal).
+
+UI flow delta (minimal).
+
+Acceptance criteria
+
+Clear separation between deck_context and session_id, and between “resume” and “join”.
+
+Phase 2 prompt: backend schema changes (minimal and reversible)
+
+Implement DB changes needed to support explicit Dual-Phone pairing without PII.
+
+Implement
+
+Add columns to sessions table: dual_status, pairing_code_hash, pairing_expires_at (nullable).
+
+Optional but recommended: create session_participants with participant_id, session_id, role (A/B), last_seen_at. This supports websocket authorization without device fingerprints.
+
+Ensure no unique constraint blocks multiple sessions per table_token.
+
+Security
+
+Store only hashed join code.
+
+Do not store raw join codes or user identifiers. 
+
+# Product Requirements Document…
+
+Output
+
+Migrations and rollback migrations.
+
+Updated ORM schema.
+
+Acceptance criteria
+
+Migration runs cleanly in dev/stage.
+
+Existing sessions and analytics tables are unaffected. 
+
+# Product Requirements Document…
+
+Phase 3 prompt: backend behavior changes, session creation and joining
+
+Implement PRD-aligned session routing behavior.
+
+Implement
+
+POST /api/sessions
+
+Always create a new session for a new scan flow, do not auto-join by table_token.
+
+The frontend handles reconnection by session_id. 
+
+# Product Requirements Document…
+
+When mode is dual-phone: generate join code, set dual_status=waiting, set pairing_expires_at = now + 10 minutes, return pairing_code once.
+
+POST /api/sessions/join-dual
+
+Accept restaurant_id, table_token, code.
+
+Find waiting dual session for that table_token with pairing_expires_at > now.
+
+Validate code hash, set dual_status=paired.
+
+Issue participant_id for Device B.
+
+WebSocket auth hardening
+
+Require participant_id (and session_id) to join session room.
+
+Reject if participant_id not registered for session.
+
+Rate limiting
+
+Apply stricter rate limiting on join-dual endpoint than general API, consistent with PRD rate limiting requirement. 
+
+# Product Requirements Document…
+
+Output
+
+Controllers/routes, services, tests.
+
+Updated websocket handlers for partner_joined logic.
+
+Acceptance criteria
+
+Multiple sessions can exist for same table_token.
+
+Dual join requires code, not just scanning the QR.
+
+Phase 4 prompt: frontend UX changes, minimal disruption
+
+Implement a simple decision point after scanning, preserving the PRD core flow.
+
+Implement
+
+On /t/{table_token}:
+
+Check sessionStorage for session_id, if found, show “Resume session” and “Start new session” choices (PRD edge case explicitly calls for this). 
+
+# Product Requirements Document…
+
+If no session_id: show “Start new session” and “Join Dual-Phone session” (enter code).
+
+Maintain context selection requirement; user must select Exploring, Established, or Mature before questions. 
+
+# Product Requirements Document…
+
+Dual-Phone Device A: after session create, show pairing code and waiting screen.
+
+Dual-Phone Device B: enter code, join, then load question view.
+
+Store participant_id and role in sessionStorage for reconnect and websocket auth.
+
+Output
+
+Updated route component(s), UI copy, API client methods.
+
+Error states: invalid code, expired code, session already paired, reconnect failure.
+
+Acceptance criteria
+
+A new guest can choose a different context and start immediately even if another session exists.
+
+Reconnection remains seamless.
+
+Phase 5 prompt: session expiry and cleanup improvements consistent with PRD
+
+Update cleanup so the table is not effectively blocked by long-lived idle sessions.
+
+Implement
+
+Keep 24-hour session expiry requirement. 
+
+# Product Requirements Document…
+
+Add short TTL for dual waiting state: if dual_status=waiting and pairing_expires_at elapsed, end session or mark expired.
+
+Use last_activity_at to end abandoned sessions sooner, consistent with PRD’s mention of inactivity handling. 
+
+# Product Requirements Document…
+
+Ensure analytics session_ended is logged on forced cleanup (anonymous). 
+
+# Product Requirements Document…
+
+Output
+
+Updated cleanup job and tests.
+
+Acceptance criteria
+
+Waiting sessions disappear quickly.
+
+Idle sessions do not linger unnecessarily.
+
+Phase 6 prompt: observability, performance, and rollout controls
+
+Implement safe rollout consistent with PRD performance and uptime targets.
+
+Implement
+
+Feature flag: DUAL_PAIRING_CODE_ENABLED.
+
+Metrics
+
+join-dual success rate, failure reasons
+
+time-to-pair
+
+concurrent sessions per table_token
+
+API p95 under 300ms where feasible, consistent with PRD targets 
+
+# Product Requirements Document…
+
+Logging
+
+Never log raw join codes or any prohibited data. 
+
+# Product Requirements Document…
+
+Rollout plan
+
+Deploy backend first with flag off, then frontend, then enable flag in staging, validate, enable in production.
+
+Acceptance criteria
+
+Rollback possible via flag.
+
+Monitoring shows clear improvements and no privacy regressions.
+
+Phase 7 prompt: QA and regression suite aligned to PRD critical scenarios
+
+Create a targeted test plan and automation for the revised behavior.
+
+Include PRD critical scenarios
+
+Single-Phone happy path, 10+ questions, next latency, refresh resume. 
+
+# Product Requirements Document…
+
+Dual-Phone synchronization, both-ready ritual, both-click-next, reconnect. 
+
+# Product Requirements Document…
+
+New collision scenario: one active dual session exists; new user starts a new session with different context successfully.
+
+Security: cannot join dual session without code, cannot join websocket without participant_id.
+
+Analytics: session_created, question_viewed, both_ready, session_ended events remain compliant and anonymous. 
+
+# Product Requirements Document…
+
+Output
+
+Manual QA checklist, plus unit/integration tests, plus optional Playwright/Cypress E2E scripts.
+
+Acceptance criteria
+
+QA can validate end-to-end in under 20 minutes with clear steps.
+
+Automated tests cover the collision fix and dual pairing.

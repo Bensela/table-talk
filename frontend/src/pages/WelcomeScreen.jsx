@@ -9,6 +9,7 @@ export default function WelcomeScreen() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(false);
+  const [activeSession, setActiveSession] = useState(null);
 
   const handleContinue = async () => {
     if (!tableToken) {
@@ -23,27 +24,76 @@ export default function WelcomeScreen() {
       
       const stored = getStoredParticipant();
       if (data && data.session_id && stored.sessionId === data.session_id) {
-        // User is ALREADY part of this active session -> Rejoin
+        // User is ALREADY part of this active session -> Rejoin immediately
         navigate(`/session/${data.session_id}/game`);
-      } else if (data && data.mode === 'dual-phone' && data.dual_status === 'waiting') {
-        // Active DUAL session waiting for partner -> Go to Mode Selection so they can join
-        navigate(`/t/${tableToken}/mode`, { state: { context: data.context } });
+      } else if (data && data.session_id) {
+        // Active session exists but user is new -> Show options
+        setActiveSession(data);
       } else {
-        // No session OR active session exists but user is new -> Standard flow
+        // No session -> Standard flow
         navigate(`/t/${tableToken}/context`);
       }
     } catch (err) {
-      // 404 means no session, which is fine
+      // 404 means no session -> Standard flow
       navigate(`/t/${tableToken}/context`);
     } finally {
       setChecking(false);
     }
   };
 
-  // Format table token for display (e.g., "table-042" -> "Table 042")
+  const handleStartNew = () => {
+    navigate(`/t/${tableToken}/context`);
+  };
+
+  const handleJoinDual = () => {
+    if (activeSession) {
+        // Go to Mode Selection with context to join
+        navigate(`/t/${tableToken}/mode`, { state: { context: activeSession.context } });
+    }
+  };
+
+  // Format table token for display
   const displayTable = tableToken 
     ? tableToken.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
     : 'Table Talk';
+
+  if (activeSession) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 font-sans">
+        <div className="max-w-md w-full text-center space-y-8">
+          <div className="w-20 h-20 bg-blue-100 rounded-full mx-auto flex items-center justify-center text-4xl">
+            👀
+          </div>
+          <h2 className="text-3xl font-extrabold text-gray-900">Active Session Found</h2>
+          <p className="text-gray-500 text-lg">
+            There is already a conversation happening at <strong>{displayTable}</strong>.
+          </p>
+
+          <div className="space-y-4 pt-4">
+            {activeSession.mode === 'dual-phone' && activeSession.dual_status === 'waiting' && (
+                <Button 
+                  onClick={handleJoinDual}
+                  variant="primary"
+                  size="xl"
+                  fullWidth
+                >
+                  Join Partner
+                </Button>
+            )}
+            
+            <Button 
+              onClick={handleStartNew}
+              variant={activeSession.mode === 'dual-phone' && activeSession.dual_status === 'waiting' ? "secondary" : "primary"}
+              size="xl"
+              fullWidth
+            >
+              Start New Session
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">

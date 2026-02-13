@@ -21,33 +21,6 @@ function hashPairingCode(code, sessionId, salt = process.env.SECRET_SALT || 'def
     .digest('hex');
 }
 
-async function determineSessionGroup(tableToken, context, mode) {
-  // Check for active session group within 15-minute window
-  const activeGroups = await db.query(`
-    SELECT DISTINCT session_group_id, last_activity_at
-    FROM sessions
-    WHERE table_token = $1
-      AND context = $2
-      AND mode = $3
-      AND expires_at > NOW()
-      AND last_activity_at > NOW() - INTERVAL '15 minutes'
-    ORDER BY last_activity_at DESC
-    LIMIT 1
-  `, [tableToken, context, mode]);
-
-  if (activeGroups.rows.length > 0) {
-    return { 
-      sessionGroupId: activeGroups.rows[0].session_group_id, 
-      isNewGroup: false 
-    };
-  } else {
-    return { 
-      sessionGroupId: crypto.randomUUID(), 
-      isNewGroup: true 
-    };
-  }
-}
-
 // --- Controller Functions ---
 
 const createSession = async (req, res) => {
@@ -70,7 +43,10 @@ const createSession = async (req, res) => {
 
   try {
     // 1. Determine Session Group
-    const { sessionGroupId, isNewGroup } = await determineSessionGroup(table_token, context, mode);
+    // Always create a new group for a new session creation request.
+    // Auto-joining logic has been removed to allow "Start New Session" to work predictably.
+    const sessionGroupId = crypto.randomUUID();
+    const isNewGroup = true;
 
     // 2. Prepare Session Data
     const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
