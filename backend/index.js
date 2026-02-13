@@ -135,36 +135,42 @@ io.on('connection', (socket) => {
           AND p.disconnected_at IS NULL
       `, [participant_id, session_id]);
 
+      // If no active session found, try finding one where they were disconnected
       if (participant.rows.length === 0) {
-        console.warn(`Invalid join attempt: Session ${session_id}, Participant ${participant_id}`);
-        socket.emit('error', { message: 'Invalid participant or session' });
-        return;
-      }
+         const disconnectedParticipant = await db.query(`
+           SELECT p.participant_id, p.role, s.mode, s.dual_status, s.session_group_id
+           FROM session_participants p
+           JOIN sessions s ON p.session_id = s.session_id
+           WHERE p.participant_id = $1
+             AND s.session_id = $2
+             AND s.expires_at > NOW()
+             AND p.disconnected_at IS NOT NULL
+         `, [participant_id, session_id]);
 
-      // Check for 3rd participant attempting to join via WebSocket
-      // Although DB prevents creation, this prevents connecting if somehow created or ghosted
-      const room = io.sockets.adapter.rooms.get(session_id);
-      const currentSize = room ? room.size : 0;
-      
-      // Strict Dual-Phone Limit: Max 2 connections
-      if (participant.rows[0].mode === 'dual-phone' && currentSize >= 2) {
-         // Check if this is a reconnection of an existing socket?
-         // Actually, if same participant connects from new tab, we might want to allow it and kick old?
-         // For MVP, just reject if full. But better: check if participant is ALREADY connected.
-         // Let's rely on DB role constraint + simple count for now.
-         // If a user refreshes, they disconnect then connect.
-         // If they open 2 tabs, they have 2 sockets for 1 participant.
-         // We should allow multiple sockets for SAME participant, but only 2 unique participants.
-         // The DB query already validated the participant exists.
-         // So we don't need to block here unless we want to enforce 1-tab-per-person.
+         if (disconnectedParticipant.rows.length > 0) {
+            // Reconnection Allowed!
+            // Clear disconnected_at
+            await db.query(`
+              UPDATE session_participants
+              SET disconnected_at = NULL, last_seen_at = NOW()
+              WHERE participant_id = $1
+            `, [participant_id]);
+            
+            // Proceed with this participant
+            participant.rows = disconnectedParticipant.rows;
+         } else {
+            console.warn(`Invalid join attempt: Session ${session_id}, Participant ${participant_id}`);
+            socket.emit('error', { message: 'Invalid participant or session' });
+            return;
+         }
+      } else {
+          // Valid active participant, just update last_seen
+          await db.query(`
+            UPDATE session_participants
+            SET last_seen_at = NOW()
+            WHERE participant_id = $1
+          `, [participant_id]);
       }
-
-      // Update last_seen_at
-      await db.query(`
-        UPDATE session_participants
-        SET last_seen_at = NOW()
-        WHERE participant_id = $1
-      `, [participant_id]);
 
       // Attach data to socket
       socket.join(session_id);
