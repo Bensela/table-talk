@@ -40,6 +40,11 @@ const init = async () => {
     const enableMatureSql = fs.readFileSync(path.join(__dirname, '../database/migrations/003_enable_mature_context.sql'), 'utf8');
     await dbClient.query(enableMatureSql);
 
+    // 5. Run Phase 1.2 Upgrade (Session Groups & Participants)
+    console.log('📜 Running 004_v1_2_upgrade.sql...');
+    const v12Sql = fs.readFileSync(path.join(__dirname, '../database/migrations/004_v1_2_upgrade.sql'), 'utf8');
+    await dbClient.query(v12Sql);
+
     console.log('✅ Schema upgraded.');
 
     // 3. Seed Questions (Idempotent-ish)

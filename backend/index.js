@@ -50,7 +50,7 @@ const corsOptions = {
 
 const io = new Server(server, {
   // MUST match the frontend exactly
-  path: "/api/socket.io/",
+  path: "/socket.io/",
   cors: {
     origin: [
       "http://localhost:5173",
