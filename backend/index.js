@@ -89,8 +89,9 @@ app.get('/', (req, res) => {
 // Socket.io Logic
 // Store pending states
 const pendingNextClicks = new Map();
-const sessionStates = new Map(); // sessionId -> { ready: Map<userId, bool>, answers: Map<userId, optionId> }
-const socketToSession = new Map(); // socketId -> sessionId
+const sessionStates = new Map(); // sessionId -> { ready: Map<participantId, bool>, answers: Map<participantId, optionId> }
+// socketToSession map is less useful now that we have socket.participantId, but can keep for disconnect cleanup if needed
+// Actually, with auth, we should rely on socket.participantId
 
 function getSessionState(sessionId) {
   if (!sessionStates.has(sessionId)) {
@@ -108,83 +109,156 @@ function clearSessionState(sessionId) {
 }
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('Socket connected:', socket.id);
 
-  socket.on('join_session', (sessionId) => {
-    socket.join(sessionId);
-    socketToSession.set(socket.id, sessionId);
-    console.log(`Socket ${socket.id} joined session ${sessionId}`);
-    
-    // Notify room about new user (for connection status)
-    const room = io.sockets.adapter.rooms.get(sessionId);
-    const size = room ? room.size : 0;
-    io.to(sessionId).emit('partner_joined', { users_connected: size });
+  // Authentication Handler
+  socket.on('join_session', async ({ session_id, participant_id }) => {
+    if (!session_id || !participant_id) {
+      socket.emit('error', { message: 'Missing session_id or participant_id' });
+      return;
+    }
+
+    try {
+      // Verify participant belongs to session
+      const participant = await db.query(`
+        SELECT p.participant_id, p.role, s.mode, s.dual_status, s.session_group_id
+        FROM session_participants p
+        JOIN sessions s ON p.session_id = s.session_id
+        WHERE p.participant_id = $1
+          AND s.session_id = $2
+          AND s.expires_at > NOW()
+          AND p.disconnected_at IS NULL
+      `, [participant_id, session_id]);
+
+      if (participant.rows.length === 0) {
+        console.warn(`Invalid join attempt: Session ${session_id}, Participant ${participant_id}`);
+        socket.emit('error', { message: 'Invalid participant or session' });
+        return;
+      }
+
+      // Update last_seen_at
+      await db.query(`
+        UPDATE session_participants
+        SET last_seen_at = NOW()
+        WHERE participant_id = $1
+      `, [participant_id]);
+
+      // Attach data to socket
+      socket.join(session_id);
+      socket.participantId = participant_id;
+      socket.sessionId = session_id;
+      socket.role = participant.rows[0].role;
+      socket.sessionGroupId = participant.rows[0].session_group_id;
+
+      console.log(`Participant ${participant_id} (${socket.role}) joined session ${session_id}`);
+
+      // Notify room
+      const room = io.sockets.adapter.rooms.get(session_id);
+      const size = room ? room.size : 0;
+      io.to(session_id).emit('partner_status', {
+        status: size >= 2 ? 'connected' : 'waiting',
+        users_connected: size
+      });
+
+      // Send current readiness state to re-connecting user
+      const state = getSessionState(session_id);
+      if (state.ready.size > 0) {
+        // Send state of all participants
+        state.ready.forEach((isReady, pId) => {
+           socket.emit('ready_status_update', { participant_id: pId, ready: isReady });
+        });
+      }
+
+    } catch (err) {
+      console.error('Error joining session:', err);
+      socket.emit('error', { message: 'Server error during join' });
+    }
   });
 
   socket.on('reveal_answer', ({ sessionId }) => {
-    // Broadcast to everyone else in the room
-    socket.to(sessionId).emit('answer_revealed');
+     // Verify auth
+     if (!socket.participantId || socket.sessionId !== sessionId) return;
+     socket.to(sessionId).emit('answer_revealed');
   });
 
   // Dual-Phone: Ready Ritual (Open-Ended)
-  socket.on('ready_toggled', ({ sessionId, user_id, ready }) => {
-    const state = getSessionState(sessionId);
-    state.ready.set(user_id || socket.id, ready);
+  socket.on('ready_toggled', (data) => {
+    if (!socket.participantId) {
+      socket.emit('error', { message: 'Not authenticated' });
+      return;
+    }
+
+    const state = getSessionState(socket.sessionId);
+    state.ready.set(socket.participantId, data.ready);
     
-    // Broadcast status to partner
-    socket.to(sessionId).emit('ready_status_update', { user_id: user_id || socket.id, ready });
+    // Broadcast status to room (including self, to confirm receipt)
+    io.to(socket.sessionId).emit('ready_status_update', { 
+      participant_id: socket.participantId, 
+      role: socket.role, 
+      ready: data.ready 
+    });
 
     // Check if both ready
-    const room = io.sockets.adapter.rooms.get(sessionId);
+    const room = io.sockets.adapter.rooms.get(socket.sessionId);
     const clientCount = room ? room.size : 0;
-    // Assuming 2 users for Dual Mode
+    
     if (clientCount >= 2 && state.ready.size >= 2) {
       const allReady = Array.from(state.ready.values()).every(r => r);
       if (allReady) {
-        io.to(sessionId).emit('both_ready', { sessionId });
-        // Optional: log event
+        io.to(socket.sessionId).emit('both_ready', { session_id: socket.sessionId });
       }
     }
   });
 
   // Dual-Phone: Reveal Ritual (Multiple-Choice)
-  socket.on('answer_submitted', ({ sessionId, user_id, question_id, option_id }) => {
-    const state = getSessionState(sessionId);
-    state.answers.set(user_id || socket.id, option_id);
+  socket.on('answer_submitted', ({ selectionId }) => {
+    if (!socket.participantId) return;
+
+    const state = getSessionState(socket.sessionId);
+    state.answers.set(socket.participantId, selectionId);
 
     // Check if both submitted
-    const room = io.sockets.adapter.rooms.get(sessionId);
+    const room = io.sockets.adapter.rooms.get(socket.sessionId);
     const clientCount = room ? room.size : 0;
 
     if (clientCount >= 2 && state.answers.size >= 2) {
       // Reveal answers
       const selections = Object.fromEntries(state.answers);
-      io.to(sessionId).emit('reveal_answers', { selections });
-      
-      // Log analytics (without specific answer content if strictly adhering to privacy, but prompt asks to store temp state then log)
-      // Prompt says: "Log analytics event: answer_submitted... NO actual selection stored"
-      // We already logged the fact that they submitted. We can log the reveal event here.
+      io.to(socket.sessionId).emit('reveal_answers', { selections });
     } else {
       socket.emit('waiting_for_partner');
     }
   });
 
-  socket.on('request_next', async ({ sessionId }) => {
-    // 1. Check if session is dual mode
+  socket.on('request_next', async () => {
+    if (!socket.participantId) return;
+    const sessionId = socket.sessionId;
+
     try {
-      const result = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
-      if (result.rows.length === 0) return;
+      // 1. Check if session is dual mode (we can trust socket.role/sessionGroupId context implies valid session)
+      // But let's check mode from DB to be safe or store in socket on join
+      // Optimally, we fetched mode on join. Let's assume we store it.
+      // For now, re-fetch or assume dual if role is present. 
+      // Actually, single mode might also use this socket event in updated frontend? 
+      // Phase 2 prompt says "Complete Single-Phone mode" but "Both Click Next" is for Dual.
       
-      const session = result.rows[0];
-      const mode = session.mode;
+      // Let's verify mode.
+      const result = await db.query('SELECT mode FROM sessions WHERE session_id = $1', [sessionId]);
+      if (result.rows.length === 0) return;
+      const mode = result.rows[0].mode;
 
       if (mode === 'single' || mode === 'single-phone') {
-        // Single mode
+        // Single mode: Immediate advance
+        // Need session object for advanceDeck
+        // Re-fetch full session is safest
+         const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
+         const session = sessionResult.rows[0];
+
         await deckService.advanceDeck(session);
         await db.query(
           `INSERT INTO analytics_events (session_id, event_type, event_data)
            VALUES ($1, $2, $3)`,
-          [sessionId, 'next_clicked_single_socket', { socket_advance: true }]
+          [sessionId, 'next_clicked_single_socket', { socket_advance: true, participant_id: socket.participantId }]
         );
         io.to(sessionId).emit('advance_question');
       } else {
@@ -194,13 +268,16 @@ io.on('connection', (socket) => {
         }
 
         const clicks = pendingNextClicks.get(sessionId);
-        clicks.add(socket.id);
+        clicks.add(socket.participantId); // Track by participant_id now
 
         const room = io.sockets.adapter.rooms.get(sessionId);
         const clientCount = room ? room.size : 0;
 
         // If everyone clicked (or at least 2 people), advance
         if (clicks.size >= Math.max(2, clientCount)) {
+           const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
+           const session = sessionResult.rows[0];
+
           await deckService.advanceDeck(session);
 
           await db.query(
@@ -230,20 +307,33 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
-    const sessionId = socketToSession.get(socket.id);
     
-    if (sessionId) {
-      // Notify partner
-      socket.to(sessionId).emit('partner_disconnected');
-      
-      // Update connection count
-      const room = io.sockets.adapter.rooms.get(sessionId);
-      const size = room ? room.size : 0;
-      io.to(sessionId).emit('partner_joined', { users_connected: size });
-      
-      socketToSession.delete(socket.id);
+    if (socket.participantId) {
+      try {
+        await db.query(`
+          UPDATE session_participants
+          SET disconnected_at = NOW()
+          WHERE participant_id = $1
+        `, [socket.participantId]);
+
+        io.to(socket.sessionId).emit('partner_disconnected', {
+          participant_id: socket.participantId,
+          role: socket.role
+        });
+        
+        // Update connection count
+        const room = io.sockets.adapter.rooms.get(socket.sessionId);
+        const size = room ? room.size : 0;
+        io.to(socket.sessionId).emit('partner_status', { 
+           status: size >= 2 ? 'connected' : 'waiting',
+           users_connected: size 
+        });
+
+      } catch (err) {
+        console.error('Error handling disconnect:', err);
+      }
     }
   });
 });

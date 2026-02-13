@@ -6,6 +6,25 @@ import QuestionCard from '../components/QuestionCard';
 import ProgressBar from '../components/ProgressBar';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
+import { getStoredParticipant } from '../utils/sessionStorage';
+
+// Hook for session activity tracking
+function useSessionActivity(sessionId, participantId) {
+  useEffect(() => {
+    if (!participantId) return;
+    
+    // Heartbeat every 60 seconds
+    const heartbeat = setInterval(async () => {
+      try {
+        await api.post(`/sessions/${sessionId}/heartbeat`, { participant_id: participantId });
+      } catch (err) {
+        console.error('Heartbeat failed', err);
+      }
+    }, 60000);
+
+    return () => clearInterval(heartbeat);
+  }, [sessionId, participantId]);
+}
 
 export default function SessionGame() {
   const { sessionId } = useParams();
@@ -16,8 +35,9 @@ export default function SessionGame() {
   const [question, setQuestion] = useState(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
-  const [mode, setMode] = useState('single');
+  const [mode, setMode] = useState('single-phone');
   const [isConnected, setIsConnected] = useState(false);
+  const [participantId, setParticipantId] = useState(null);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -28,12 +48,12 @@ export default function SessionGame() {
   
   const socketRef = useRef(null);
   const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 3;
 
   // Initialize Session
   useEffect(() => {
     const initSession = async () => {
       try {
+        // 1. Get Session Data
         const sessionRes = await api.get(`/sessions/${sessionId}`);
         if (sessionRes.data.expires_at && new Date(sessionRes.data.expires_at) < new Date()) {
           setError('Session expired. Please start a new one.');
@@ -42,6 +62,16 @@ export default function SessionGame() {
         }
         setMode(sessionRes.data.mode);
 
+        // 2. Get Participant ID
+        const stored = getStoredParticipant();
+        if (stored.sessionId === sessionId && stored.participantId) {
+          setParticipantId(stored.participantId);
+        } else if (sessionRes.data.mode === 'dual-phone') {
+           // If dual mode but no participant ID, we might be in trouble or need to re-join
+           console.warn('Missing participant ID for dual session');
+        }
+
+        // 3. Get Question
         const questionRes = await api.get(`/sessions/${sessionId}/questions/current`);
         setQuestion(questionRes.data);
         setLoading(false);
@@ -55,8 +85,13 @@ export default function SessionGame() {
     initSession();
   }, [sessionId]);
 
+  // Activate Heartbeat
+  useSessionActivity(sessionId, participantId);
+
   // Socket Connection Logic
   useEffect(() => {
+    if (!participantId) return; // Wait for participant ID
+
     const isDev = import.meta.env.DEV;
     
     // 1. Force the URL to the base domain in production
@@ -83,7 +118,12 @@ export default function SessionGame() {
       console.log('✅ Connected to socket server via /api/socket.io/');
       setIsConnected(true);
       reconnectAttempts.current = 0;
-      socket.emit('join_session', sessionId);
+      
+      // Authenticated Join
+      socket.emit('join_session', { 
+        session_id: sessionId, 
+        participant_id: participantId 
+      });
     });
 
     socket.on('connect_error', (err) => {
@@ -97,8 +137,27 @@ export default function SessionGame() {
       setIsConnected(false);
     });
 
+    socket.on('error', (data) => {
+      console.error('Socket Error:', data);
+      // Handle auth errors
+      if (data.message === 'Invalid participant or session') {
+         setError('Connection refused. Invalid session.');
+      }
+    });
+
+    socket.on('partner_status', (data) => {
+      console.log('Partner status:', data);
+      // Can update UI to show partner connected
+    });
+
     socket.on('answer_revealed', () => {
       setIsRevealed(true);
+    });
+
+    socket.on('reveal_answers', (data) => {
+       // data.selections could be used to show what partner picked
+       setIsRevealed(true);
+       setWaitingForPartner(false);
     });
 
     socket.on('advance_question', () => {
@@ -126,7 +185,7 @@ export default function SessionGame() {
     return () => {
       if (socket) socket.disconnect();
     };
-  }, [sessionId]); // Removed 'mode' dependency to prevent reconnects
+  }, [sessionId, participantId]); 
 
   const fetchCurrentQuestion = async () => {
     try {
@@ -138,10 +197,15 @@ export default function SessionGame() {
   };
 
   const handleReveal = async () => {
-    setIsRevealed(true);
-    if (socketRef.current && isConnected) {
-      socketRef.current.emit('reveal_answer', { sessionId });
+    // If dual mode, emit socket event first for sync
+    if (mode === 'dual-phone') {
+        if (socketRef.current && isConnected) {
+            socketRef.current.emit('reveal_answer', { sessionId });
+        }
     }
+    
+    setIsRevealed(true);
+    
     try {
       await api.post(`/sessions/${sessionId}/answer/reveal`, { 
         question_id: question.question_id 
@@ -161,17 +225,15 @@ export default function SessionGame() {
         console.error('Error advancing deck:', err);
       }
     } else {
-      // Check socket connection status
+      // Dual Phone: Check socket connection
       if (socketRef.current?.connected) {
-        socketRef.current.emit('request_next', { sessionId });
+        // Emit request_next (backend handles auth via socket.participantId)
+        socketRef.current.emit('request_next');
       } else {
         // Attempt to reconnect if disconnected
         console.warn('Socket disconnected, attempting reconnect...');
         socketRef.current?.connect();
         
-        // Optional: Wait a moment or show a "Reconnecting" toast
-        // For now, we'll show the modal only if it really fails after a check
-        // Or simply inform the user.
         setModalState({
           isOpen: true,
           title: 'Reconnecting...',
@@ -179,10 +241,10 @@ export default function SessionGame() {
           action: () => {
             setModalState(prev => ({ ...prev, isOpen: false }));
             if (socketRef.current?.connected) {
-               socketRef.current.emit('request_next', { sessionId });
+               socketRef.current.emit('request_next');
             }
           },
-          icon: '�'
+          icon: '🔄'
         });
       }
     }

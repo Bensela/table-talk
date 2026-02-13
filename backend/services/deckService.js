@@ -30,7 +30,7 @@ const shuffle = (array, seed) => {
   return shuffled;
 };
 
-const getDeckSession = async (restaurant_id, table_token, context) => {
+const getDeckSession = async (restaurant_id, table_token, context, session_group_id) => {
   const today = new Date().toISOString().split('T')[0];
   
   // Try to find existing deck session
@@ -39,8 +39,9 @@ const getDeckSession = async (restaurant_id, table_token, context) => {
      WHERE restaurant_id = $1 
      AND table_token = $2 
      AND relationship_context = $3 
-     AND service_day = $4`,
-    [restaurant_id, table_token, context, today]
+     AND service_day = $4
+     AND session_group_id = $5`,
+    [restaurant_id, table_token, context, today, session_group_id]
   );
 
   if (existing.rows.length > 0) {
@@ -48,16 +49,19 @@ const getDeckSession = async (restaurant_id, table_token, context) => {
   }
 
   // Create new deck session
-  console.log(`[DeckService] Creating new deck session for ${table_token} (${context})`);
-  const seed = `${restaurant_id}-${table_token}-${context}-${today}-${crypto.randomBytes(4).toString('hex')}`;
-  const deck_context_id = crypto.createHash('sha256').update(seed).digest('hex');
+  console.log(`[DeckService] Creating new deck session for ${table_token} (${context}) Group: ${session_group_id}`);
+  
+  // Deterministic seed based on group + context + day
+  const seedInput = `${restaurant_id}|${table_token}|${context}|${today}|${session_group_id}`;
+  const seed = crypto.createHash('sha256').update(seedInput).digest('hex').substring(0, 16); // Use shorter hex for seed
+  const deck_context_id = crypto.createHash('sha256').update(seedInput).digest('hex');
 
   const newDeck = await db.query(
     `INSERT INTO deck_sessions 
-     (deck_context_id, restaurant_id, table_token, relationship_context, service_day, seed)
-     VALUES ($1, $2, $3, $4, $5, $6)
+     (deck_context_id, restaurant_id, table_token, relationship_context, service_day, session_group_id, seed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [deck_context_id, restaurant_id, table_token, context, today, seed]
+    [deck_context_id, restaurant_id, table_token, context, today, session_group_id, seed]
   );
 
   return newDeck.rows[0];
@@ -68,7 +72,8 @@ const getCurrentQuestion = async (session) => {
   const deckSession = await getDeckSession(
     session.restaurant_id || 'default', 
     session.table_token, 
-    session.context
+    session.context,
+    session.session_group_id
   );
 
   if (!deckSession) {
@@ -109,7 +114,8 @@ const advanceDeck = async (session) => {
   const deckSession = await getDeckSession(
     session.restaurant_id || 'default', 
     session.table_token, 
-    session.context
+    session.context,
+    session.session_group_id
   );
 
   // Get total questions to handle wraparound

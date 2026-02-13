@@ -1,0 +1,255 @@
+You are building Phase 2 of Table-Talk MVP v1.2 with PARTICIPANT-BASED WEBSOCKET SYNC.
+
+CONTEXT:
+Phase 1 complete: Session groups isolate parties, join codes secure Dual-Phone pairing, participants tracked. Now build question loop with participant-based WebSocket security.
+
+PHASE 2 GOALS:
+1. Implement deterministic deck algorithm (seed + session_group_id)
+2. Display questions with reveal/hide answer
+3. Implement Next question navigation
+4. Complete Single-Phone mode
+5. Implement WebSocket server with participant authentication
+6. Build Shared Readiness Ritual (open-ended, Dual-Phone)
+7. Build Shared Reveal Ritual (multiple-choice checkmarks, Dual-Phone)
+8. Add progress tracking
+9. Seed 50+ questions (TWO contexts)
+10. Implement "Both Click Next" with participant verification
+
+CRITICAL CHANGE FROM v1.1:
+WebSocket rooms now require participant_id authentication. Users cannot join WebSocket rooms without valid participant_id from session_participants table.
+
+DELIVERABLES:
+
+□ Deterministic Deck with Session Groups:
+
+  **deck_context_id now includes session_group_id:**
+````javascript
+  function generateDeckContextId(restaurantId, tableToken, context, serviceDay, sessionGroupId) {
+    const input = `${restaurantId}|${tableToken}|${context}|${serviceDay}|${sessionGroupId}`;
+    return crypto.createHash('sha256').update(input).digest('hex');
+  }
+````
+
+  **Multiple groups at same table get different decks:**
+  - Group A: deck_context_id based on sessionGroupId_A
+  - Group B: deck_context_id based on sessionGroupId_B
+  - Both can be "Exploring" context, same table, same day, but ISOLATED
+
+□ Participant-Based WebSocket Authentication:
+
+  **Connection Requires participant_id:**
+````javascript
+  // Client connects with participant_id
+  socket.emit('join_session', { 
+    session_id: sessionId, 
+    participant_id: participantId  // From sessionStorage
+  });
+
+  // Server verifies participant belongs to session
+  socket.on('join_session', async ({ session_id, participant_id }) => {
+    const participant = await db.query(`
+      SELECT p.participant_id, p.role, s.mode, s.dual_status, s.session_group_id
+      FROM session_participants p
+      JOIN sessions s ON p.session_id = s.session_id
+      WHERE p.participant_id = $1
+        AND s.session_id = $2
+        AND s.expires_at > NOW()
+        AND p.disconnected_at IS NULL
+    `, [participant_id, session_id]);
+
+    if (participant.rows.length === 0) {
+      socket.emit('error', { message: 'Invalid participant or session' });
+      return;
+    }
+
+    // Update last_seen_at
+    await db.query(`
+      UPDATE session_participants
+      SET last_seen_at = NOW()
+      WHERE participant_id = $1
+    `, [participant_id]);
+
+    // Join room (session_id is the room key)
+    socket.join(session_id);
+    socket.participantId = participant_id;
+    socket.sessionId = session_id;
+    socket.role = participant.rows[0].role;
+    socket.sessionGroupId = participant.rows[0].session_group_id;
+
+    // Notify room
+    const roomSize = io.sockets.adapter.rooms.get(session_id)?.size || 0;
+    io.to(session_id).emit('partner_status', {
+      status: roomSize === 2 ? 'connected' : 'waiting',
+      users_connected: roomSize
+    });
+  });
+````
+
+□ WebSocket Event Handlers with Participant Verification:
+
+  **All events verify socket.participantId exists:**
+````javascript
+  socket.on('ready_toggled', (data) => {
+    if (!socket.participantId) {
+      socket.emit('error', { message: 'Not authenticated' });
+      return;
+    }
+
+    io.to(socket.sessionId).emit('ready_status_update', {
+      participant_id: socket.participantId,
+      role: socket.role,
+      ready: data.ready
+    });
+
+    // Check if both ready
+    checkBothReady(socket.sessionId);
+  });
+
+  socket.on('answer_submitted', async (data) => {
+    if (!socket.participantId) return;
+
+    // Store temporary selection (in-memory or Redis)
+    storeSelection(socket.sessionId, socket.participantId, data.selectionId);
+
+    // Check if both submitted
+    if (bothSubmitted(socket.sessionId)) {
+      const selections = getSelections(socket.sessionId);
+      io.to(socket.sessionId).emit('reveal_answers', { selections });
+    } else {
+      socket.emit('waiting_for_partner');
+    }
+  });
+
+  socket.on('next_requested', async (data) => {
+    if (!socket.participantId) return;
+
+    trackNextClick(socket.sessionId, socket.participantId);
+
+    if (bothClickedNext(socket.sessionId)) {
+      // Advance position_index
+      await db.query(`
+        UPDATE deck_sessions
+        SET position_index = position_index + 1,
+            updated_at = NOW()
+        WHERE session_group_id = $1
+      `, [socket.sessionGroupId]);
+
+      io.to(socket.sessionId).emit('question_advanced');
+      clearNextClicks(socket.sessionId);
+    } else {
+      socket.emit('waiting_for_partner');
+    }
+  });
+
+  socket.on('disconnect', async () => {
+    if (socket.participantId) {
+      await db.query(`
+        UPDATE session_participants
+        SET disconnected_at = NOW()
+        WHERE participant_id = $1
+      `, [socket.participantId]);
+
+      io.to(socket.sessionId).emit('partner_disconnected', {
+        participant_id: socket.participantId,
+        role: socket.role
+      });
+    }
+  });
+````
+
+□ Frontend Heartbeat + Participant Tracking:
+````javascript
+  // React hook for activity tracking
+  function useSessionActivity(sessionId, participantId) {
+    useEffect(() => {
+      // Heartbeat every 60 seconds
+      const heartbeat = setInterval(async () => {
+        await fetch(`/api/sessions/${sessionId}/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ participant_id: participantId })
+        });
+      }, 60000);
+
+      return () => clearInterval(heartbeat);
+    }, [sessionId, participantId]);
+  }
+
+  // Backend heartbeat endpoint
+  app.post('/api/sessions/:session_id/heartbeat', async (req, res) => {
+    const { session_id } = req.params;
+    const { participant_id } = req.body;
+
+    // Update both session and participant activity
+    await db.query(`
+      UPDATE sessions SET last_activity_at = NOW() WHERE session_id = $1
+    `, [session_id]);
+
+    await db.query(`
+      UPDATE session_participants SET last_seen_at = NOW() WHERE participant_id = $1
+    `, [participant_id]);
+
+    res.status(204).send();
+  });
+````
+
+□ Question seed data (50+ questions, TWO contexts only):
+  - See previous Phase 2 prompt for question examples
+  - Remember: NO "Mature" context in v1.2
+  - Distribution: 30 Exploring + 20 Established = 50 minimum
+
+□ API Endpoints:
+  - GET /api/sessions/:id/questions/current
+  - POST /api/sessions/:id/questions/next
+  - POST /api/sessions/:id/answer/reveal
+  (Same as before, but now aware of session_group_id for deck lookup)
+
+TESTING CHECKLIST:
+
+**Single-Phone:**
+- [ ] Questions display correctly
+- [ ] Next button advances questions
+- [ ] Progress indicator accurate
+- [ ] Refresh resumes at same position
+- [ ] participant_id persists in sessionStorage
+
+**Dual-Phone - WebSocket Security:**
+- [ ] Cannot join WebSocket without valid participant_id
+- [ ] Invalid participant_id rejected
+- [ ] Disconnected participants cannot rejoin without new participant_id
+- [ ] Each participant gets unique role ('A' or 'B')
+
+**Dual-Phone - Sync:**
+- [ ] Both devices see same question
+- [ ] Ready ritual: both must click Ready
+- [ ] "Both Ready" confirmation appears
+- [ ] Question de-emphasizes after confirmation
+- [ ] Multiple-choice: private selection, shared reveal
+- [ ] Checkmarks appear correctly (✓ ✓ or ✓)
+- [ ] Both must click Next to advance
+- [ ] Sync latency <300ms
+
+**Session Groups:**
+- [ ] Group A and Group B at same table stay isolated
+- [ ] Different session_group_id values
+- [ ] Different deck_context_id values
+- [ ] Different question orders
+- [ ] No WebSocket crosstalk between groups
+
+IMPORTANT RULES:
+- WebSocket rooms use session_id (NOT session_group_id)
+- Participant verification required for ALL WebSocket events
+- Deck lookup uses session_group_id for isolation
+- No answer content stored in database
+- All events logged anonymously
+
+DEFINITION OF DONE:
+1. Single-Phone mode works end-to-end
+2. Dual-Phone synchronization with participant auth works
+3. Session groups prevent crosstalk
+4. 50+ questions seeded
+5. Deterministic deck prevents repeats per group
+6. WebSocket security prevents unauthorized access
+7. Heartbeat updates both session and participant activity
+
+Begin implementation now.

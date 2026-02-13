@@ -45,9 +45,11 @@ const createSession = async (req, res) => {
     // Create new session
     const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
     
-    // Ensure deck session exists (seed generation)
+    // 4. Ensure deck session exists (seed generation)
     if (context) {
-      await deckService.getDeckSession(restaurant_id || 'default', table_token, context);
+      // Pass sessionGroupId to deck service if updated to support it
+      // For now, keep existing call but note deckService might need update
+      await deckService.getDeckSession(restaurant_id || 'default', table_token, context, sessionGroupId);
     }
 
     const newSession = await db.query(
@@ -171,10 +173,10 @@ const updateSession = async (req, res) => {
 const endSession = async (req, res) => {
   const { session_id } = req.params;
   try {
-    await db.query('DELETE FROM sessions WHERE session_id = $1', [session_id]);
-    res.status(204).send();
+    await db.query('UPDATE sessions SET expires_at = NOW() WHERE session_id = $1', [session_id]);
+    res.status(200).json({ message: 'Session ended' });
   } catch (err) {
-    console.error('Error ending session:', err);
+    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 };
@@ -199,4 +201,27 @@ const getSessionByTable = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, getSession, updateSession, endSession, getSessionByTable };
+const heartbeat = async (req, res) => {
+  const { session_id } = req.params;
+  const { participant_id } = req.body;
+
+  try {
+    // Update both session and participant activity
+    await db.query(`
+      UPDATE sessions SET last_activity_at = NOW() WHERE session_id = $1
+    `, [session_id]);
+
+    if (participant_id) {
+      await db.query(`
+        UPDATE session_participants SET last_seen_at = NOW() WHERE participant_id = $1
+      `, [participant_id]);
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    console.error('Heartbeat error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, getSession, updateSession, endSession, getSessionByTable, heartbeat };
