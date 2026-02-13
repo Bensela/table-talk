@@ -82,6 +82,8 @@ const getCurrentQuestion = async (session) => {
   }
   if (!deckSession.seed) {
       console.error('[DeckService] Deck session seed is missing:', deckSession);
+      // Fallback: Generate a temporary seed if missing (should not happen with new creation logic)
+      deckSession.seed = crypto.randomBytes(8).toString('hex');
   }
 
   // 2. Get Questions for Context
