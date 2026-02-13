@@ -194,7 +194,15 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
 
   // --- RENDER VIEWS ---
 
-  // view === 'show-code' is handled above by PairingCodeDisplay component check
+  if (view === 'show-code') {
+    return (
+      <PairingCodeDisplay 
+        code={pairingCode} 
+        expiresAt={pairingExpiresAt}
+        onContinue={handleContinueToGame} 
+      />
+    );
+  }
   
   if (view === 'enter-code') {
     return (
