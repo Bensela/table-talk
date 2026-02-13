@@ -101,7 +101,7 @@ export default function SessionGame() {
 
     const socket = io(socketUrl, {
       // 2. CRITICAL: Add the /api prefix to the path to match DO Routing
-      path: '/api/socket.io/',
+      path: isDev ? '/socket.io/' : '/api/socket.io/',
       transports: ['websocket'],
       upgrade: false,
       reconnection: true,
