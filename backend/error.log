@@ -1,0 +1,8 @@
+2026-02-13T03:24:56.638Z - Error creating session: une instruction insert ou update sur la table « analytics_events » viole la contrainte de clé
+étrangère « analytics_events_session_id_fkey »
+error: une instruction insert ou update sur la table « analytics_events » viole la contrainte de clé
+étrangère « analytics_events_session_id_fkey »
+    at C:\Users\Public\Documents\Table-Talk\backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async createSession (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:99:7)
+

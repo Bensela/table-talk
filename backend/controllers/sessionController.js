@@ -94,13 +94,6 @@ const createSession = async (req, res) => {
     if (mode === 'dual-phone') {
       pairingCodeHash = hashPairingCode(pairingCode, sessionId);
       pairingExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-      
-      // Log join code generation
-      await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [sessionId, 'join_code_generated', { expires_at: pairingExpiresAt }]
-      );
     }
 
     // 4. Ensure deck session exists (seed generation)
@@ -156,6 +149,14 @@ const createSession = async (req, res) => {
     );
 
     // 7. Log analytics
+    if (mode === 'dual-phone') {
+      await db.query(
+        `INSERT INTO analytics_events (session_id, event_type, event_data)
+         VALUES ($1, $2, $3)`,
+        [sessionId, 'join_code_generated', { expires_at: pairingExpiresAt }]
+      );
+    }
+
     await db.query(
       `INSERT INTO analytics_events (session_id, event_type, event_data)
        VALUES ($1, $2, $3)`,
