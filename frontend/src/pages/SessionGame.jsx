@@ -214,8 +214,7 @@ export default function SessionGame() {
   };
 
   const handleNext = async () => {
-    if (waitingForPartner) return;
-
+    // Single Phone Logic
     if (mode === 'single-phone' || mode === 'single') {
       try {
         await api.post(`/sessions/${sessionId}/questions/next`);
@@ -224,12 +223,16 @@ export default function SessionGame() {
       } catch (err) {
         console.error('Error advancing deck:', err);
       }
-    } else {
-      // Dual Phone: Check socket connection
-      if (socketRef.current?.connected) {
+      return;
+    } 
+    
+    // Dual Phone Logic
+    if (waitingForPartner) return; // Prevent double clicks
+
+    if (socketRef.current?.connected) {
         // Emit request_next (backend handles auth via socket.participantId)
         socketRef.current.emit('request_next');
-      } else {
+    } else {
         // Attempt to reconnect if disconnected
         console.warn('Socket disconnected, attempting reconnect...');
         socketRef.current?.connect();
@@ -246,7 +249,6 @@ export default function SessionGame() {
           },
           icon: '🔄'
         });
-      }
     }
   };
 
