@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/ui/Button';
 import { getSessionByTable } from '../api';
+import { getStoredParticipant } from '../utils/sessionStorage';
 
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
@@ -19,11 +20,16 @@ export default function WelcomeScreen() {
     try {
       // Check if there is an active session for this table
       const { data } = await getSessionByTable(tableToken);
-      if (data && data.session_id) {
-        // Active session found -> Join it
+      
+      const stored = getStoredParticipant();
+      if (data && data.session_id && stored.sessionId === data.session_id) {
+        // User is ALREADY part of this active session -> Rejoin
         navigate(`/session/${data.session_id}/game`);
+      } else if (data && data.mode === 'dual-phone' && data.dual_status === 'waiting') {
+        // Active DUAL session waiting for partner -> Go to Mode Selection so they can join
+        navigate(`/t/${tableToken}/mode`, { state: { context: data.context } });
       } else {
-        // No session -> Create flow
+        // No session OR active session exists but user is new -> Standard flow
         navigate(`/t/${tableToken}/context`);
       }
     } catch (err) {
