@@ -48,10 +48,14 @@ ALTER TABLE deck_sessions ALTER COLUMN session_group_id SET NOT NULL;
 -- We want UNIQUE (restaurant_id, table_token, relationship_context, service_day, session_group_id)
 
 ALTER TABLE deck_sessions DROP CONSTRAINT IF EXISTS deck_sessions_restaurant_id_table_token_relationship_context__key;
+ALTER TABLE deck_sessions DROP CONSTRAINT IF EXISTS deck_sessions_restaurant_id_table_token_relationship_contex_key;
+
 -- Also try dropping by guessed name if standard naming wasn't used or explicit name wasn't given
 -- In 001 it was: UNIQUE (restaurant_id, table_token, relationship_context, service_day)
 -- Postgres usually names it deck_sessions_restaurant_id_table_token_relatio_key or similar.
 -- A safe way is to ignore if we can't drop, but adding new unique constraint is fine.
+
+ALTER TABLE deck_sessions DROP CONSTRAINT IF EXISTS deck_sessions_unique_group;
 
 ALTER TABLE deck_sessions 
   ADD CONSTRAINT deck_sessions_unique_group 
