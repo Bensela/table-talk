@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { io } from 'socket.io-client';
 import { createSession, getSession, updateSessionMode, joinDualSession } from '../api';
 import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
-import { storeParticipant } from '../utils/sessionStorage';
+import { storeParticipant, getStoredParticipant } from '../utils/sessionStorage';
 
 export default function ModeSelection() {
   const { tableToken, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
@@ -20,6 +21,7 @@ export default function ModeSelection() {
 
   // Get context from previous step (if in new flow)
   const context = location.state?.context;
+  const isDev = window.location.hostname === 'localhost';
 
   useEffect(() => {
     // If we have a sessionId (legacy flow or re-joining), check its status
@@ -54,7 +56,7 @@ export default function ModeSelection() {
         context: context,
         mode: 'single-phone'
       });
-      storeParticipant(data.participant_id, data.session_id);
+      storeParticipant(data.participant_id, data.session_id, data.participant_token);
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
       console.error(err);
@@ -65,8 +67,7 @@ export default function ModeSelection() {
   };
 
   const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
-
-  // ...
+  const [createdSessionId, setCreatedSessionId] = useState(null); // Track session ID for websocket
 
   const handleStartDual = async () => {
     setLoading(true);
@@ -76,9 +77,10 @@ export default function ModeSelection() {
         context: context,
         mode: 'dual-phone'
       });
-      storeParticipant(data.participant_id, data.session_id);
+      storeParticipant(data.participant_id, data.session_id, data.participant_token);
       setPairingCode(data.pairing_code);
       setPairingExpiresAt(data.pairing_expires_at); // Store expiry time
+      setCreatedSessionId(data.session_id);
       setView('show-code');
     } catch (err) {
       console.error(err);
@@ -87,6 +89,40 @@ export default function ModeSelection() {
       setLoading(false);
     }
   };
+
+  // WebSocket Listener for Auto-Dismiss
+  useEffect(() => {
+    if (view !== 'show-code' || !createdSessionId) return;
+
+    const socketUrl = isDev 
+      ? 'http://localhost:5000' 
+      : 'https://octopus-app-ibal3.ondigitalocean.app';
+
+    const socket = io(socketUrl, {
+      path: isDev ? '/socket.io/' : '/api/socket.io/',
+      transports: ['websocket'],
+      upgrade: false
+    });
+
+    const stored = getStoredParticipant();
+    if (stored.participantId) {
+       socket.emit('join_session', { session_id: createdSessionId, participant_id: stored.participantId });
+    }
+
+    const onPartnerJoined = ({ joined_role }) => {
+      if (joined_role === 'B') {
+        // Partner joined! Dismiss modal and go to game
+        navigate(`/session/${createdSessionId}/game`);
+      }
+    };
+
+    socket.on('dual_partner_joined', onPartnerJoined);
+
+    return () => {
+      socket.off('dual_partner_joined', onPartnerJoined);
+      socket.disconnect();
+    };
+  }, [view, createdSessionId, navigate, isDev]);
 
 // ...
 
@@ -158,7 +194,7 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
         table_token: tableToken,
         code: joinCode
       });
-      storeParticipant(data.participant_id, data.session_id);
+      storeParticipant(data.participant_id, data.session_id, data.participant_token);
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
       console.error(err);

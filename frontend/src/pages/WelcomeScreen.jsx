@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/ui/Button';
-import { getSessionByTable } from '../api';
-import { getStoredParticipant } from '../utils/sessionStorage';
+import { getSessionByTable, resumeSessionByQr } from '../api';
+import { getStoredParticipant, storeParticipant } from '../utils/sessionStorage';
 
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
@@ -19,12 +19,35 @@ export default function WelcomeScreen() {
 
     setChecking(true);
     try {
-      // Check if there is an active session for this table
+      // 1. Try Fast Resume (Phone A scan scenario)
+      const stored = getStoredParticipant();
+      if (stored.participantToken) {
+        try {
+           const { data: resumeData } = await resumeSessionByQr({
+             table_token: tableToken,
+             participant_token: stored.participantToken
+           });
+           
+           if (resumeData && resumeData.session_id) {
+             // Validate that stored session matches returned session (security check)
+             // Actually, if backend returns it, it's valid.
+             // Update stored IDs just in case
+             storeParticipant(resumeData.participant_id, resumeData.session_id, stored.participantToken);
+             navigate(`/session/${resumeData.session_id}/game`);
+             return;
+           }
+        } catch (resumeErr) {
+           // Resume failed (token invalid or session expired)
+           // Continue to standard check
+           console.log("Fast resume failed, falling back to standard check");
+        }
+      }
+
+      // 2. Check if there is an active session for this table
       const { data } = await getSessionByTable(tableToken);
       
-      const stored = getStoredParticipant();
-      if (data && data.session_id && stored.sessionId === data.session_id) {
-        // User is ALREADY part of this active session -> Rejoin immediately
+      if (data && data.session_id && stored.sessionId === data.session_id && stored.participantId) {
+        // User is ALREADY part of this active session (Legacy/Simple Resume) -> Rejoin immediately
         navigate(`/session/${data.session_id}/game`);
       } else if (data && data.session_id) {
         // Active session exists but user is new -> Show options

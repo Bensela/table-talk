@@ -6,6 +6,7 @@ const { joinRateLimiter } = require('../middleware/rateLimiter');
 
 router.post('/', sessionController.createSession);
 router.post('/join-dual', joinRateLimiter, sessionController.joinDualPhoneSession);
+router.post('/resume-by-qr', sessionController.resumeSessionByQr);
 router.get('/:session_id', sessionController.getSession);
 router.post('/:session_id/heartbeat', sessionController.heartbeat); // Add heartbeat route
 router.get('/by-table/:table_token', sessionController.getSessionByTable);
