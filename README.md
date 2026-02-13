@@ -52,3 +52,15 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed production deployment 
 ## License
 
 Proprietary - All rights reserved by Charles Peterson (Made to Connect Co).
+
+## v1.2 Updates (Phase 1)
+
+### Security & Privacy
+- **Join Codes**: 6-digit codes are hashed (SHA-256) with a session-specific salt before storage. Raw codes are never stored.
+- **Session Groups**: Different parties at the same table are automatically isolated into separate session groups.
+- **Rate Limiting**: Join attempts are rate-limited to prevent brute-force attacks.
+
+### Setup
+- **Migrations**: Run `node backend/db/migrate_v1_2.js` to update the database schema.
+- **Environment**: Ensure `SECRET_SALT` is set in `backend/.env`.
+

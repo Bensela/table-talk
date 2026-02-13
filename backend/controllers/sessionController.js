@@ -199,4 +199,4 @@ const getSessionByTable = async (req, res) => {
   }
 };
 
-module.exports = { createSession, getSession, updateSession, endSession, getSessionByTable };
+module.exports = { createSession, joinDualPhoneSession, getSession, updateSession, endSession, getSessionByTable };

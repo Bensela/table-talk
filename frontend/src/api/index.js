@@ -11,6 +11,9 @@ const api = axios.create({
 export const createSession = ({ table_token, context, mode }) => 
   api.post('/sessions', { table_token, context, mode });
 
+export const joinDualSession = ({ table_token, code }) =>
+  api.post('/sessions/join-dual', { table_token, code });
+
 export const getSession = (sessionId) => api.get(`/sessions/${sessionId}`);
 export const getSessionByTable = (tableToken) => api.get(`/sessions/by-table/${tableToken}`);
 
