@@ -57,6 +57,11 @@ const createSession = async (req, res) => {
 
     // 3. Handle Dual-Phone Logic
     if (mode === 'dual-phone') {
+      // Feature Flag check
+      if (process.env.DUAL_PAIRING_CODE_ENABLED === 'false') {
+         return res.status(503).json({ error: 'Dual phone mode is currently disabled.' });
+      }
+
       dualStatus = 'waiting';
       pairingCode = generatePairingCode();
       // We need session_id to hash, but we don't have it yet.
