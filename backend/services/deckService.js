@@ -104,6 +104,12 @@ const getCurrentQuestion = async (session) => {
   // If position_index is greater than deck length (e.g. deck shrank or changed), wrap it
   const index = deckSession.position_index % shuffledDeck.length;
   
+  // Safety check: ensure index is valid (though modulo should handle it)
+  if (!shuffledDeck[index]) {
+      console.error('[DeckService] Invalid index after shuffle:', index, 'Length:', shuffledDeck.length);
+      return null;
+  }
+
   return {
     ...shuffledDeck[index],
     index: index + 1,
