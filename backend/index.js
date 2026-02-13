@@ -13,6 +13,8 @@ try {
   console.log('No .env file found, relying on environment variables');
 }
 
+const { cleanupSessions } = require('./jobs/cleanup');
+
 const app = express();
 const server = http.createServer(app);
 
@@ -66,6 +68,9 @@ const io = new Server(server, {
   pingTimeout: 30000,
   pingInterval: 10000
 });
+
+// Run cleanup once on startup
+cleanupSessions();
 
 const PORT = process.env.PORT || 5000;
 

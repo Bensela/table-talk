@@ -1,7 +1,54 @@
 const db = require('../db');
 const deckService = require('../services/deckService');
 
+const crypto = require('crypto');
+
 const SESSION_DURATION_HOURS = 24;
+
+// --- Helper Functions ---
+
+function generatePairingCode() {
+  // Generate cryptographically random 6-digit code
+  const buffer = crypto.randomBytes(3);
+  const code = parseInt(buffer.toString('hex'), 16) % 1000000;
+  return code.toString().padStart(6, '0');
+}
+
+function hashPairingCode(code, sessionId, salt = process.env.SECRET_SALT || 'default_salt') {
+  return crypto
+    .createHash('sha256')
+    .update(code + sessionId + salt)
+    .digest('hex');
+}
+
+async function determineSessionGroup(tableToken, context, mode) {
+  // Check for active session group within 15-minute window
+  const activeGroups = await db.query(`
+    SELECT DISTINCT session_group_id, last_activity_at
+    FROM sessions
+    WHERE table_token = $1
+      AND context = $2
+      AND mode = $3
+      AND expires_at > NOW()
+      AND last_activity_at > NOW() - INTERVAL '15 minutes'
+    ORDER BY last_activity_at DESC
+    LIMIT 1
+  `, [tableToken, context, mode]);
+
+  if (activeGroups.rows.length > 0) {
+    return { 
+      sessionGroupId: activeGroups.rows[0].session_group_id, 
+      isNewGroup: false 
+    };
+  } else {
+    return { 
+      sessionGroupId: crypto.randomUUID(), 
+      isNewGroup: true 
+    };
+  }
+}
+
+// --- Controller Functions ---
 
 const createSession = async (req, res) => {
   // Support both legacy table_id and new table_token
@@ -22,29 +69,40 @@ const createSession = async (req, res) => {
   }
 
   try {
-    // Check for existing active session for this table + context
-    let query = `SELECT * FROM sessions 
-                 WHERE table_token = $1 
-                 AND expires_at > NOW() `;
-    const params = [table_token];
-    
-    if (context) {
-      query += `AND context = $2 `;
-      params.push(context);
-    }
-    
-    query += `ORDER BY created_at DESC LIMIT 1`;
+    // 1. Determine Session Group
+    const { sessionGroupId, isNewGroup } = await determineSessionGroup(table_token, context, mode);
 
-    const existingSession = await db.query(query, params);
-
-    if (existingSession.rows.length > 0) {
-      // If exists: join existing session
-      return res.status(200).json(existingSession.rows[0]);
-    }
-
-    // Create new session
+    // 2. Prepare Session Data
     const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
+    let pairingCode = null;
+    let pairingCodeHash = null;
+    let pairingExpiresAt = null;
+    let dualStatus = null;
+
+    // 3. Handle Dual-Phone Logic
+    if (mode === 'dual-phone') {
+      dualStatus = 'waiting';
+      pairingCode = generatePairingCode();
+      // We need session_id to hash, but we don't have it yet.
+      // We'll insert first, then hash and update, OR generate session_id manually.
+      // Postgres generates UUID by default, but we can generate one here.
+    }
+
+    // Generate explicit UUID for session to use in hash
+    const sessionId = crypto.randomUUID();
     
+    if (mode === 'dual-phone') {
+      pairingCodeHash = hashPairingCode(pairingCode, sessionId);
+      pairingExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      
+      // Log join code generation
+      await db.query(
+        `INSERT INTO analytics_events (session_id, event_type, event_data)
+         VALUES ($1, $2, $3)`,
+        [sessionId, 'join_code_generated', { expires_at: pairingExpiresAt }]
+      );
+    }
+
     // 4. Ensure deck session exists (seed generation)
     if (context) {
       // Pass sessionGroupId to deck service if updated to support it
@@ -52,31 +110,156 @@ const createSession = async (req, res) => {
       await deckService.getDeckSession(restaurant_id || 'default', table_token, context, sessionGroupId);
     }
 
+    // 5. Create Session
     const newSession = await db.query(
       `INSERT INTO sessions 
-       (table_token, restaurant_id, context, mode, expires_at, table_id) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
+       (session_id, table_token, restaurant_id, context, mode, session_group_id, 
+        pairing_code_hash, pairing_expires_at, dual_status, expires_at, table_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
        RETURNING *`,
       [
+        sessionId,
         table_token, 
-        restaurant_id || null, 
-        context || null, 
-        mode || 'single-phone', 
+        restaurant_id || 'default', 
+        context || 'Exploring', 
+        mode || 'single-phone',
+        sessionGroupId,
+        pairingCodeHash,
+        pairingExpiresAt,
+        dualStatus,
         expires_at,
         table_token // Legacy support
       ]
     );
+    
+    // Log Session Group Creation/Join
+    if (isNewGroup) {
+       await db.query(
+        `INSERT INTO analytics_events (session_id, event_type, event_data)
+         VALUES ($1, $2, $3)`,
+        [sessionId, 'session_group_created', { session_group_id: sessionGroupId, table_token, context }]
+      );
+    } else {
+       await db.query(
+        `INSERT INTO analytics_events (session_id, event_type, event_data)
+         VALUES ($1, $2, $3)`,
+        [sessionId, 'session_joined_existing_group', { session_group_id: sessionGroupId }]
+      );
+    }
 
-    // Log analytics
+    // 6. Create Participant
+    const participantId = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO session_participants (participant_id, session_id, role)
+       VALUES ($1, $2, $3)`,
+      [participantId, sessionId, 'A'] // First user is Role A
+    );
+
+    // 7. Log analytics
     await db.query(
       `INSERT INTO analytics_events (session_id, event_type, event_data)
        VALUES ($1, $2, $3)`,
-      [newSession.rows[0].session_id, 'session_created', { table_token, context, mode }]
+      [sessionId, 'session_created', { table_token, context, mode, session_group_id: sessionGroupId }]
     );
 
-    res.status(201).json(newSession.rows[0]);
+    // 8. Return Response
+    const response = {
+      ...newSession.rows[0],
+      participant_id: participantId,
+      pairing_code: pairingCode // Only return raw code here!
+    };
+    
+    // Remove hash from response
+    delete response.pairing_code_hash;
+
+    res.status(201).json(response);
   } catch (err) {
     console.error('Error creating session:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const joinDualPhoneSession = async (req, res) => {
+  const { table_token, restaurant_id, code } = req.body;
+
+  if (!code || code.length !== 6) {
+    return res.status(400).json({ error: 'Invalid join code' });
+  }
+
+  try {
+    // 1. Find waiting sessions for this table
+    const waitingSessions = await db.query(`
+      SELECT session_id, pairing_code_hash, context, session_group_id, mode
+      FROM sessions
+      WHERE table_token = $1
+        AND restaurant_id = $2
+        AND dual_status = 'waiting'
+        AND pairing_expires_at > NOW()
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+    `, [table_token, restaurant_id || 'default']);
+
+    // 2. Validate Code
+    let validSession = null;
+    for (const session of waitingSessions.rows) {
+      const submittedHash = hashPairingCode(code, session.session_id);
+      if (submittedHash === session.pairing_code_hash) {
+        validSession = session;
+        break;
+      }
+    }
+
+    if (!validSession) {
+      // Log failed attempt
+      if (waitingSessions.rows.length > 0) {
+          await db.query(
+            `INSERT INTO analytics_events (session_id, event_type, event_data)
+             VALUES ($1, $2, $3)`,
+            [waitingSessions.rows[0].session_id, 'join_code_failed', { table_token, reason: 'invalid_code' }]
+          );
+      }
+      return res.status(403).json({ error: 'Invalid join code or expired session.' });
+    }
+
+    // 3. Update Session Status
+    await db.query(`
+      UPDATE sessions 
+      SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
+      WHERE session_id = $1
+    `, [validSession.session_id]);
+
+    // 4. Create Participant (Role B)
+    const participantId = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO session_participants (participant_id, session_id, role)
+       VALUES ($1, $2, $3)`,
+      [participantId, validSession.session_id, 'B']
+    );
+
+    // 5. Log analytics
+    await db.query(
+      `INSERT INTO analytics_events (session_id, event_type, event_data)
+       VALUES ($1, $2, $3)`,
+      [validSession.session_id, 'session_paired', { role: 'B' }]
+    );
+    
+    await db.query(
+      `INSERT INTO analytics_events (session_id, event_type, event_data)
+       VALUES ($1, $2, $3)`,
+      [validSession.session_id, 'join_code_used', { success: true }]
+    );
+
+    res.json({
+      session_id: validSession.session_id,
+      participant_id: participantId,
+      session_group_id: validSession.session_group_id,
+      context: validSession.context,
+      mode: validSession.mode,
+      dual_status: 'paired'
+    });
+
+  } catch (err) {
+    console.error('Error joining dual session:', err);
     res.status(500).json({ error: 'Server error' });
   }
 };
