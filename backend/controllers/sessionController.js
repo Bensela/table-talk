@@ -175,6 +175,9 @@ const createSession = async (req, res) => {
     res.status(201).json(response);
   } catch (err) {
     console.error('Error creating session:', err);
+    // Write error to file for debugging
+    const fs = require('fs');
+    fs.appendFileSync('error.log', `${new Date().toISOString()} - Error creating session: ${err.message}\n${err.stack}\n\n`);
     res.status(500).json({ error: 'Server error' });
   }
 };
