@@ -151,9 +151,49 @@ const advanceDeck = async (session) => {
   return newIndex + 1; // Return 1-based index for display
 };
 
+const previousDeck = async (session) => {
+  console.log(`[DeckService] Rewinding deck for ${session.table_token}`);
+  
+  // 1. Get Deck Session
+  const deckSession = await getDeckSession(
+    session.restaurant_id || 'default', 
+    session.table_token, 
+    session.context,
+    session.session_group_id
+  );
+
+  // 2. Get total questions
+  const allQuestions = await getAllQuestions();
+  const deckQuestions = allQuestions.filter(q => 
+    !q.context || q.context === session.context
+  );
+  const totalQuestions = deckQuestions.length;
+
+  if (totalQuestions === 0) return 1;
+
+  // 3. Calculate new index
+  let newIndex = deckSession.position_index - 1;
+  
+  // Wraparound logic (go to end if at start)
+  if (newIndex < 0) {
+    newIndex = totalQuestions - 1;
+  }
+
+  // 4. Update DB
+  await db.query(
+    `UPDATE deck_sessions 
+     SET position_index = $1, updated_at = NOW()
+     WHERE deck_context_id = $2`,
+    [newIndex, deckSession.deck_context_id]
+  );
+  
+  return newIndex + 1; // Return 1-based index
+};
+
 module.exports = {
   getCurrentQuestion,
   getDeckSession,
   advanceDeck,
+  previousDeck,
   _resetCache: () => { questionsCache = null; }
 };

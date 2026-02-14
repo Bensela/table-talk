@@ -7,6 +7,7 @@ export default function QuestionCard({
   onReveal, 
   isRevealed, 
   onNext, 
+  onPrev,
   waitingForPartner, 
   mode,
   socket,
@@ -265,7 +266,22 @@ export default function QuestionCard({
             initial={{ opacity: 0, y: 10 }} 
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
+            className="flex gap-4"
           >
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                onPrev();
+              }}
+              disabled={waitingForPartner}
+              variant="secondary"
+              size="lg"
+              className="shadow-xl hover:shadow-2xl flex-1"
+              icon={<span>←</span>}
+            >
+              Prev
+            </Button>
+            
             <Button
               onClick={(e) => {
                 e.stopPropagation();
@@ -274,11 +290,10 @@ export default function QuestionCard({
               disabled={waitingForPartner}
               variant={waitingForPartner ? "secondary" : "black"}
               size="lg"
-              fullWidth
-              className="shadow-xl hover:shadow-2xl"
+              className="shadow-xl hover:shadow-2xl flex-[2]"
               icon={!waitingForPartner && <span>→</span>}
             >
-              {waitingForPartner ? "Syncing..." : "Next Question"}
+              {waitingForPartner ? "Syncing..." : (question.index === question.total ? "End Session" : "Next Question")}
             </Button>
           </motion.div>
         </AnimatePresence>

@@ -24,13 +24,6 @@ export default function ContextSelection() {
       icon: '💑',
       color: 'bg-purple-50 text-purple-600',
       description: 'An ongoing, committed romantic relationship'
-    },
-    {
-      id: 'Mature',
-      title: 'Mature',
-      icon: '🍷',
-      color: 'bg-red-50 text-red-600',
-      description: 'Deep, reflective questions for long-term partners'
     }
   ];
 

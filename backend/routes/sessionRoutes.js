@@ -15,6 +15,7 @@ router.patch('/:session_id', sessionController.updateSession);
 // Question routes
 router.get('/:session_id/questions/current', questionController.getCurrentQuestion);
 router.post('/:session_id/questions/next', questionController.nextQuestion);
+router.post('/:session_id/questions/prev', questionController.prevQuestion);
 router.post('/:session_id/answer/reveal', questionController.revealAnswer);
 
 module.exports = router;

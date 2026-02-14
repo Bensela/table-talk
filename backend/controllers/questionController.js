@@ -72,6 +72,40 @@ const nextQuestion = async (req, res) => {
   }
 };
 
+const prevQuestion = async (req, res) => {
+  const { session_id } = req.params;
+  
+  try {
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const session = sessionResult.rows[0];
+    
+    // Decrement index
+    const newIndex = await deckService.previousDeck(session);
+
+    // Update session last_activity
+    await db.query(
+      `UPDATE sessions SET last_activity_at = NOW() WHERE session_id = $1`,
+      [session_id]
+    );
+
+    // Log analytics
+    await db.query(
+      `INSERT INTO analytics_events (session_id, event_type, event_data)
+       VALUES ($1, $2, $3)`,
+      [session_id, 'prev_clicked', { new_index: newIndex }]
+    );
+
+    res.json({ success: true, index: newIndex });
+  } catch (err) {
+    console.error('[API] Error going back:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const revealAnswer = async (req, res) => {
   const { session_id } = req.params;
   const { question_id } = req.body;
@@ -92,5 +126,6 @@ const revealAnswer = async (req, res) => {
 module.exports = {
   getCurrentQuestion,
   nextQuestion,
+  prevQuestion,
   revealAnswer
 };

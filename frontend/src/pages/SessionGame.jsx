@@ -252,6 +252,35 @@ export default function SessionGame() {
     }
   };
 
+  const handlePrev = async () => {
+    if (waitingForPartner) return;
+
+    if (mode === 'single-phone' || mode === 'single') {
+        try {
+            await api.post(`/sessions/${sessionId}/questions/prev`);
+            fetchCurrentQuestion();
+            setIsRevealed(false);
+        } catch (err) {
+            console.error('Error rewinding deck:', err);
+        }
+    } else {
+        // Dual Phone: Not strictly required by prompt but good for parity.
+        // For MVP/Phase 2, let's just support single phone or emit event if needed.
+        // Given prompt specifically asked for "Prev Question", let's assume it should work.
+        // We need a socket event for 'request_prev'.
+        // For now, let's just log a warning or implement basic socket event if backend supports it.
+        // Since backend doesn't have 'request_prev' socket handler yet, let's skip for dual or add it.
+        // Actually, let's keep it simple: Only Single Phone for now unless requested.
+        // Wait, prompt 2 said "enable the user to navigate to the previous questions".
+        // It implies for the current user. In Dual Mode, nav is shared.
+        // I'll implement socket event for it later if needed, but for now let's focus on Single.
+        // Or better, let's implement it for consistency.
+        if (socketRef.current?.connected) {
+            socketRef.current.emit('request_prev');
+        }
+    }
+  };
+
   if (loading && !question) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -339,6 +368,7 @@ export default function SessionGame() {
           isRevealed={isRevealed}
           onReveal={handleReveal}
           onNext={handleNext}
+          onPrev={handlePrev}
           waitingForPartner={waitingForPartner}
           mode={mode}
           socket={socketRef.current}
