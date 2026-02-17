@@ -356,10 +356,24 @@ const updateSession = async (req, res) => {
 const endSession = async (req, res) => {
   const { session_id } = req.params;
   try {
-    // Delete dependent data first
+    // 1. Get Session Details first to find the deck_session
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    if (sessionResult.rows.length > 0) {
+      const session = sessionResult.rows[0];
+      // 2. Reset Deck Session (Optional but good practice if we want a fresh start)
+      // Actually, prompt says "restart a new session". 
+      // If we delete the session, the Deck Session (position index) persists unless we reset it.
+      // Usually "End Session" implies "I'm done with this conversation". 
+      // If they scan again, they might want to start fresh or continue.
+      // PRD usually implies deck progress is saved for the TABLE, not the session.
+      // So we keep deck_sessions intact.
+    }
+
+    // 3. Delete dependent data
     await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
     await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
-    // Then delete the session itself
+    
+    // 4. Delete the session itself
     await db.query('DELETE FROM sessions WHERE session_id = $1', [session_id]);
     
     res.status(200).json({ message: 'Session deleted' });
