@@ -85,6 +85,7 @@ const createSession = async (req, res) => {
     }
 
     // 5. Create Session
+    console.log(`[API] Creating session for table ${table_token} (Group: ${sessionGroupId})`);
     const newSession = await db.query(
       `INSERT INTO sessions 
        (session_id, table_token, restaurant_id, context, mode, session_group_id, 
@@ -386,6 +387,7 @@ const endSession = async (req, res) => {
     // 4. Delete the session itself
     await db.query('DELETE FROM sessions WHERE session_id = $1', [session_id]);
     
+    console.log(`[API] Session ${session_id} ended and deleted successfully.`);
     res.status(200).json({ message: 'Session deleted' });
   } catch (err) {
     console.error('Error deleting session:', err);
