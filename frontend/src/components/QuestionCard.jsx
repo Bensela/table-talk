@@ -7,7 +7,6 @@ export default function QuestionCard({
   onReveal, 
   isRevealed, 
   onNext, 
-  onPrev,
   waitingForPartner, 
   mode,
   socket,
@@ -264,7 +263,7 @@ export default function QuestionCard({
         <AnimatePresence>
           <motion.div 
             initial={{ opacity: 0, y: 10 }} 
-            animate={{ opacity: 1, y: 0 }}
+            animate={{ opacity: 1, y: 0 }} 
             exit={{ opacity: 0 }}
             className="flex gap-4"
           >

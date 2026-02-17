@@ -356,10 +356,15 @@ const updateSession = async (req, res) => {
 const endSession = async (req, res) => {
   const { session_id } = req.params;
   try {
-    await db.query('UPDATE sessions SET expires_at = NOW() WHERE session_id = $1', [session_id]);
-    res.status(200).json({ message: 'Session ended' });
+    // Delete dependent data first
+    await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
+    await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
+    // Then delete the session itself
+    await db.query('DELETE FROM sessions WHERE session_id = $1', [session_id]);
+    
+    res.status(200).json({ message: 'Session deleted' });
   } catch (err) {
-    console.error(err);
+    console.error('Error deleting session:', err);
     res.status(500).json({ error: 'Server error' });
   }
 };
