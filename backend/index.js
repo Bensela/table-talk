@@ -45,7 +45,7 @@ const corsOptions = {
       callback(null, true);
     }
   },
-  methods: ["GET", "POST", "PATCH"],
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   credentials: true
 };
 
@@ -64,7 +64,7 @@ const io = new Server(server, {
         callback(null, true);
       }
     },
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true
   },
   transports: ["websocket"],
