@@ -360,13 +360,18 @@ const endSession = async (req, res) => {
     const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
     if (sessionResult.rows.length > 0) {
       const session = sessionResult.rows[0];
-      // 2. Reset Deck Session (Optional but good practice if we want a fresh start)
-      // Actually, prompt says "restart a new session". 
-      // If we delete the session, the Deck Session (position index) persists unless we reset it.
-      // Usually "End Session" implies "I'm done with this conversation". 
-      // If they scan again, they might want to start fresh or continue.
-      // PRD usually implies deck progress is saved for the TABLE, not the session.
-      // So we keep deck_sessions intact.
+      
+      // 2. Reset Deck Session
+      // When a session is explicitly ended via "End Session", we must reset the deck progress
+      // so the next session starts from Question 1 (index 0).
+      if (session.context) {
+        const today = new Date().toISOString().split('T')[0];
+        await db.query(
+          `UPDATE deck_sessions SET position_index = 0, updated_at = NOW()
+           WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4`,
+          [session.restaurant_id || 'default', session.table_token, session.context, today]
+        );
+      }
     }
 
     // 3. Delete dependent data
