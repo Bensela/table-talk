@@ -217,10 +217,15 @@ export default function SessionGame() {
     // Check if session is ending
     if (question.index === question.total) {
         try {
+            console.log(`[Frontend] Ending session ${sessionId}...`);
             await api.delete(`/sessions/${sessionId}`);
+            console.log('[Frontend] Session ended. Navigating home.');
+            // Clear local storage for this session
+            sessionStorage.removeItem('table_talk_participant'); 
             navigate('/');
         } catch (err) {
             console.error('Error ending session:', err);
+            sessionStorage.removeItem('table_talk_participant'); 
             navigate('/');
         }
         return;
