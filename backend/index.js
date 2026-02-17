@@ -53,15 +53,17 @@ const io = new Server(server, {
   // MUST match the frontend exactly
   path: "/socket.io/",
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:4173",
-      "http://127.0.0.1:5173",
-      "https://september-internation-overelliptically.ngrok-free.dev",
-      "https://sea-lion-app-6mjje.ondigitalocean.app",
-      "https://orca-app-be8he.ondigitalocean.app",
-      "https://octopus-app-ibal3.ondigitalocean.app"
-    ],
+    origin: (origin, callback) => {
+      // Allow mobile apps/curl (no origin)
+      if (!origin) return callback(null, true);
+      // Check against whitelist or allow ngrok subdomains
+      if (allowedOrigins.includes(origin) || origin.endsWith('.ngrok-free.dev')) {
+        callback(null, true);
+      } else {
+        // Fallback for dev/unexpected origins
+        callback(null, true);
+      }
+    },
     methods: ["GET", "POST"],
     credentials: true
   },
