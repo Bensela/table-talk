@@ -220,13 +220,16 @@ export default function SessionGame() {
             console.log(`[Frontend] Ending session ${sessionId}...`);
             await api.delete(`/sessions/${sessionId}`);
             console.log('[Frontend] Session ended. Navigating home.');
+            
             // Clear local storage for this session
             sessionStorage.removeItem('table_talk_participant'); 
-            navigate('/');
+            
+            // Force a hard navigation to root to clear any in-memory state
+            window.location.href = '/'; 
         } catch (err) {
             console.error('Error ending session:', err);
             sessionStorage.removeItem('table_talk_participant'); 
-            navigate('/');
+            window.location.href = '/';
         }
         return;
     }
