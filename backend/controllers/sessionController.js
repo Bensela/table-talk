@@ -366,6 +366,11 @@ const endSession = async (req, res) => {
       // so the next session starts from Question 1 (index 0).
       if (session.context) {
         const today = new Date().toISOString().split('T')[0];
+        // Note: We need to update ALL deck sessions for this table/context/day combo
+        // because deck_sessions are shared by table.
+        // However, if we recently made deck_sessions unique by group, we might need to be careful.
+        // The issue is likely that getSession reads from ANY deck_session for the table.
+        // So we should reset them all to be safe for this table/day context.
         await db.query(
           `UPDATE deck_sessions SET position_index = 0, updated_at = NOW()
            WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4`,
