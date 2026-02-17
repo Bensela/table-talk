@@ -21,6 +21,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:4173",
+  "http://127.0.0.1:5173",
   "https://september-internation-overelliptically.ngrok-free.dev",
   "https://sea-lion-app-6mjje.ondigitalocean.app",
   "https://orca-app-be8he.ondigitalocean.app",
@@ -55,6 +56,7 @@ const io = new Server(server, {
     origin: [
       "http://localhost:5173",
       "http://localhost:4173",
+      "http://127.0.0.1:5173",
       "https://september-internation-overelliptically.ngrok-free.dev",
       "https://sea-lion-app-6mjje.ondigitalocean.app",
       "https://orca-app-be8he.ondigitalocean.app",
