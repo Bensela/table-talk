@@ -358,12 +358,17 @@ const updateSession = async (req, res) => {
 const endSession = async (req, res) => {
   const { session_id } = req.params;
   try {
-    // 1. Get Session Details first to find the deck_session
+    console.log(`[API] Explicitly ending session ${session_id}...`);
+
+    // 1. Get Session Details first to find the deck_session and context
     const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    
     if (sessionResult.rows.length > 0) {
       const session = sessionResult.rows[0];
       
-      // 2. Reset Deck Session (Optional now since we use session_group_id, but good for cleanup)
+      // 2. Reset Deck Session
+      // When a session is explicitly ended via "End Session", we must reset the deck progress
+      // so the next session starts from Question 1 (index 0).
       if (session.context) {
         const today = new Date().toISOString().split('T')[0];
         // Only reset for this specific session group to avoid side effects
@@ -373,17 +378,34 @@ const endSession = async (req, res) => {
           [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
         );
       }
+    } else {
+        // Session already gone (maybe cleanup job ran or duplicate request)
+        console.log(`[API] Session ${session_id} not found during end request (already deleted?)`);
+        return res.status(200).json({ message: 'Session already deleted' });
     }
 
-    // 3. Delete dependent data
+    // 3. Delete dependent data (Explicitly, just like cleanup job handles implicitly via CASCADE or logic)
+    // IMPORTANT: The cleanup job (Rule 4) deletes from 'sessions' where expires_at is old.
+    // Here we want to do the same thing: REMOVE it completely.
+    // If we rely on ON DELETE CASCADE, we can just delete from sessions.
+    
+    // Check if constraints exist (assumed yes based on cleanup job comments).
+    // Safest approach matches cleanup job logic: Direct Delete.
+    
+    // However, to be extra safe against constraint errors if CASCADE isn't there:
     await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
     await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
     
     // 4. Delete the session itself
-    await db.query('DELETE FROM sessions WHERE session_id = $1', [session_id]);
+    const deleteResult = await db.query('DELETE FROM sessions WHERE session_id = $1 RETURNING session_id', [session_id]);
     
-    console.log(`[API] Session ${session_id} ended and deleted successfully.`);
-    res.status(200).json({ message: 'Session deleted' });
+    if (deleteResult.rowCount > 0) {
+        console.log(`[API] Session ${session_id} ended and deleted successfully.`);
+        res.status(200).json({ message: 'Session deleted' });
+    } else {
+        console.warn(`[API] Delete command ran but no rows affected for session ${session_id}`);
+        res.status(200).json({ message: 'Session likely already deleted' });
+    }
   } catch (err) {
     console.error('Error deleting session:', err);
     res.status(500).json({ error: 'Server error' });
