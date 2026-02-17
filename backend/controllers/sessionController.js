@@ -279,10 +279,11 @@ const getSession = async (req, res) => {
     let position_index = 0;
     if (session.context) {
       const today = new Date().toISOString().split('T')[0];
+      // Updated query to respect session_group_id
       const deckResult = await db.query(
         `SELECT position_index FROM deck_sessions 
-         WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4`,
-        [session.restaurant_id || 'default', session.table_token, session.context, today]
+         WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
+        [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
       );
       if (deckResult.rows.length > 0) {
         position_index = deckResult.rows[0].position_index;
@@ -330,11 +331,11 @@ const updateSession = async (req, res) => {
 
       if (session.context) {
         const today = new Date().toISOString().split('T')[0];
-        // Update deck_session
+        // Update deck_session specifically for this session group
         await db.query(
           `UPDATE deck_sessions SET position_index = $1, updated_at = NOW()
-           WHERE restaurant_id = $2 AND table_token = $3 AND relationship_context = $4 AND service_day = $5`,
-          [position_index, session.restaurant_id || 'default', session.table_token, session.context, today]
+           WHERE restaurant_id = $2 AND table_token = $3 AND relationship_context = $4 AND service_day = $5 AND session_group_id = $6`,
+          [position_index, session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
         );
       }
       updatedSession = session; // Just return session, position updated in other table
@@ -362,20 +363,14 @@ const endSession = async (req, res) => {
     if (sessionResult.rows.length > 0) {
       const session = sessionResult.rows[0];
       
-      // 2. Reset Deck Session
-      // When a session is explicitly ended via "End Session", we must reset the deck progress
-      // so the next session starts from Question 1 (index 0).
+      // 2. Reset Deck Session (Optional now since we use session_group_id, but good for cleanup)
       if (session.context) {
         const today = new Date().toISOString().split('T')[0];
-        // Note: We need to update ALL deck sessions for this table/context/day combo
-        // because deck_sessions are shared by table.
-        // However, if we recently made deck_sessions unique by group, we might need to be careful.
-        // The issue is likely that getSession reads from ANY deck_session for the table.
-        // So we should reset them all to be safe for this table/day context.
+        // Only reset for this specific session group to avoid side effects
         await db.query(
           `UPDATE deck_sessions SET position_index = 0, updated_at = NOW()
-           WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4`,
-          [session.restaurant_id || 'default', session.table_token, session.context, today]
+           WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
+          [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
         );
       }
     }
