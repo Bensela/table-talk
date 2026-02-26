@@ -197,9 +197,12 @@ export default function QuestionCard({
           )}
         </div>
 
-        {/* Hint Indicator */}
+        {/* Hint Indicator / Reveal Button */}
         {!isMultipleChoice && !localRevealed && (
           <div className="absolute bottom-6 left-0 w-full text-center pointer-events-none">
+             {/* If explicit button desired, we can uncomment this or replace the text below */}
+             {/* <button className="pointer-events-auto text-sm text-blue-500 font-bold underline">Reveal Hint</button> */}
+             
             <span className="text-xs text-gray-300 font-bold uppercase tracking-wide animate-pulse">
               Tap card to reveal hint
             </span>
@@ -209,6 +212,19 @@ export default function QuestionCard({
 
         {/* ACTION BAR (Bottom) */}
         <div className="mt-8 space-y-4">
+          
+          {/* Explicit Reveal Button for Dual Mode (Optional, if tap is not enough) */}
+          {mode === 'dual-phone' && !isMultipleChoice && !localRevealed && (
+             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                <button 
+                  onClick={handleReveal}
+                  className="w-full py-3 text-sm font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest transition-colors"
+                >
+                  Need a Hint?
+                </button>
+             </motion.div>
+          )}
+
           {/* DUAL MODE: Ready Button Only (Replaces Next) */}
           {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
