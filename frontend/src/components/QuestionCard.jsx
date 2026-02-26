@@ -262,7 +262,7 @@ export default function QuestionCard({
                             handleReadyToggle();
                         }
                       }}
-                      variant={ready ? "black" : "primary"}
+                      variant={ready ? "black" : "black"}
                       size="lg"
                       fullWidth
                       className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
