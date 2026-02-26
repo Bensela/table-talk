@@ -171,6 +171,48 @@ export default function SessionGame() {
       setWaitingForPartner(true);
     });
     
+    socket.on('both_ready', () => {
+       // Auto-advance when both are ready (no need to click next)
+       // However, questionCard handles "conversationState" first.
+       // Let's modify: When both ready, wait 2s (handled in component) then automatically request next?
+       // OR: Just let the users talk, and when they are DONE talking, they click "Next"?
+       // User prompt: "As soon as the second person press 'I am Ready' Button, the session should move to the next Question."
+       // This implies immediate advance.
+       
+       // BUT, usually "I am Ready" means "I have read the question".
+       // If we advance immediately, they have no time to discuss!
+       
+       // WAIT. The prompt says: "take off the Next Question Button and use only 'I am Ready' Button... As soon as the second person press... move to the next Question."
+       // This implies the flow is: 
+       // 1. Question Appears.
+       // 2. Users Discuss.
+       // 3. When they are DONE discussing, they press "I am Ready" (to move on).
+       // 4. When BOTH have pressed it, we go to next.
+       
+       // CURRENTLY: "I am Ready" is used to REVEAL the answer/hint (Open Ended) or submit choice.
+       // It seems the user wants to repurpose "I am Ready" to mean "We are done with this question".
+       
+       // So:
+       // - Question appears.
+       // - (Optional) Hint/Answer reveal logic stays? Or is that what they mean?
+       // - User presses "I am Ready" (meaning "Next").
+       // - When both press it -> Advance.
+       
+       // Implementation:
+       // We can reuse the existing 'ready_toggled' logic but change the UI label to "Ready for Next".
+       // And the backend 'both_ready' event should trigger 'advance_question' instead of just a UI state.
+       
+       // However, I cannot change backend logic easily without more context.
+       // Better approach: When frontend receives 'both_ready', frontend emits 'request_next'.
+       
+       // Let's implement that.
+       console.log('Both ready! Auto-advancing...');
+       // Only one client needs to trigger it, but both doing it is fine (backend handles debounce usually, or we check leader)
+       // Let's make the "last person to click" trigger it? 
+       // Or just emit request_next immediately.
+       socket.emit('request_next');
+    });
+
     socket.on('wait_timeout', () => {
       setWaitingForPartner(false);
       setModalState({

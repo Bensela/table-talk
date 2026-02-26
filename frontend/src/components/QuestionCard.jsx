@@ -61,7 +61,10 @@ export default function QuestionCard({
     };
 
     socket.on('ready_status_update', onReadyStatus);
-    socket.on('both_ready', onBothReady);
+    socket.on('both_ready', () => {
+      setBothReady(true);
+      setConversationState(true);
+    });
     socket.on('reveal_answers', onRevealAnswers);
 
     return () => {
@@ -206,82 +209,66 @@ export default function QuestionCard({
 
         {/* ACTION BAR (Bottom) */}
         <div className="mt-8 space-y-4">
-          {/* DUAL MODE: Interaction Buttons */}
-          {mode === 'dual-phone' && !localRevealed && !conversationState && (
+          {/* DUAL MODE: Ready Button Only (Replaces Next) */}
+          {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-            {!isMultipleChoice ? (
-              // Open Ended Ready Button
               <div className="space-y-3">
-                {!bothReady ? (
-                  <>
-                    <Button
-                      onClick={handleReadyToggle}
-                      variant={ready ? "black" : "primary"}
-                      size="lg"
-                      fullWidth
-                      className={ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}
-                    >
-                      {ready ? "Waiting for Partner..." : "I'm Ready"}
-                    </Button>
-                    {partnerReady && !ready && (
-                      <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
-                        Partner is ready!
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-center text-green-600 font-bold text-xl animate-bounce py-3">
-                    Both Ready!
-                  </div>
+                <Button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (question.index === question.total) {
+                        // End Session Logic
+                        onNext();
+                    } else {
+                        // Toggle Ready -> Triggers Next if both ready
+                        handleReadyToggle();
+                    }
+                  }}
+                  variant={ready ? "black" : "primary"}
+                  size="lg"
+                  fullWidth
+                  className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
+                  icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                >
+                  {question.index === question.total 
+                    ? "End Session" 
+                    : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                </Button>
+                
+                {partnerReady && !ready && question.index !== question.total && (
+                  <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
+                    Partner is ready! Press "I'm Ready" to continue.
+                  </p>
                 )}
               </div>
-            ) : (
-              // Multiple Choice Submit
-              <div className="space-y-3">
-                {submitted ? (
-                  <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500 font-medium border border-gray-100">
-                    Answer Submitted. Waiting for partner...
-                  </div>
-                ) : (
-                  <Button
-                    onClick={handleSubmitAnswer}
-                    disabled={!selectedOption}
-                    variant="primary"
-                    size="lg"
-                    fullWidth
-                  >
-                    Lock In Answer
-                  </Button>
-                )}
-              </div>
-            )}
-          </motion.div>
-        )}
+            </motion.div>
+          )}
 
-        {/* NEXT BUTTON (Shared) */}
-        {/* Show if revealed OR always allow next to match Single Mode behavior */}
-        <AnimatePresence>
-          <motion.div 
-            initial={{ opacity: 0, y: 10 }} 
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-          >
-            <Button
-              onClick={(e) => {
-                e.stopPropagation();
-                onNext();
-              }}
-              disabled={waitingForPartner}
-              variant={waitingForPartner ? "secondary" : "black"}
-              size="lg"
-              fullWidth
-              className="shadow-xl hover:shadow-2xl"
-              icon={!waitingForPartner && <span>→</span>}
-            >
-              {waitingForPartner ? "Syncing..." : (question.index === question.total ? "End Session" : "Next Question")}
-            </Button>
-          </motion.div>
-        </AnimatePresence>
+          {/* SINGLE MODE: Standard Next Button */}
+          {mode !== 'dual-phone' && (
+            <AnimatePresence>
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }} 
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <Button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNext();
+                  }}
+                  disabled={waitingForPartner}
+                  variant="black"
+                  size="lg"
+                  fullWidth
+                  className="shadow-xl hover:shadow-2xl"
+                  icon={<span>→</span>}
+                >
+                  {question.index === question.total ? "End Session" : "Next Question"}
+                </Button>
+              </motion.div>
+            </AnimatePresence>
+          )}
       </div>
     </div>
   );
