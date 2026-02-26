@@ -88,7 +88,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Routes
+// Root Endpoint
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+
+// API Routes
 app.use('/sessions', sessionRoutes);
 
 // Health Check
@@ -96,9 +100,10 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// Root Endpoint
-app.get('/', (req, res) => {
-  res.send('Table Talk API is running. Please visit the frontend application.');
+// The "catchall" handler: for any request that doesn't
+// match one above, send back React's index.html file.
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
 // Socket.io Logic
