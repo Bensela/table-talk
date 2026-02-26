@@ -468,5 +468,80 @@ INSERT INTO questions (question_text, answer_text, question_type, context, diffi
 ('What''s a challenge we''ve overcome that made us stronger?', NULL, '''open-ended''', '''Established''', '''deep'''),
 ('How can we better support each other''s individual dreams?', NULL, '''open-ended''', '''Established''', '''deep''');
 
--- Multiple Choice Questions
-INSERT INTO questions (question_text, answer_text, question_type, context, difficulty, options) VALUES
+
+-- Auto-generated migration to fix missing hints
+
+UPDATE questions SET answer_text = 'How does this affect your mood or energy?' WHERE question_text = 'What is your favorite way to spend a Sunday morning?';
+UPDATE questions SET answer_text = 'What is the first step toward making this a reality?' WHERE question_text = 'What was your dream job when you were a child?';
+UPDATE questions SET answer_text = 'What specific sights, sounds, or smells do you remember?' WHERE question_text = 'If you could live anywhere in the world for a year, where would it be?';
+UPDATE questions SET answer_text = 'Is there a specific memory or feeling associated with the taste?' WHERE question_text = 'What is the best meal you''ve ever had?';
+UPDATE questions SET answer_text = 'What draws you to this activity?' WHERE question_text = 'What is a skill you''ve always wanted to learn?';
+UPDATE questions SET answer_text = 'How did it make you feel?' WHERE question_text = 'What is your favorite book or movie of all time?';
+UPDATE questions SET answer_text = 'What is the one burning question you''d ask them?' WHERE question_text = 'If you could have dinner with any historical figure, who would it be?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is the most adventurous thing you''ve ever done?';
+UPDATE questions SET answer_text = 'How did it make you feel?' WHERE question_text = 'What is a song that always puts you in a good mood?';
+UPDATE questions SET answer_text = 'What value does this bring to your life beyond the material?' WHERE question_text = 'If you won the lottery tomorrow, what is the first thing you would buy?';
+UPDATE questions SET answer_text = 'What draws you to this activity?' WHERE question_text = 'What is a hidden talent you have?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'Do you prefer the beach or the mountains?';
+UPDATE questions SET answer_text = 'Have you passed this wisdom on to anyone else?' WHERE question_text = 'What is the best piece of advice you''ve ever received?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is your favorite holiday tradition?';
+UPDATE questions SET answer_text = 'How would you use it for good (or mischief)?' WHERE question_text = 'If you could have any superpower, what would it be?';
+UPDATE questions SET answer_text = 'Is there a specific memory or feeling associated with the taste?' WHERE question_text = 'What is a weird food combination that you enjoy?';
+UPDATE questions SET answer_text = 'How did it make you feel?' WHERE question_text = 'What is the last concert you went to?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is your favorite board game or card game?';
+UPDATE questions SET answer_text = 'Is there a specific memory or feeling associated with the taste?' WHERE question_text = 'If you could only eat one food for the rest of your life, what would it be?';
+UPDATE questions SET answer_text = 'What specific sights, sounds, or smells do you remember?' WHERE question_text = 'What is a place you''ve visited that you never want to go back to?';
+UPDATE questions SET answer_text = 'What is the one burning question you''d ask them?' WHERE question_text = 'Who is your favorite fictional character?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is something you are currently obsessed with?';
+UPDATE questions SET answer_text = 'What specific sights, sounds, or smells do you remember?' WHERE question_text = 'If you could time travel, would you go to the past or the future?';
+UPDATE questions SET answer_text = 'How does this affect your mood or energy?' WHERE question_text = 'What is your favorite season and why?';
+UPDATE questions SET answer_text = 'What is the first step toward making this a reality?' WHERE question_text = 'What is a goal you have for this year?';
+UPDATE questions SET answer_text = 'Try to describe the feeling in one word.' WHERE question_text = 'What is the funniest thing that has happened to you recently?';
+UPDATE questions SET answer_text = 'What personality trait of theirs do you resonate with?' WHERE question_text = 'If you were an animal, what would you be?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is your favorite way to relax after a long day?';
+UPDATE questions SET answer_text = 'Who did you want to share this news with first?' WHERE question_text = 'What is something you are proud of?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is one of your favorite memories of us together?';
+UPDATE questions SET answer_text = 'What do you value most about this connection?' WHERE question_text = 'What is something I do that makes you feel loved?';
+UPDATE questions SET answer_text = 'What inner strength helped you get through it?' WHERE question_text = 'What is a challenge we''ve overcome that made us stronger?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is something new you''d like to try together?';
+UPDATE questions SET answer_text = 'What specific sights, sounds, or smells do you remember?' WHERE question_text = 'Where do you see us in 5 years?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is a quality of mine that you admire?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is the most romantic thing I''ve ever done for you?';
+UPDATE questions SET answer_text = 'How does this impact your day-to-day life?' WHERE question_text = 'What is your favorite thing about our daily routine?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is a small thing I do that annoys you (be honest!)?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is something you want to support me in right now?';
+UPDATE questions SET answer_text = 'What specific sights, sounds, or smells do you remember?' WHERE question_text = 'What is your favorite trip we''ve taken together?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'How do you think we balance each other out?';
+UPDATE questions SET answer_text = 'Have you passed this wisdom on to anyone else?' WHERE question_text = 'What is something you''ve learned from me?';
+UPDATE questions SET answer_text = 'What is the first step toward making this a reality?' WHERE question_text = 'What is a goal we should set for our relationship?';
+UPDATE questions SET answer_text = 'How did it make you feel?' WHERE question_text = 'What is your favorite way to show affection?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'When do you feel most connected to me?';
+UPDATE questions SET answer_text = 'Elaborate on the ''why'' behind your answer.' WHERE question_text = 'What is a tradition you want to start with me?';
+UPDATE questions SET answer_text = 'What do you value most about this connection?' WHERE question_text = 'What is something you appreciate about my family?';
+UPDATE questions SET answer_text = 'Was it the item itself or the thought behind it?' WHERE question_text = 'What is the best gift I''ve ever given you?';
+
+
+-- Update Multiple Choice Options
+UPDATE questions 
+SET options = '{ "options": [ {"id": "flight", "text": "Flight"}, {"id": "invisibility", "text": "Invisibility"}, {"id": "time_travel", "text": "Time Travel"}, {"id": "telepathy", "text": "Telepathy"} ] }'::jsonb 
+WHERE question_text = 'Which superpower would you choose?';
+
+UPDATE questions 
+SET options = '{ "options": [ {"id": "spring", "text": "Spring"}, {"id": "summer", "text": "Summer"}, {"id": "autumn", "text": "Autumn"}, {"id": "winter", "text": "Winter"} ] }'::jsonb 
+WHERE question_text = 'What is your favorite season and why?';
+
+UPDATE questions 
+SET options = '{ "options": [ {"id": "fire", "text": "Fire (Passion/Energy)"}, {"id": "water", "text": "Water (Emotion/Flow)"}, {"id": "earth", "text": "Earth (Stability/Growth)"}, {"id": "air", "text": "Air (Intellect/Freedom)"} ] }'::jsonb 
+WHERE question_text = 'Which element do you relate to most?';
+
+UPDATE questions 
+SET options = '{ "options": [ {"id": "beach", "text": "Relaxing Beach Resort"}, {"id": "adventure", "text": "Mountain Adventure"}, {"id": "city", "text": "European City Tour"}, {"id": "staycation", "text": "Cozy Staycation"} ] }'::jsonb 
+WHERE question_text = 'Which vacation destination should we plan next?';
+
+UPDATE questions 
+SET options = '{ "options": [ {"id": "finance", "text": "Financial Freedom"}, {"id": "health", "text": "Health & Fitness"}, {"id": "hobby", "text": "Learning a New Hobby"}, {"id": "travel", "text": "Traveling More"} ] }'::jsonb 
+WHERE question_text = 'What is a shared goal we should focus on this year?';
+
+UPDATE questions 
+SET options = '{ "options": [ {"id": "newlyweds", "text": "The Beginning"}, {"id": "middle", "text": "The Middle Years"}, {"id": "now", "text": "Right Now"}, {"id": "future", "text": "The Future"} ] }'::jsonb 
+WHERE question_text = 'Which phase of our life together has been your favorite?';
