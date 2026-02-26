@@ -229,32 +229,56 @@ export default function QuestionCard({
           {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <div className="space-y-3">
-                <Button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (question.index === question.total) {
-                        // End Session Logic
-                        onNext();
-                    } else {
-                        // Toggle Ready -> Triggers Next if both ready
-                        handleReadyToggle();
-                    }
-                  }}
-                  variant={ready ? "black" : "primary"}
-                  size="lg"
-                  fullWidth
-                  className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                  icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
-                >
-                  {question.index === question.total 
-                    ? "End Session" 
-                    : (ready ? "Waiting for Partner..." : "I'm Ready")}
-                </Button>
-                
-                {partnerReady && !ready && question.index !== question.total && (
-                  <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
-                    Partner is ready! Press "I'm Ready" to continue.
-                  </p>
+                {/* For Multiple Choice: Show "Lock In Answer" unless revealed */}
+                {isMultipleChoice && !localRevealed ? (
+                   <div className="space-y-3">
+                    {submitted ? (
+                      <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500 font-medium border border-gray-100">
+                        Answer Submitted. Waiting for partner...
+                      </div>
+                    ) : (
+                      <Button
+                        onClick={handleSubmitAnswer}
+                        disabled={!selectedOption}
+                        variant="primary"
+                        size="lg"
+                        fullWidth
+                      >
+                        Lock In Answer
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                   /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
+                   <>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (question.index === question.total) {
+                            // End Session Logic
+                            onNext();
+                        } else {
+                            // Toggle Ready -> Triggers Next if both ready
+                            handleReadyToggle();
+                        }
+                      }}
+                      variant={ready ? "black" : "primary"}
+                      size="lg"
+                      fullWidth
+                      className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
+                      icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                    >
+                      {question.index === question.total 
+                        ? "End Session" 
+                        : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                    </Button>
+                    
+                    {partnerReady && !ready && question.index !== question.total && (
+                      <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
+                        Partner is ready! Press "I'm Ready" to continue.
+                      </p>
+                    )}
+                   </>
                 )}
               </div>
             </motion.div>
