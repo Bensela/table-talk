@@ -264,12 +264,16 @@ io.on('connection', (socket) => {
 
   // Dual-Phone: Reveal Ritual (Multiple-Choice)
   socket.on('answer_submitted', ({ selectionId, user_id }) => {
+    console.log(`[Backend] Answer submitted by ${user_id || socket.participantId}:`, selectionId);
+
     // If no participantId on socket, try to use user_id from payload (fallback)
     const pId = socket.participantId || user_id;
     if (!pId) return;
 
     const state = getSessionState(socket.sessionId);
     state.answers.set(pId, selectionId);
+
+    console.log(`[Backend] Current answers for session ${socket.sessionId}:`, Array.from(state.answers.entries()));
 
     // Check if both submitted
     const room = io.sockets.adapter.rooms.get(socket.sessionId);
@@ -278,6 +282,7 @@ io.on('connection', (socket) => {
     if (clientCount >= 2 && state.answers.size >= 2) {
       // Reveal answers
       const selections = Object.fromEntries(state.answers);
+      console.log('[Backend] Emitting reveal_answers:', selections);
       io.to(socket.sessionId).emit('reveal_answers', { selections });
     } else {
       socket.emit('waiting_for_partner');
