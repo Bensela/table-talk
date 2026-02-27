@@ -25,10 +25,24 @@ export default function QuestionCard({
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState({});
+  const [readyToProceed, setReadyToProceed] = useState(false); // Delay for MC reveal
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
   }, [isRevealed, question.question_id]);
+
+  // Handle Reveal Delay for Multiple Choice
+  useEffect(() => {
+    if (question.question_type === 'multiple-choice' && localRevealed) {
+      // Delay showing the "I'm Ready" button to let users see the result
+      const timer = setTimeout(() => {
+        setReadyToProceed(true);
+      }, 4000); // 4 seconds delay
+      return () => clearTimeout(timer);
+    } else {
+      setReadyToProceed(false);
+    }
+  }, [localRevealed, question.question_type]);
 
   // Reset state on new question
   useEffect(() => {
@@ -40,6 +54,7 @@ export default function QuestionCard({
     setSubmitted(false);
     setPartnerSelections({});
     setLocalRevealed(false);
+    setReadyToProceed(false);
   }, [question.question_id]);
 
   // Socket Listeners
@@ -249,34 +264,47 @@ export default function QuestionCard({
                     )}
                   </div>
                 ) : (
-                   /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
+                   /* For Open Ended OR Revealed Multiple Choice */
                    <>
-                    <Button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (question.index === question.total) {
-                            // End Session Logic
-                            onNext();
-                        } else {
-                            // Toggle Ready -> Triggers Next if both ready
-                            handleReadyToggle();
-                        }
-                      }}
-                      variant={ready ? "black" : "black"}
-                      size="lg"
-                      fullWidth
-                      className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                      icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
-                    >
-                      {question.index === question.total 
-                        ? "End Session" 
-                        : (ready ? "Waiting for Partner..." : "I'm Ready")}
-                    </Button>
-                    
-                    {partnerReady && !ready && question.index !== question.total && (
-                      <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
-                        Partner is ready! Press "I'm Ready" to continue.
-                      </p>
+                    {/* If Multiple Choice Just Revealed, show buffer message before Ready button */}
+                    {isMultipleChoice && localRevealed && !readyToProceed ? (
+                       <div className="p-4 text-center">
+                         <p className="text-green-600 font-bold text-lg animate-bounce">
+                           Answers Revealed!
+                         </p>
+                         <p className="text-sm text-gray-400">Reviewing...</p>
+                       </div>
+                    ) : (
+                        /* Show Ready Button */
+                        <>
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (question.index === question.total) {
+                                // End Session Logic
+                                onNext();
+                            } else {
+                                // Toggle Ready -> Triggers Next if both ready
+                                handleReadyToggle();
+                            }
+                          }}
+                          variant={ready ? "black" : "black"}
+                          size="lg"
+                          fullWidth
+                          className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
+                          icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                        >
+                          {question.index === question.total 
+                            ? "End Session" 
+                            : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                        </Button>
+                        
+                        {partnerReady && !ready && question.index !== question.total && (
+                          <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
+                            Partner is ready! Press "I'm Ready" to continue.
+                          </p>
+                        )}
+                        </>
                     )}
                    </>
                 )}
