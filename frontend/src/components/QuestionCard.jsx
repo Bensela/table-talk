@@ -185,7 +185,7 @@ export default function QuestionCard({
               {question.options.options.map((opt) => {
                 const isSelected = selectedOption === opt.id;
                 // Check if partner selected this
-                const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => uid !== userId)?.[1];
+                const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => String(uid) !== String(userId))?.[1];
                 const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
                 
                 // Determine style based on state
