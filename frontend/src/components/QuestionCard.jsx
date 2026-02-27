@@ -272,22 +272,17 @@ export default function QuestionCard({
                       <p className="text-[10px] font-bold text-green-500 uppercase tracking-widest mb-1">Partner Picked</p>
                       <p className="text-gray-900 font-bold text-sm leading-snug">
                         {(() => {
-                           // If partnerSelections is { "userA": "opt1", "userB": "opt2" }
-                           // And I am "userA", I need to find the entry that is NOT my userId.
-                           const partnerId = Object.keys(partnerSelections).find(uid => uid !== userId);
-                           // However, sometimes userId format might mismatch (string vs int) or socket ID differences
-                           // Fallback: If only 2 entries, pick the one that isn't me.
+                           // Logic to find partner's selection
+                           // 1. Convert everything to strings to avoid type mismatch
+                           const myIdStr = String(userId);
                            
-                           let pAuthId = null;
-                           if (partnerId) {
-                               pAuthId = partnerSelections[partnerId];
-                           } else {
-                               // Edge case: maybe partner hasn't synced yet or ID mismatch
-                               // Try finding any key that isn't my exact userId
-                               const otherKey = Object.keys(partnerSelections).find(k => String(k) !== String(userId));
-                               if (otherKey) pAuthId = partnerSelections[otherKey];
-                           }
+                           // 2. Find the entry where key !== myId
+                           const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
+                           
+                           // 3. Get the option ID
+                           const pAuthId = partnerEntry ? partnerEntry[1] : null;
 
+                           // 4. Find text
                            return question.options?.options?.find(o => o.id === pAuthId)?.text || '...';
                         })()}
                       </p>
