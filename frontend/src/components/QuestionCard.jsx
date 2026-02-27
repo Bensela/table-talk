@@ -44,7 +44,8 @@ export default function QuestionCard({
     const mySelectionStr = String(selectedOption);
 
     // DEBUG: Log to console (now only runs when deps change)
-    console.log('PartnerCalc:', { partnerSelections, myIdStr, mySelectionStr });
+    console.log("FULL PARTNER DATA:", JSON.stringify(partnerSelections));
+    console.log('PartnerCalc:', { myIdStr, mySelectionStr });
 
     // 1. Try strict ID match (Best)
     const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
