@@ -271,7 +271,9 @@ io.on('connection', (socket) => {
     if (!pId) return;
 
     const state = getSessionState(socket.sessionId);
-    state.answers.set(pId, selectionId);
+    // Ensure selectionId is not undefined (use null to preserve key in JSON)
+    const safeSelectionId = selectionId === undefined ? null : selectionId;
+    state.answers.set(pId, safeSelectionId);
 
     console.log(`[Backend] Current answers for session ${socket.sessionId}:`, Array.from(state.answers.entries()));
 
