@@ -263,11 +263,13 @@ io.on('connection', (socket) => {
   });
 
   // Dual-Phone: Reveal Ritual (Multiple-Choice)
-  socket.on('answer_submitted', ({ selectionId }) => {
-    if (!socket.participantId) return;
+  socket.on('answer_submitted', ({ selectionId, user_id }) => {
+    // If no participantId on socket, try to use user_id from payload (fallback)
+    const pId = socket.participantId || user_id;
+    if (!pId) return;
 
     const state = getSessionState(socket.sessionId);
-    state.answers.set(socket.participantId, selectionId);
+    state.answers.set(pId, selectionId);
 
     // Check if both submitted
     const room = io.sockets.adapter.rooms.get(socket.sessionId);
