@@ -35,6 +35,7 @@ export default function SessionGame() {
   const [question, setQuestion] = useState(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
+  const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
   const [isConnected, setIsConnected] = useState(false);
   const [participantId, setParticipantId] = useState(null);
@@ -155,7 +156,10 @@ export default function SessionGame() {
     });
 
     socket.on('reveal_answers', (data) => {
-       // data.selections could be used to show what partner picked
+       console.log('[SessionGame] Received reveal_answers:', data);
+       if (data && data.selections) {
+         setPartnerSelections(data.selections);
+       }
        setIsRevealed(true);
        setWaitingForPartner(false);
     });
@@ -165,6 +169,7 @@ export default function SessionGame() {
       fetchCurrentQuestion();
       setIsRevealed(false);
       setWaitingForPartner(false);
+      setPartnerSelections({}); // Reset selections on new question
     });
 
     socket.on('waiting_for_partner', () => {
@@ -406,6 +411,7 @@ export default function SessionGame() {
           socket={socketRef.current}
           sessionId={sessionId}
           userId={participantId}
+          partnerSelectionsData={partnerSelections}
         />
       </div>
     </div>
