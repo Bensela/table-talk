@@ -51,8 +51,8 @@ export default function WelcomeScreen() {
 
   const handleJoinDual = () => {
     if (activeSession) {
-        // Go to Mode Selection with context to join
-        navigate(`/t/${tableToken}/mode`, { state: { context: activeSession.context } });
+        // Go to Mode Selection but directly to 'enter-code' view
+        navigate(`/t/${tableToken}/mode`, { state: { context: activeSession.context, view: 'enter-code' } });
     }
   };
 

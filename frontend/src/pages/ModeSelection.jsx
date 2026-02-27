@@ -14,7 +14,7 @@ export default function ModeSelection() {
   const [loading, setLoading] = useState(false);
   
   // View State: 'mode-select', 'show-code', 'enter-code'
-  const [view, setView] = useState('mode-select');
+  const [view, setView] = useState(location.state?.view || 'mode-select');
   const [pairingCode, setPairingCode] = useState(null);
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState(null);
@@ -374,17 +374,7 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
             />
           </motion.div>
 
-          {/* Option 3: Join Dual-Phone */}
-          <motion.div variants={item}>
-            <SelectionCard
-              title="Join Dual-Phone Session"
-              description="Enter a code from your partner."
-              icon="🔗"
-              onClick={() => setView('enter-code')}
-              disabled={loading}
-              className="hover:border-purple-200 hover:shadow-xl hover:shadow-purple-500/5 py-6 bg-gray-50/50"
-            />
-          </motion.div>
+          {/* Option 3: Join Dual-Phone - REMOVED per user request */}
         </motion.div>
       </main>
       
