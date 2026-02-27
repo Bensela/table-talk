@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from './ui/Button';
 
@@ -34,6 +34,51 @@ export default function QuestionCard({
       setPartnerSelections(partnerSelectionsData);
     }
   }, [partnerSelectionsData]);
+
+  // Memoize partner selection logic to prevent re-render loops and unnecessary recalculations
+  const partnerPickedText = useMemo(() => {
+    if (!localRevealed || !partnerSelections) return '...';
+
+    // Logic to find partner's selection
+    const myIdStr = String(userId);
+    const mySelectionStr = String(selectedOption);
+
+    // DEBUG: Log to console (now only runs when deps change)
+    console.log('PartnerCalc:', { partnerSelections, myIdStr, mySelectionStr });
+
+    // 1. Try strict ID match (Best)
+    const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
+    
+    let pAuthId = null;
+    
+    if (partnerEntry) {
+        pAuthId = partnerEntry[1];
+    } else {
+        // 2. Fallback: Value Inference (If IDs are messed up)
+        const allSelectedIds = Object.values(partnerSelections);
+        
+        // If we have distinct values, find the one that isn't mine
+        const otherValue = allSelectedIds.find(val => String(val) !== mySelectionStr);
+        
+        if (otherValue) {
+            pAuthId = otherValue;
+        } else if (allSelectedIds.length >= 2) {
+            // If all values are the same (and we have at least 2), then partner picked the same
+            pAuthId = selectedOption;
+        }
+    }
+
+    // 4. Find text
+    // Fallback to "..." if text not found, but if we have a valid ID but no text, show "Unknown"
+    // This helps distinguish between "No ID found" vs "ID found but no text match"
+    const text = question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text;
+    
+    // Final fallback: if pAuthId exists but no text match, show ID for debugging? 
+    // Or better: check if pAuthId is null
+    if (!pAuthId) return '...';
+    
+    return text || '...';
+  }, [localRevealed, partnerSelections, userId, selectedOption, question.options]);
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
@@ -279,42 +324,14 @@ export default function QuestionCard({
                    <div className="flex-1 text-center">
                       <p className="text-[10px] font-bold text-green-500 uppercase tracking-widest mb-1">Partner Picked</p>
                       <p className="text-gray-900 font-bold text-sm leading-snug">
-                        {(() => {
-                           // Logic to find partner's selection
-                           const myIdStr = String(userId);
-                           const mySelectionStr = String(selectedOption);
-
-                           // DEBUG: Log to console
-                           console.log('PartnerCalc:', { partnerSelections, myIdStr, mySelectionStr });
-
-                           // 1. Try strict ID match (Best)
-                           const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
-                           
-                           let pAuthId = null;
-                           
-                           if (partnerEntry) {
-                               pAuthId = partnerEntry[1];
-                           } else {
-                               // 2. Fallback: Value Inference (If IDs are messed up)
-                               const allSelectedIds = Object.values(partnerSelections);
-                               
-                               // If we have distinct values, find the one that isn't mine
-                               const otherValue = allSelectedIds.find(val => String(val) !== mySelectionStr);
-                               
-                               if (otherValue) {
-                                   pAuthId = otherValue;
-                               } else if (allSelectedIds.length >= 2) {
-                                   // If all values are the same (and we have at least 2), then partner picked the same
-                                   pAuthId = selectedOption;
-                               }
-                           }
-
-                           // 4. Find text
-                           return question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text || '...';
-                        })()}
+                        {partnerPickedText}
                       </p>
-                      {/* Debug Info (Hidden in prod, visible for now if needed) */}
-                      {/* <div className="text-[8px] text-gray-300 mt-1">{JSON.stringify(partnerSelections)}</div> */}
+                      {/* Visual Debugger for User */}
+                      <div className="mt-2 p-2 bg-gray-100 rounded text-[10px] text-left text-gray-500 overflow-hidden hidden">
+                        <p><strong>Debug Info:</strong></p>
+                        <p>My ID: {String(userId).slice(0, 8)}...</p>
+                        <p>Selections: {JSON.stringify(partnerSelections)}</p>
+                      </div>
                    </div>
                 </div>
              </motion.div>
