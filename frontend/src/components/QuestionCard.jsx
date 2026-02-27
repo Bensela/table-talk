@@ -186,6 +186,19 @@ export default function QuestionCard({
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => uid !== userId)?.[1];
                 const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
+                
+                // Determine style based on state
+                let optionStyle = 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white';
+                if (isSelected && isPartnerSelected) {
+                    // Both picked same
+                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2';
+                } else if (isSelected) {
+                    // You picked
+                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900';
+                } else if (isPartnerSelected) {
+                    // Partner picked
+                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2';
+                }
 
                 return (
                   <button
@@ -194,16 +207,13 @@ export default function QuestionCard({
                     disabled={submitted || localRevealed}
                     className={`
                       w-full p-4 rounded-xl border-2 text-left transition-all flex justify-between items-center group
-                      ${isSelected 
-                        ? 'border-blue-500 bg-blue-50 text-blue-900' 
-                        : 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white'}
-                      ${isPartnerSelected ? 'ring-2 ring-green-400 ring-offset-2' : ''}
+                      ${optionStyle}
                     `}
                   >
                     <span className="font-medium">{opt.text}</span>
-                    <div className="flex gap-2">
-                      {isSelected && <span className="text-blue-500 font-bold">You</span>}
-                      {isPartnerSelected && <span className="text-green-500 font-bold">Partner</span>}
+                    <div className="flex gap-2 text-xs uppercase font-bold tracking-wider">
+                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-500"}>You</span>}
+                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-500"}>Partner</span>}
                     </div>
                   </button>
                 );
