@@ -283,7 +283,8 @@ export default function QuestionCard({
                            const pAuthId = partnerEntry ? partnerEntry[1] : null;
 
                            // 4. Find text
-                           return question.options?.options?.find(o => o.id === pAuthId)?.text || '...';
+                           // Ensure both are strings for comparison
+                           return question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text || '...';
                         })()}
                       </p>
                    </div>
