@@ -11,7 +11,8 @@ export default function QuestionCard({
   mode,
   socket,
   sessionId,
-  userId
+  userId,
+  partnerSelectionsData = {}
 }) {
   const [localRevealed, setLocalRevealed] = useState(isRevealed);
   
@@ -24,8 +25,15 @@ export default function QuestionCard({
   // Multiple Choice State
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
-  const [partnerSelections, setPartnerSelections] = useState({});
+  const [partnerSelections, setPartnerSelections] = useState(partnerSelectionsData);
   const [showReadyButton, setShowReadyButton] = useState(false);
+
+  // Sync prop changes (if parent gets data first/later)
+  useEffect(() => {
+    if (partnerSelectionsData && Object.keys(partnerSelectionsData).length > 0) {
+      setPartnerSelections(partnerSelectionsData);
+    }
+  }, [partnerSelectionsData]);
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
@@ -273,17 +281,33 @@ export default function QuestionCard({
                       <p className="text-gray-900 font-bold text-sm leading-snug">
                         {(() => {
                            // Logic to find partner's selection
-                           // 1. Convert everything to strings to avoid type mismatch
                            const myIdStr = String(userId);
-                           
-                           // 2. Find the entry where key !== myId
+                           const mySelectionStr = String(selectedOption);
+
+                           // 1. Try strict ID match (Best)
                            const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
                            
-                           // 3. Get the option ID
-                           const pAuthId = partnerEntry ? partnerEntry[1] : null;
+                           let pAuthId = null;
+                           
+                           if (partnerEntry) {
+                               pAuthId = partnerEntry[1];
+                           } else {
+                               // 2. Fallback: Value Inference (If IDs are messed up)
+                               const allSelectedIds = Object.values(partnerSelections);
+                               
+                               // If we have distinct values, find the one that isn't mine
+                               const otherValue = allSelectedIds.find(val => String(val) !== mySelectionStr);
+                               
+                               if (otherValue) {
+                                   pAuthId = otherValue;
+                               } else if (allSelectedIds.length >= 2) {
+                                   // If all values are the same (and we have at least 2), then partner picked the same
+                                   // (Assuming we only have 2 players)
+                                   pAuthId = selectedOption;
+                               }
+                           }
 
                            // 4. Find text
-                           // Ensure both are strings for comparison
                            return question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text || '...';
                         })()}
                       </p>
