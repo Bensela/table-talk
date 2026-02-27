@@ -48,23 +48,29 @@ export default function QuestionCard({
     console.log('PartnerCalc:', { myIdStr, mySelectionStr });
 
     // 1. Try strict ID match (Best)
+    // IMPORTANT: The backend sanitizes undefined to null, so the value might be null if not found.
     const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
     
     let pAuthId = null;
     
     if (partnerEntry) {
+        // partnerEntry[1] is the value (option ID)
         pAuthId = partnerEntry[1];
     } else {
         // 2. Fallback: Value Inference (If IDs are messed up)
         const allSelectedIds = Object.values(partnerSelections);
         
         // If we have distinct values, find the one that isn't mine
-        const otherValue = allSelectedIds.find(val => String(val) !== mySelectionStr);
+        // Ensure we filter out nulls first
+        const validIds = allSelectedIds.filter(v => v !== null);
+        
+        // Find a value that is NOT my selection
+        const otherValue = validIds.find(val => String(val) !== mySelectionStr);
         
         if (otherValue) {
             pAuthId = otherValue;
-        } else if (allSelectedIds.length >= 2) {
-            // If all values are the same (and we have at least 2), then partner picked the same
+        } else if (validIds.length >= 2) {
+            // If all valid values are the same (and we have at least 2), then partner picked the same
             pAuthId = selectedOption;
         }
     }
