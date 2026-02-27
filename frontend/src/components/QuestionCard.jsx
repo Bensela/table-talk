@@ -25,10 +25,25 @@ export default function QuestionCard({
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState({});
+  const [showReadyButton, setShowReadyButton] = useState(false);
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
   }, [isRevealed, question.question_id]);
+
+  // Delay "I'm Ready" button for Multiple Choice to allow viewing results
+  useEffect(() => {
+    if (question.question_type === 'multiple-choice' && localRevealed) {
+      setShowReadyButton(false);
+      const timer = setTimeout(() => {
+        setShowReadyButton(true);
+      }, 3000); // 3 second delay
+      return () => clearTimeout(timer);
+    } else {
+      // Immediate for open-ended or unrevealed
+      setShowReadyButton(true);
+    }
+  }, [localRevealed, question.question_type]);
 
   // Reset state on new question
   useEffect(() => {
@@ -40,6 +55,7 @@ export default function QuestionCard({
     setSubmitted(false);
     setPartnerSelections({});
     setLocalRevealed(false);
+    setShowReadyButton(false);
   }, [question.question_id]);
 
   // Socket Listeners
@@ -171,6 +187,19 @@ export default function QuestionCard({
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => uid !== userId)?.[1];
                 const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
+                
+                // Determine style based on state
+                let optionStyle = 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white';
+                if (isSelected && isPartnerSelected) {
+                    // Both picked same
+                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2';
+                } else if (isSelected) {
+                    // You picked
+                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900';
+                } else if (isPartnerSelected) {
+                    // Partner picked
+                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2';
+                }
 
                 return (
                   <button
@@ -179,16 +208,13 @@ export default function QuestionCard({
                     disabled={submitted || localRevealed}
                     className={`
                       w-full p-4 rounded-xl border-2 text-left transition-all flex justify-between items-center group
-                      ${isSelected 
-                        ? 'border-blue-500 bg-blue-50 text-blue-900' 
-                        : 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white'}
-                      ${isPartnerSelected ? 'ring-2 ring-green-400 ring-offset-2' : ''}
+                      ${optionStyle}
                     `}
                   >
                     <span className="font-medium">{opt.text}</span>
-                    <div className="flex gap-2">
-                      {isSelected && <span className="text-blue-500 font-bold">You</span>}
-                      {isPartnerSelected && <span className="text-green-500 font-bold">Partner</span>}
+                    <div className="flex gap-2 text-xs uppercase font-bold tracking-wider">
+                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-500"}>You</span>}
+                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-500"}>Partner</span>}
                     </div>
                   </button>
                 );
@@ -251,29 +277,36 @@ export default function QuestionCard({
                 ) : (
                    /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
                    <>
-                    <Button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (question.index === question.total) {
-                            // End Session Logic
-                            onNext();
-                        } else {
-                            // Toggle Ready -> Triggers Next if both ready
-                            handleReadyToggle();
-                        }
-                      }}
-                      variant={ready ? "black" : "black"}
-                      size="lg"
-                      fullWidth
-                      className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                      icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
-                    >
-                      {question.index === question.total 
-                        ? "End Session" 
-                        : (ready ? "Waiting for Partner..." : "I'm Ready")}
-                    </Button>
+                    {/* Delay showing Ready button for Multiple Choice */}
+                    {isMultipleChoice && localRevealed && !showReadyButton ? (
+                        <div className="p-4 text-center">
+                            <p className="text-gray-500 font-medium animate-pulse">Viewing Results...</p>
+                        </div>
+                    ) : (
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (question.index === question.total) {
+                                // End Session Logic
+                                onNext();
+                            } else {
+                                // Toggle Ready -> Triggers Next if both ready
+                                handleReadyToggle();
+                            }
+                          }}
+                          variant={ready ? "black" : "black"}
+                          size="lg"
+                          fullWidth
+                          className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
+                          icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                        >
+                          {question.index === question.total 
+                            ? "End Session" 
+                            : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                        </Button>
+                    )}
                     
-                    {partnerReady && !ready && question.index !== question.total && (
+                    {partnerReady && !ready && question.index !== question.total && showReadyButton && (
                       <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
                         Partner is ready! Press "I'm Ready" to continue.
                       </p>
