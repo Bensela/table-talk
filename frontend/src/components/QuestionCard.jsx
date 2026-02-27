@@ -43,10 +43,6 @@ export default function QuestionCard({
     const myIdStr = String(userId);
     const mySelectionStr = String(selectedOption);
 
-    // DEBUG: Log to console (now only runs when deps change)
-    console.log("FULL PARTNER DATA:", JSON.stringify(partnerSelections));
-    console.log('PartnerCalc:', { myIdStr, mySelectionStr });
-
     // 1. Try strict ID match (Best)
     // IMPORTANT: The backend sanitizes undefined to null, so the value might be null if not found.
     const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
@@ -335,12 +331,6 @@ export default function QuestionCard({
                       <p className="text-gray-900 font-bold text-sm leading-snug">
                         {partnerPickedText}
                       </p>
-                      {/* Visual Debugger for User */}
-                      <div className="mt-2 p-2 bg-gray-100 rounded text-[10px] text-left text-gray-500 overflow-hidden hidden">
-                        <p><strong>Debug Info:</strong></p>
-                        <p>My ID: {String(userId).slice(0, 8)}...</p>
-                        <p>Selections: {JSON.stringify(partnerSelections)}</p>
-                      </div>
                    </div>
                 </div>
              </motion.div>
