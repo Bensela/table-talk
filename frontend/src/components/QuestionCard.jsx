@@ -251,6 +251,37 @@ export default function QuestionCard({
              </motion.div>
           )}
 
+          {/* MULTIPLE CHOICE RESULT SUMMARY */}
+          {mode === 'dual-phone' && isMultipleChoice && localRevealed && (
+             <motion.div 
+               initial={{ opacity: 0, y: 10 }} 
+               animate={{ opacity: 1, y: 0 }}
+               className="bg-gray-50 rounded-xl p-4 border border-gray-200 shadow-sm"
+             >
+                <div className="flex justify-between items-start gap-4">
+                   <div className="flex-1 text-center">
+                      <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest mb-1">You Picked</p>
+                      <p className="text-gray-900 font-bold text-sm leading-snug">
+                        {question.options?.options?.find(o => o.id === selectedOption)?.text || '-'}
+                      </p>
+                   </div>
+                   
+                   <div className="w-px bg-gray-200 self-stretch"></div>
+
+                   <div className="flex-1 text-center">
+                      <p className="text-[10px] font-bold text-green-500 uppercase tracking-widest mb-1">Partner Picked</p>
+                      <p className="text-gray-900 font-bold text-sm leading-snug">
+                        {(() => {
+                           const partnerId = Object.keys(partnerSelections).find(uid => uid !== userId);
+                           const pAuthId = partnerId ? partnerSelections[partnerId] : null;
+                           return question.options?.options?.find(o => o.id === pAuthId)?.text || '...';
+                        })()}
+                      </p>
+                   </div>
+                </div>
+             </motion.div>
+          )}
+
           {/* DUAL MODE: Ready Button Only (Replaces Next) */}
           {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
