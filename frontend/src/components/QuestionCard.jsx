@@ -25,24 +25,10 @@ export default function QuestionCard({
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState({});
-  const [readyToProceed, setReadyToProceed] = useState(false); // Delay for MC reveal
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
   }, [isRevealed, question.question_id]);
-
-  // Handle Reveal Delay for Multiple Choice
-  useEffect(() => {
-    if (question.question_type === 'multiple-choice' && localRevealed) {
-      // Delay showing the "I'm Ready" button to let users see the result
-      const timer = setTimeout(() => {
-        setReadyToProceed(true);
-      }, 4000); // 4 seconds delay
-      return () => clearTimeout(timer);
-    } else {
-      setReadyToProceed(false);
-    }
-  }, [localRevealed, question.question_type]);
 
   // Reset state on new question
   useEffect(() => {
@@ -54,7 +40,6 @@ export default function QuestionCard({
     setSubmitted(false);
     setPartnerSelections({});
     setLocalRevealed(false);
-    setReadyToProceed(false);
   }, [question.question_id]);
 
   // Socket Listeners
@@ -186,19 +171,6 @@ export default function QuestionCard({
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => uid !== userId)?.[1];
                 const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
-                
-                // Determine style based on state
-                let optionStyle = 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white';
-                if (isSelected && isPartnerSelected) {
-                    // Both picked same
-                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2';
-                } else if (isSelected) {
-                    // You picked
-                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900';
-                } else if (isPartnerSelected) {
-                    // Partner picked
-                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2';
-                }
 
                 return (
                   <button
@@ -207,13 +179,16 @@ export default function QuestionCard({
                     disabled={submitted || localRevealed}
                     className={`
                       w-full p-4 rounded-xl border-2 text-left transition-all flex justify-between items-center group
-                      ${optionStyle}
+                      ${isSelected 
+                        ? 'border-blue-500 bg-blue-50 text-blue-900' 
+                        : 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white'}
+                      ${isPartnerSelected ? 'ring-2 ring-green-400 ring-offset-2' : ''}
                     `}
                   >
                     <span className="font-medium">{opt.text}</span>
-                    <div className="flex gap-2 text-xs uppercase font-bold tracking-wider">
-                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-500"}>You</span>}
-                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-500"}>Partner</span>}
+                    <div className="flex gap-2">
+                      {isSelected && <span className="text-blue-500 font-bold">You</span>}
+                      {isPartnerSelected && <span className="text-green-500 font-bold">Partner</span>}
                     </div>
                   </button>
                 );
@@ -274,47 +249,34 @@ export default function QuestionCard({
                     )}
                   </div>
                 ) : (
-                   /* For Open Ended OR Revealed Multiple Choice */
+                   /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
                    <>
-                    {/* If Multiple Choice Just Revealed, show buffer message before Ready button */}
-                    {isMultipleChoice && localRevealed && !readyToProceed ? (
-                       <div className="p-4 text-center">
-                         <p className="text-green-600 font-bold text-lg animate-bounce">
-                           Answers Revealed!
-                         </p>
-                         <p className="text-sm text-gray-400">Reviewing...</p>
-                       </div>
-                    ) : (
-                        /* Show Ready Button */
-                        <>
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (question.index === question.total) {
-                                // End Session Logic
-                                onNext();
-                            } else {
-                                // Toggle Ready -> Triggers Next if both ready
-                                handleReadyToggle();
-                            }
-                          }}
-                          variant={ready ? "black" : "black"}
-                          size="lg"
-                          fullWidth
-                          className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                          icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
-                        >
-                          {question.index === question.total 
-                            ? "End Session" 
-                            : (ready ? "Waiting for Partner..." : "I'm Ready")}
-                        </Button>
-                        
-                        {partnerReady && !ready && question.index !== question.total && (
-                          <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
-                            Partner is ready! Press "I'm Ready" to continue.
-                          </p>
-                        )}
-                        </>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (question.index === question.total) {
+                            // End Session Logic
+                            onNext();
+                        } else {
+                            // Toggle Ready -> Triggers Next if both ready
+                            handleReadyToggle();
+                        }
+                      }}
+                      variant={ready ? "black" : "black"}
+                      size="lg"
+                      fullWidth
+                      className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
+                      icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                    >
+                      {question.index === question.total 
+                        ? "End Session" 
+                        : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                    </Button>
+                    
+                    {partnerReady && !ready && question.index !== question.total && (
+                      <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
+                        Partner is ready! Press "I'm Ready" to continue.
+                      </p>
                     )}
                    </>
                 )}
