@@ -284,6 +284,9 @@ export default function QuestionCard({
                            const myIdStr = String(userId);
                            const mySelectionStr = String(selectedOption);
 
+                           // DEBUG: Log to console
+                           console.log('PartnerCalc:', { partnerSelections, myIdStr, mySelectionStr });
+
                            // 1. Try strict ID match (Best)
                            const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
                            
@@ -302,7 +305,6 @@ export default function QuestionCard({
                                    pAuthId = otherValue;
                                } else if (allSelectedIds.length >= 2) {
                                    // If all values are the same (and we have at least 2), then partner picked the same
-                                   // (Assuming we only have 2 players)
                                    pAuthId = selectedOption;
                                }
                            }
@@ -311,6 +313,8 @@ export default function QuestionCard({
                            return question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text || '...';
                         })()}
                       </p>
+                      {/* Debug Info (Hidden in prod, visible for now if needed) */}
+                      {/* <div className="text-[8px] text-gray-300 mt-1">{JSON.stringify(partnerSelections)}</div> */}
                    </div>
                 </div>
              </motion.div>
