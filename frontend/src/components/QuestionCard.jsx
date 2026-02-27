@@ -168,11 +168,13 @@ export default function QuestionCard({
   const handleSubmitAnswer = () => {
     if (selectedOption) {
       setSubmitted(true);
+      // Emit selectionId as-is (assuming it is defined/truthy)
+      console.log("Submitting answer:", selectedOption);
       socket.emit('answer_submitted', { 
         sessionId, 
         user_id: userId, 
         question_id: question.question_id, 
-        option_id: selectedOption 
+        selectionId: selectedOption 
       });
     }
   };
