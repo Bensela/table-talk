@@ -128,14 +128,20 @@ function getSessionState(sessionId) {
   if (!sessionStates.has(sessionId)) {
     sessionStates.set(sessionId, {
       ready: new Map(),
-      answers: new Map()
+      answers: new Map(),
+      nextIntent: new Set() // Track users who pressed "Next Question"
     });
   }
   return sessionStates.get(sessionId);
 }
 
 function clearSessionState(sessionId) {
-  sessionStates.delete(sessionId);
+  const state = sessionStates.get(sessionId);
+  if (state) {
+      state.ready.clear();
+      state.answers.clear();
+      state.nextIntent.clear();
+  }
   pendingNextClicks.delete(sessionId);
 }
 
@@ -302,6 +308,63 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Dual Mode Next Intent Gating
+  socket.on('dual_next_intent', async () => {
+    if (!socket.participantId) return;
+    const sessionId = socket.sessionId;
+    
+    try {
+        const state = getSessionState(sessionId);
+        
+        // Idempotency: Add to set (duplicates ignored)
+        state.nextIntent.add(socket.participantId);
+        console.log(`[Socket] Next Intent from ${socket.participantId} (Total: ${state.nextIntent.size})`);
+
+        const room = io.sockets.adapter.rooms.get(sessionId);
+        const clientCount = room ? room.size : 0;
+        
+        // Check gating: Need intents from all connected clients (min 2)
+        // If clientCount is 1 (partner disconnected), we might want to allow advance?
+        // Spec says "Both devices". If one is missing, they are stuck.
+        // Let's enforce >= 2 for "Dual Mode".
+        const requiredCount = Math.max(2, clientCount);
+
+        // Emit 'next_intent_update' to notify clients of current intent count
+        // This is optional per prompt but helpful for debugging/UI
+        io.to(sessionId).emit('next_intent_update', { count: state.nextIntent.size, required: requiredCount });
+
+        if (state.nextIntent.size >= requiredCount) {
+            console.log(`[Socket] All intents received. Advancing session ${sessionId}...`);
+            
+            const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
+            if (sessionResult.rows.length === 0) return;
+            const session = sessionResult.rows[0];
+
+            // Advance Deck
+            await deckService.advanceDeck(session);
+
+            // Log Analytics
+            await db.query(
+                `INSERT INTO analytics_events (session_id, event_type, event_data)
+                 VALUES ($1, $2, $3)`,
+                [sessionId, 'question_advanced_dual', { socket_advance: true }]
+            );
+
+            // Reset Intents & State
+            clearSessionState(sessionId);
+
+            // Broadcast New Question Trigger
+            io.to(sessionId).emit('advance_question');
+        } else {
+            // Optional: Notify others that one is ready? 
+            // Current UI handles this via local "Waiting..." state on button press.
+        }
+    } catch (err) {
+        console.error('Error in dual_next_intent:', err);
+    }
+  });
+
+  // Legacy/Single Mode Handler
   socket.on('request_next', async () => {
     if (!socket.participantId) return;
     const sessionId = socket.sessionId;
@@ -334,45 +397,10 @@ io.on('connection', (socket) => {
         );
         io.to(sessionId).emit('advance_question');
       } else {
-        // Dual mode: wait for both
-        if (!pendingNextClicks.has(sessionId)) {
-          pendingNextClicks.set(sessionId, new Set());
-        }
-
-        const clicks = pendingNextClicks.get(sessionId);
-        clicks.add(socket.participantId); // Track by participant_id now
-
-        const room = io.sockets.adapter.rooms.get(sessionId);
-        const clientCount = room ? room.size : 0;
-
-        // If everyone clicked (or at least 2 people), advance
-        if (clicks.size >= Math.max(2, clientCount)) {
-           const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
-           const session = sessionResult.rows[0];
-
-          await deckService.advanceDeck(session);
-
-          await db.query(
-             `INSERT INTO analytics_events (session_id, event_type, event_data)
-              VALUES ($1, $2, $3)`,
-             [sessionId, 'next_clicked_dual', { socket_advance: true }]
-          );
-
-          // Reset session state for new question
-          clearSessionState(sessionId);
-
-          io.to(sessionId).emit('advance_question');
-        } else {
-          socket.emit('waiting_for_partner');
-        }
-
-        // Timeout (2 minutes)
-        setTimeout(() => {
-           if (pendingNextClicks.has(sessionId)) {
-             pendingNextClicks.delete(sessionId);
-             io.to(sessionId).emit('wait_timeout'); 
-           }
-        }, 120000);
+        // Dual Mode should use 'dual_next_intent' event instead.
+        // But for backward compatibility or if frontend sends this by mistake, we can redirect logic?
+        // Let's just log a warning and ignore, enforcing the new flow.
+        console.warn(`[Socket] Received request_next for Dual Mode session ${sessionId}. Ignored. Use dual_next_intent.`);
       }
     } catch (err) {
       console.error('Socket error:', err);

@@ -448,6 +448,50 @@ const heartbeat = async (req, res) => {
   }
 };
 
+const resumeSessionByQr = async (req, res) => {
+  const { table_token, restaurant_id, participant_token } = req.body;
+
+  if (!table_token || !participant_token) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
+
+    // Find active session for this table where the participant belongs
+    // Join sessions and session_participants
+    const result = await db.query(`
+      SELECT s.*, sp.participant_id, sp.role
+      FROM sessions s
+      JOIN session_participants sp ON s.session_id = sp.session_id
+      WHERE s.table_token = $1
+        AND s.restaurant_id = $2
+        AND sp.participant_token_hash = $3
+        AND s.expires_at > NOW()
+      ORDER BY s.created_at DESC
+      LIMIT 1
+    `, [table_token, restaurant_id || 'default', participantTokenHash]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No active session found for this participant.' });
+    }
+
+    const session = result.rows[0];
+
+    res.json({
+      session_id: session.session_id,
+      participant_id: session.participant_id,
+      role: session.role,
+      mode: session.mode,
+      context: session.context,
+      dual_status: session.dual_status
+    });
+  } catch (err) {
+    console.error('Error resuming session by QR:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const resolveSession = async (req, res) => {
   const { restaurant_id, table_token, device_token } = req.body;
 
@@ -463,7 +507,7 @@ const resolveSession = async (req, res) => {
       const participantTokenHash = crypto.createHash('sha256').update(device_token).digest('hex');
 
       const resumeResult = await db.query(`
-        SELECT s.*, sp.participant_id, sp.role
+        SELECT s.session_id, s.mode, s.context, s.created_at, sp.participant_id, sp.role
         FROM sessions s
         JOIN session_participants sp ON s.session_id = sp.session_id
         WHERE s.table_token = $1
@@ -476,13 +520,15 @@ const resolveSession = async (req, res) => {
 
       if (resumeResult.rows.length > 0) {
         const session = resumeResult.rows[0];
+        console.log('[API] Resume Session Found:', session.session_id, 'Created At:', session.created_at);
         return res.json({
           action: 'resume',
           session_id: session.session_id,
           mode: session.mode,
-          role: session.role,
+          role: session.role, // This comes from sp.role because sp.role is selected and unique (s.role doesn't exist)
           context: session.context,
-          participant_id: session.participant_id
+          participant_id: session.participant_id,
+          created_at: session.created_at // IMPORTANT: Return created_at for frontend reset logic
         });
       }
     }

@@ -182,8 +182,7 @@ const getCurrentQuestion = async (session) => {
 
   return {
     ...shuffledDeck[index],
-    index: index + 1,
-    total: shuffledDeck.length,
+    // Removed index and total to support infinite loop without numbering
     deck_session_id: deckSession.deck_context_id
   };
 };

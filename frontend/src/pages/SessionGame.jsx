@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { io } from 'socket.io-client';
-import api from '../api';
+import api, { createSession } from '../api';
 import QuestionCard from '../components/QuestionCard';
-import ProgressBar from '../components/ProgressBar';
+import SessionMenu from '../components/SessionMenu';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
-import { getStoredParticipant, clearStoredParticipant } from '../utils/sessionStorage';
+import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt } from '../utils/sessionStorage';
 
 // Hook for session activity tracking
 function useSessionActivity(sessionId, participantId) {
@@ -37,8 +38,10 @@ export default function SessionGame() {
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
+  const [context, setContext] = useState('Exploring');
   const [isConnected, setIsConnected] = useState(false);
   const [participantId, setParticipantId] = useState(null);
+  const [tableToken, setTableToken] = useState(null);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -62,6 +65,8 @@ export default function SessionGame() {
           return;
         }
         setMode(sessionRes.data.mode);
+        setContext(sessionRes.data.context);
+        setTableToken(sessionRes.data.table_token);
 
         // 2. Get Participant ID
         const stored = getStoredParticipant();
@@ -184,45 +189,13 @@ export default function SessionGame() {
     });
     
     socket.on('both_ready', () => {
-       // Auto-advance when both are ready (no need to click next)
-       // However, questionCard handles "conversationState" first.
-       // Let's modify: When both ready, wait 2s (handled in component) then automatically request next?
-       // OR: Just let the users talk, and when they are DONE talking, they click "Next"?
-       // User prompt: "As soon as the second person press 'I am Ready' Button, the session should move to the next Question."
-       // This implies immediate advance.
-       
-       // BUT, usually "I am Ready" means "I have read the question".
-       // If we advance immediately, they have no time to discuss!
-       
-       // WAIT. The prompt says: "take off the Next Question Button and use only 'I am Ready' Button... As soon as the second person press... move to the next Question."
-       // This implies the flow is: 
-       // 1. Question Appears.
-       // 2. Users Discuss.
-       // 3. When they are DONE discussing, they press "I am Ready" (to move on).
-       // 4. When BOTH have pressed it, we go to next.
-       
-       // CURRENTLY: "I am Ready" is used to REVEAL the answer/hint (Open Ended) or submit choice.
-       // It seems the user wants to repurpose "I am Ready" to mean "We are done with this question".
-       
-       // So:
-       // - Question appears.
-       // - (Optional) Hint/Answer reveal logic stays? Or is that what they mean?
-       // - User presses "I am Ready" (meaning "Next").
-       // - When both press it -> Advance.
-       
-       // Implementation:
-       // We can reuse the existing 'ready_toggled' logic but change the UI label to "Ready for Next".
-       // And the backend 'both_ready' event should trigger 'advance_question' instead of just a UI state.
-       
-       // However, I cannot change backend logic easily without more context.
-       // Better approach: When frontend receives 'both_ready', frontend emits 'request_next'.
-       
-       // Let's implement that.
-       console.log('Both ready! Auto-advancing...');
-       // Only one client needs to trigger it, but both doing it is fine (backend handles debounce usually, or we check leader)
-       // Let's make the "last person to click" trigger it? 
-       // Or just emit request_next immediately.
-       socket.emit('request_next');
+       // Manual Advancement Logic:
+       // When both are ready, we trigger the visual "Fade Gate".
+       // We do NOT auto-advance. The users must now click "Next Question".
+       setWaitingForPartner(false); // No longer waiting, we are synced.
+       // The QuestionCard component will handle the UI update via 'bothReady' prop
+       // or we can pass a specific state here if needed.
+       // Actually, QuestionCard listens to 'both_ready' internally too.
     });
 
     socket.on('wait_timeout', () => {
@@ -268,26 +241,6 @@ export default function SessionGame() {
   };
 
   const handleNext = async () => {
-    // Check if session is ending
-    if (question.index === question.total) {
-        try {
-            console.log(`[Frontend] Ending session ${sessionId}...`);
-            await api.delete(`/sessions/${sessionId}`);
-            console.log('[Frontend] Session ended. Navigating home.');
-            
-            // Clear local storage for this session
-            clearStoredParticipant();
-            
-            // Force a hard navigation to root to clear any in-memory state
-            window.location.href = '/'; 
-        } catch (err) {
-            console.error('Error ending session:', err);
-            clearStoredParticipant();
-            window.location.href = '/';
-        }
-        return;
-    }
-
     // Single Phone Logic
     if (mode === 'single-phone' || mode === 'single') {
       try {
@@ -301,11 +254,9 @@ export default function SessionGame() {
     } 
     
     // Dual Phone Logic
-    if (waitingForPartner) return; // Prevent double clicks
-
     if (socketRef.current?.connected) {
-        // Emit request_next (backend handles auth via socket.participantId)
-        socketRef.current.emit('request_next');
+        // Emit dual_next_intent (New Flow)
+        socketRef.current.emit('dual_next_intent');
     } else {
         // Attempt to reconnect if disconnected
         console.warn('Socket disconnected, attempting reconnect...');
@@ -318,12 +269,20 @@ export default function SessionGame() {
           action: () => {
             setModalState(prev => ({ ...prev, isOpen: false }));
             if (socketRef.current?.connected) {
-               socketRef.current.emit('request_next');
+               socketRef.current.emit('dual_next_intent');
             }
           },
           icon: '🔄'
         });
     }
+  };
+
+  const handleRestart = () => {
+    if (!tableToken) return;
+    setLastResetAt(); // Mark that user explicitly reset
+    clearStoredParticipant();
+    if (socketRef.current) socketRef.current.disconnect();
+    window.location.href = `/t/${tableToken}`;
   };
 
   if (loading && !question) {
@@ -377,13 +336,12 @@ export default function SessionGame() {
 
       {/* Header */}
       <header className="flex justify-between items-center mb-8 relative z-10">
-        <div 
-          className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
-          onClick={() => navigate('/')}
-        >
-          <span className="text-xl">💬</span>
-          <span className="text-sm font-bold text-gray-900 tracking-wider">TABLE-TALK</span>
-        </div>
+        <SessionMenu 
+          tableToken={tableToken}
+          currentContext={context}
+          currentMode={mode}
+          socketRef={socketRef}
+        />
         
         <div className="flex items-center gap-2">
           {/* Connection Status Indicator */}
@@ -402,10 +360,6 @@ export default function SessionGame() {
           </div>
         </div>
       </header>
-
-      <div className="relative z-10 mb-8">
-        <ProgressBar current={question.index} total={question.total} />
-      </div>
 
       <div className="relative z-10 flex-1 flex flex-col">
         <QuestionCard 

@@ -148,3 +148,112 @@ analytics_events: event_id, session_id, event_type, event_data, timestamp
 ## Quality Standards
 - Touch targets: 48px min | Latency: <300ms | Mobile-first | No PII | UTC timestamps
 - Code: camelCase (JS), snake_case (DB), parameterized queries only
+
+Global implementation rule set
+
+Business rules to implement
+
+Single Mode
+
+Phone A scans table QR and starts Single Mode, session is created and stored for that device.
+
+Phone B scans the same table QR, Phone B automatically starts a NEW Single session (no “Active Session Found” and no “Start New Session” prompt).
+
+If Phone A returns within 24 hours and scans the same QR, Phone A should resume its own session automatically.
+
+Same for Phone B.
+
+After 24 hours, sessions are cleared and scanning starts fresh.
+
+Dual Mode
+
+Phone A scans QR and starts Dual Mode.
+
+Phone B scans same QR, on Welcome page presses “Continue”, Phone B automatically joins Phone A’s Dual session (no join code, no join partner page, no “Active Session Found” UI).
+
+Phone C scans same QR at any time, Phone C automatically starts a NEW session (not joining the existing Dual session; no prompts).
+
+If Phone A and Phone B return within 24 hours and scan the same QR, each should resume their roles in the same Dual session automatically.
+
+After 24 hours, sessions are cleared and scanning starts fresh.
+
+UI removals
+
+Remove “Active Session Found” page
+
+Remove “Start New Session” page
+
+Remove Dual Mode verification code requirement screen
+
+Non-PII constraint
+
+No PII stored.
+
+Use anonymous device/session tokens in sessionStorage.
+
+New requirements
+
+No limitation of questions per session
+
+Questions should continue indefinitely (loop or pull next batch) until session ends.
+
+Remove any “end of session” based on question count.
+
+No question numbering in UI
+
+Remove “Question X” and any progress indicators tied to a finite total.
+
+Remove “36 Total” or similar counters.
+
+Dual Mode behavior change
+
+Questions must never advance automatically in Dual Mode.
+
+Replace the “I am ready” button with a button that changes label to “Next Question” when pressed.
+
+The question advances only when “Next Question” is pressed.
+
+Dual Mode fade and sync sequence
+
+When Phone A presses “Next Question”: apply the fade effect immediately on Phone A (like the uploaded image), and do not advance yet.
+
+When Phone B presses “Next Question”: apply the fade effect immediately on Phone B, then sync and advance both devices to the next question.
+
+The same applies if Phone B presses first, then Phone A presses.
+
+Non-goals
+
+Do not redesign the UI beyond removing numbering/counters and changing the button behavior.
+
+Do not introduce new pages or multi-step flows.
+
+
+mplement two UX fixes:
+
+Global Main Menu / Reset Control
+
+In Single Mode, user must be able to exit and switch to Dual Mode easily.
+
+Backing out and rescanning should not force them back into Single Mode if they intend to change mode or maturity.
+
+Add an always-accessible “Menu” button on each session screen that allows:
+
+Reset Relationship Maturity (Exploring, Established, Mature)
+
+Reset Session Approach (Single vs Dual)
+
+Start a fresh session from the same table QR, immediately
+
+Remove duplication in Dual Mode
+
+Remove the “NEED A HINT?” button on the Dual Mode session page.
+
+Keep the remaining hint mechanism (tap-to-reveal on the card) as the single hint interaction.
+
+Constraints
+
+No new heavy redesign.
+
+Do not add accounts, PII, or long flows.
+
+Changes must be production-safe and reversible.

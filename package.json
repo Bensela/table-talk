@@ -20,5 +20,9 @@
   },
   "engines": {
     "node": "20.x"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.3",
+    "uuid": "^13.0.0"
   }
 }

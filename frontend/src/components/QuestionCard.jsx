@@ -16,12 +16,13 @@ export default function QuestionCard({
 }) {
   const [localRevealed, setLocalRevealed] = useState(isRevealed);
   
-  // Dual Mode State
-  const [ready, setReady] = useState(false);
-  const [partnerReady, setPartnerReady] = useState(false);
-  const [bothReady, setBothReady] = useState(false);
-  const [conversationState, setConversationState] = useState(false);
+  // Dual Mode State (New Flow)
+  const [localNextIntent, setLocalNextIntent] = useState(false);
+  const [fadeApplied, setFadeApplied] = useState(false);
   
+  // Legacy states (kept for compatibility if needed, but mostly unused now)
+  const [conversationState, setConversationState] = useState(false); // Can map to fadeApplied
+
   // Multiple Choice State
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
@@ -103,10 +104,10 @@ export default function QuestionCard({
 
   // Reset state on new question
   useEffect(() => {
-    setReady(false);
-    setPartnerReady(false);
-    setBothReady(false);
+    setLocalNextIntent(false);
+    setFadeApplied(false);
     setConversationState(false);
+    
     setSelectedOption(null);
     setSubmitted(false);
     setPartnerSelections({});
@@ -118,30 +119,17 @@ export default function QuestionCard({
   useEffect(() => {
     if (!socket || mode !== 'dual-phone') return;
 
-    const onReadyStatus = ({ user_id, ready: r }) => {
-      if (user_id !== userId) setPartnerReady(r);
-    };
-
-    const onBothReady = () => {
-      setBothReady(true);
-      setTimeout(() => setConversationState(true), 2000); 
-    };
+    // We can still listen for partner status updates if needed, but the main driver is local intent + server advance
+    // The "remote_intent" event is optional per prompt, so we skip it for now unless server emits it.
 
     const onRevealAnswers = ({ selections }) => {
       setPartnerSelections(selections);
       setLocalRevealed(true);
     };
 
-    socket.on('ready_status_update', onReadyStatus);
-    socket.on('both_ready', () => {
-      setBothReady(true);
-      setConversationState(true);
-    });
     socket.on('reveal_answers', onRevealAnswers);
 
     return () => {
-      socket.off('ready_status_update', onReadyStatus);
-      socket.off('both_ready', onBothReady);
       socket.off('reveal_answers', onRevealAnswers);
     };
   }, [socket, mode, userId]);
@@ -155,12 +143,6 @@ export default function QuestionCard({
 
   const isDualMode = mode === 'dual-phone' || mode === 'dual';
 
-  const handleReadyToggle = () => {
-    const newReady = !ready;
-    setReady(newReady);
-    socket.emit('ready_toggled', { sessionId, user_id: userId, ready: newReady });
-  };
-
   const handleSubmitAnswer = () => {
     if (selectedOption) {
       setSubmitted(true);
@@ -173,6 +155,16 @@ export default function QuestionCard({
         selectionId: selectedOption 
       });
     }
+  };
+
+  const handleNextIntent = () => {
+    // 1. Set local state immediately
+    setLocalNextIntent(true);
+    setFadeApplied(true);
+    setConversationState(true); // For backward compat with CSS
+
+    // 2. Emit Intent
+    onNext(); // This calls SessionGame's handleNext -> emits 'dual_next_intent'
   };
 
   const isMultipleChoice = question.question_type === 'multiple-choice';
@@ -201,18 +193,20 @@ export default function QuestionCard({
         </div>
 
         {/* Question Text */}
-        <div className="my-8 text-center relative z-10">
-          <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-500 ${
-            conversationState ? 'text-gray-400 opacity-50' : 'text-gray-900'
-          }`}>
-            {question.question_text}
-          </h2>
-          {conversationState && (
-             <p className="mt-4 text-sm text-gray-500 font-medium animate-fade-in">
-               Conversation in progress...
-             </p>
-          )}
-        </div>
+        <div className={`my-8 text-center relative z-10 ${fadeApplied ? 'pointer-events-none' : ''}`}>
+            <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
+              fadeApplied ? 'text-gray-200 opacity-20 blur-[1px]' : 'text-gray-900'
+            }`}>
+              {question.question_text}
+            </h2>
+            {fadeApplied && (
+               <div className="absolute inset-0 flex items-center justify-center">
+                  <p className="text-sm text-gray-500 font-bold uppercase tracking-widest animate-pulse bg-white/80 px-4 py-2 rounded-full backdrop-blur-sm">
+                     Conversation in progress...
+                  </p>
+               </div>
+            )}
+          </div>
 
         {/* CONTENT AREA (Hint or Options) */}
         <div className="relative z-10">
@@ -297,18 +291,6 @@ export default function QuestionCard({
         {/* ACTION BAR (Bottom) */}
         <div className="mt-8 space-y-4">
           
-          {/* Explicit Reveal Button for Dual Mode (Optional, if tap is not enough) */}
-          {mode === 'dual-phone' && !isMultipleChoice && !localRevealed && (
-             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <button 
-                  onClick={handleReveal}
-                  className="w-full py-3 text-sm font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest transition-colors"
-                >
-                  Need a Hint?
-                </button>
-             </motion.div>
-          )}
-
           {/* MULTIPLE CHOICE RESULT SUMMARY */}
           {mode === 'dual-phone' && isMultipleChoice && localRevealed && (
              <motion.div 
@@ -340,8 +322,8 @@ export default function QuestionCard({
           {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <div className="space-y-3">
-                {/* For Multiple Choice: Show "Lock In Answer" unless revealed */}
-                {isMultipleChoice && !localRevealed ? (
+                 {/* For Multiple Choice: Show "Lock In Answer" unless revealed */}
+                 {isMultipleChoice && !localRevealed ? (
                    <div className="space-y-3">
                     {submitted ? (
                       <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500 font-medium border border-gray-100">
@@ -359,7 +341,7 @@ export default function QuestionCard({
                       </Button>
                     )}
                   </div>
-                ) : (
+                 ) : (
                    /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
                    <>
                     {/* Delay showing Ready button for Multiple Choice */}
@@ -371,26 +353,31 @@ export default function QuestionCard({
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
-                            // Always toggle Ready -> Triggers Next if both ready
-                            handleReadyToggle();
+                            if (localNextIntent) {
+                                // Idempotent: Can press again, no harm
+                                handleNextIntent();
+                            } else {
+                                // First press: Set intent + Fade
+                                handleNextIntent();
+                            }
                           }}
-                          variant={ready ? "black" : "black"}
+                          variant="black"
                           size="lg"
                           fullWidth
-                          className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                          icon={ready ? <span>✓</span> : <span>→</span>}
+                          className={`shadow-xl hover:shadow-2xl transition-all ${localNextIntent ? "bg-gray-800 border-gray-800 opacity-80" : ""}`}
+                          icon={
+                            (localNextIntent) 
+                               ? <span>→</span> 
+                               : <span>✓</span>
+                          }
                         >
-                          {ready ? "Waiting for Partner..." : "I'm Ready"}
+                          {localNextIntent
+                                ? "Next Question" 
+                                : "I'm Ready"}
                         </Button>
                     )}
-                    
-                    {partnerReady && !ready && showReadyButton && (
-                      <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
-                        Partner is ready! Press "I'm Ready" to continue.
-                      </p>
-                    )}
                    </>
-                )}
+                 )}
               </div>
             </motion.div>
           )}

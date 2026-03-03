@@ -43,6 +43,18 @@ export async function resolveSessionForScan(tableToken) {
 
     if (result.action === 'resume') {
       console.log('[Resolver] Resuming existing session');
+      
+      // Check if user has explicitly reset AFTER this session was created
+      const lastResetAt = stored.lastResetAt ? new Date(stored.lastResetAt) : null;
+      const sessionCreatedAt = result.created_at ? new Date(result.created_at) : null; // Backend needs to return created_at
+
+      // If we have a reset timestamp, and the session is older than the reset, 
+      // DO NOT resume. Fall through to new session.
+      if (lastResetAt && sessionCreatedAt && sessionCreatedAt < lastResetAt) {
+          console.log('[Resolver] Skipping resume because session is older than last reset');
+          return { action: 'new', data: { tableToken } };
+      }
+
       // Store/Refresh session data if needed (though local storage should match)
       // If we are resuming a different session than stored (unlikely with token match), update storage.
       if (result.session_id !== stored.sessionId) {
