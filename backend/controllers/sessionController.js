@@ -49,10 +49,7 @@ const createSession = async (req, res) => {
     const isNewGroup = true;
 
     // 2. Prepare Session Data
-    // Persistent Architecture: No expiration (Set to year 9999)
-    const expires_at = new Date('9999-12-31T23:59:59Z');
-    
-    // Instant Join Architecture: No verification codes
+    const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
     let pairingCode = null;
     let pairingCodeHash = null;
     let pairingExpiresAt = null;
@@ -60,12 +57,25 @@ const createSession = async (req, res) => {
 
     // 3. Handle Dual-Phone Logic
     if (mode === 'dual-phone') {
+      // Feature Flag check
+      if (process.env.DUAL_PAIRING_CODE_ENABLED === 'false') {
+         return res.status(503).json({ error: 'Dual phone mode is currently disabled.' });
+      }
+
       dualStatus = 'waiting';
-      // No pairing code generation
+      pairingCode = generatePairingCode();
+      // We need session_id to hash, but we don't have it yet.
+      // We'll insert first, then hash and update, OR generate session_id manually.
+      // Postgres generates UUID by default, but we can generate one here.
     }
 
-    // Generate explicit UUID for session
+    // Generate explicit UUID for session to use in hash
     const sessionId = crypto.randomUUID();
+    
+    if (mode === 'dual-phone') {
+      pairingCodeHash = hashPairingCode(pairingCode, sessionId);
+      pairingExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    }
 
     // 4. Ensure deck session exists (seed generation)
     if (context) {
@@ -160,25 +170,33 @@ const createSession = async (req, res) => {
 };
 
 const joinDualPhoneSession = async (req, res) => {
-  const { table_token, restaurant_id } = req.body; // No code required
+  const { table_token, restaurant_id, session_id } = req.body;
 
   try {
-    // 1. Find waiting sessions for this table
-    // Persistent Architecture: Ignore expiration checks (effectively)
-    const waitingSessions = await db.query(`
-      SELECT session_id, pairing_code_hash, context, session_group_id, mode
-      FROM sessions
-      WHERE table_token = $1
-        AND restaurant_id = $2
-        AND dual_status = 'waiting'
-        AND expires_at > NOW()
-      ORDER BY created_at DESC
-    `, [table_token, restaurant_id || 'default']);
-
-    // 2. Auto-Select First Waiting Session (Instant Join)
     let validSession = null;
-    if (waitingSessions.rows.length > 0) {
-        validSession = waitingSessions.rows[0];
+
+    if (session_id) {
+      // Direct join by ID (preferred)
+      const result = await db.query(`
+        SELECT * FROM sessions 
+        WHERE session_id = $1 
+          AND dual_status = 'waiting'
+          AND expires_at > NOW()
+      `, [session_id]);
+      
+      if (result.rows.length > 0) validSession = result.rows[0];
+    } else if (table_token) {
+      // Find latest waiting session
+      const result = await db.query(`
+        SELECT * FROM sessions
+        WHERE table_token = $1
+          AND restaurant_id = $2
+          AND dual_status = 'waiting'
+          AND expires_at > NOW()
+        ORDER BY created_at DESC LIMIT 1
+      `, [table_token, restaurant_id || 'default']);
+
+      if (result.rows.length > 0) validSession = result.rows[0];
     }
 
     if (!validSession) {
@@ -186,10 +204,9 @@ const joinDualPhoneSession = async (req, res) => {
     }
 
     // 3. Update Session Status
-    // No code hash to clear
     await db.query(`
       UPDATE sessions 
-      SET dual_status = 'paired'
+      SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
       WHERE session_id = $1
     `, [validSession.session_id]);
 
@@ -221,7 +238,7 @@ const joinDualPhoneSession = async (req, res) => {
     await db.query(
       `INSERT INTO analytics_events (session_id, event_type, event_data)
        VALUES ($1, $2, $3)`,
-      [validSession.session_id, 'join_code_used', { success: true }]
+      [validSession.session_id, 'auto_join_success', { success: true }]
     );
 
     res.json({
@@ -331,26 +348,77 @@ const updateSession = async (req, res) => {
 };
 
 const endSession = async (req, res) => {
-  // DEPRECATED for Persistent Architecture
-  // This endpoint now simply returns success without deleting data, 
-  // ensuring historical sessions remain accessible as requested.
-  // It might log the "end" intent but won't destroy the session.
   const { session_id } = req.params;
-  console.log(`[API] End session requested for ${session_id} - Ignored (Persistent Mode)`);
-  res.status(200).json({ message: 'Session preserved' });
+  try {
+    console.log(`[API] Explicitly ending session ${session_id}...`);
+
+    // 1. Get Session Details first to find the deck_session and context
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    
+    if (sessionResult.rows.length > 0) {
+      const session = sessionResult.rows[0];
+      
+      // 2. Reset Deck Session
+      // When a session is explicitly ended via "End Session", we must reset the deck progress
+      // so the next session starts from Question 1 (index 0).
+      if (session.context) {
+        const today = new Date().toISOString().split('T')[0];
+        // Only reset for this specific session group to avoid side effects
+        await db.query(
+          `UPDATE deck_sessions SET position_index = 0, updated_at = NOW()
+           WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
+          [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+        );
+      }
+    } else {
+        // Session already gone (maybe cleanup job ran or duplicate request)
+        console.log(`[API] Session ${session_id} not found during end request (already deleted?)`);
+        return res.status(200).json({ message: 'Session already deleted' });
+    }
+
+    // 3. Delete dependent data (Explicitly, just like cleanup job handles implicitly via CASCADE or logic)
+    // IMPORTANT: The cleanup job (Rule 4) deletes from 'sessions' where expires_at is old.
+    // Here we want to do the same thing: REMOVE it completely.
+    // If we rely on ON DELETE CASCADE, we can just delete from sessions.
+    
+    // Check if constraints exist (assumed yes based on cleanup job comments).
+    // Safest approach matches cleanup job logic: Direct Delete.
+    
+    // However, to be extra safe against constraint errors if CASCADE isn't there:
+    await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
+    await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
+    
+    // 4. Delete the session itself
+    const deleteResult = await db.query('DELETE FROM sessions WHERE session_id = $1 RETURNING session_id', [session_id]);
+    
+    if (deleteResult.rowCount > 0) {
+        console.log(`[API] Session ${session_id} ended and deleted successfully.`);
+        res.status(200).json({ message: 'Session deleted' });
+    } else {
+        console.warn(`[API] Delete command ran but no rows affected for session ${session_id}`);
+        res.status(200).json({ message: 'Session likely already deleted' });
+    }
+  } catch (err) {
+    console.error('Error deleting session:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 };
 
 const getSessionByTable = async (req, res) => {
   const { table_token } = req.params;
   try {
+    // Only return sessions that are explicitly waiting for a partner (Dual Mode)
+    // This allows multiple Single Mode sessions to coexist without blocking each other
+    // and allows Phone C to start a new session even if A & B are paired.
     const query = `SELECT * FROM sessions 
                    WHERE table_token = $1 
                    AND expires_at > NOW() 
+                   AND dual_status = 'waiting'
                    ORDER BY created_at DESC LIMIT 1`;
     const result = await db.query(query, [table_token]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'No active session found' });
+      return res.status(404).json({ error: 'No waiting session found' });
     }
     
     res.json(result.rows[0]);

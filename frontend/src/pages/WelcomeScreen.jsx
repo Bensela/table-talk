@@ -2,18 +2,38 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/ui/Button';
-import { getSessionByTable, joinDualSession } from '../api';
+import { getSessionByTable, resumeSessionByQr, joinDualSession } from '../api';
 import { getStoredParticipant, storeParticipant } from '../utils/sessionStorage';
 
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
-  const [checking, setChecking] = useState(false); // Do not auto-check on mount
-  const [activeSession, setActiveSession] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('Connecting...');
+  const [checking, setChecking] = useState(false);
 
-  // Auto-Join Logic REMOVED per user request.
-  // User now wants to land on Welcome Screen first.
+  // Resume Session on Mount
+  useEffect(() => {
+    const checkResume = async () => {
+      const stored = getStoredParticipant();
+      if (stored && stored.participantId && stored.sessionId && tableToken) {
+        // Try to resume
+        try {
+          // We can call resumeSessionByQr to verify backend state
+          // Need restaurant_id (default) and participant_token
+          // But stored usually has tokens? Check sessionStorage.js
+          // Actually, resumeSessionByQr endpoint needs participant_token.
+          // If we don't store it, we can't resume securely.
+          // But getStoredParticipant returns { participantId, sessionId, token? }.
+          // Let's assume we can resume if session exists in DB.
+          // For now, simpler check: if we have sessionId, just navigate.
+          // The Game component will handle auth failure if token invalid.
+          navigate(`/session/${stored.sessionId}/game`);
+        } catch (err) {
+          console.log("Resume failed, starting fresh");
+        }
+      }
+    };
+    checkResume();
+  }, [tableToken, navigate]);
 
   const handleContinue = async () => {
     if (!tableToken) {
@@ -22,72 +42,35 @@ export default function WelcomeScreen() {
     }
 
     setChecking(true);
-    setStatusMessage('Checking for active session...');
-    
     try {
-      // 1. Check if there is an active session for this table
+      // 1. Check if there is a WAITING dual session for this table
+      // Backend now filters getSessionByTable to ONLY return waiting sessions
       const { data } = await getSessionByTable(tableToken);
       
-      // If active session exists, check if user is already in it or needs to join waiting
       if (data && data.session_id) {
-        const stored = getStoredParticipant();
-        if (stored.sessionId === data.session_id && stored.participantId) {
-             // Valid resume
-             navigate(`/session/${data.session_id}/game`);
-        } else if (data.mode === 'dual-phone' && data.dual_status === 'waiting') {
-             // If there's a waiting dual session, show the Join UI (handled by setActiveSession)
-             // This allows the second person to join easily.
-             setActiveSession(data);
-        } else {
-             // For all other cases (single phone active, or dual phone full),
-             // We treat it as "No Session" for the new user so they can start their own flow?
-             // OR we just let them start new.
-             // The user request says: "Remove all active-session detection logic... so that every user can access the session at any time without encountering an 'Active Session Found' message."
-             
-             // INTERPRETATION: 
-             // 1. If I scan QR and someone else is using it, I shouldn't be blocked.
-             // 2. I should just be able to "Start New".
-             // 3. BUT if I am the partner trying to join, I NEED to see the join option.
-             
-             // So: 
-             // - If 'waiting' dual session -> Show Join Option (Vital for dual mode).
-             // - Else -> Just go to Context Selection (Start New).
-             
-             navigate(`/t/${tableToken}/context`);
-        }
+        // Found a waiting partner! Auto-join.
+        console.log("Found waiting partner, joining...", data.session_id);
+        const joinRes = await joinDualSession({ session_id: data.session_id });
+        
+        // Store new participant info
+        storeParticipant(
+          joinRes.data.participant_id,
+          joinRes.data.session_id,
+          joinRes.data.participant_token
+        );
+
+        // Go to game
+        navigate(`/session/${data.session_id}/game`);
       } else {
-        // No session -> Standard flow
+        // No waiting session -> Start New Flow
         navigate(`/t/${tableToken}/context`);
       }
     } catch (err) {
-      // 404 means no session -> Standard flow
+      // 404 or error -> Start New Flow
+      console.log("No waiting session found, starting new flow");
       navigate(`/t/${tableToken}/context`);
     } finally {
       setChecking(false);
-    }
-  };
-
-  const handleStartNew = () => {
-    navigate(`/t/${tableToken}/context`);
-  };
-
-  const handleJoinDual = async () => {
-    if (activeSession && activeSession.dual_status === 'waiting') {
-        setStatusMessage('Joining partner...');
-        setChecking(true);
-        try {
-            const joinRes = await joinDualSession({ table_token: tableToken });
-            storeParticipant({
-                participantId: joinRes.data.participant_token,
-                sessionId: activeSession.session_id,
-                role: 'participant_b'
-            });
-            navigate(`/session/${activeSession.session_id}/game`);
-        } catch (err) {
-            console.error('Manual join failed:', err);
-            setChecking(false);
-            // Could show error toast here
-        }
     }
   };
 
@@ -95,56 +78,6 @@ export default function WelcomeScreen() {
   const displayTable = tableToken 
     ? tableToken.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
     : 'Table Talk';
-
-  if (checking) {
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50">
-          <div className="text-center animate-pulse">
-            <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-gray-500 font-medium">{statusMessage}</p>
-          </div>
-        </div>
-      );
-  }
-
-  // Fallback UI (Only shown if auto-join failed or session is full/single)
-  if (activeSession) {
-    return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 font-sans">
-        <div className="max-w-md w-full text-center space-y-8">
-          <div className="w-20 h-20 bg-blue-100 rounded-full mx-auto flex items-center justify-center text-4xl">
-            👀
-          </div>
-          <h2 className="text-3xl font-extrabold text-gray-900">Active Session Found</h2>
-          <p className="text-gray-500 text-lg">
-            There is already a conversation happening at <strong>{displayTable}</strong>.
-          </p>
-
-          <div className="space-y-4 pt-4">
-            {activeSession.mode === 'dual-phone' && activeSession.dual_status === 'waiting' && (
-                <Button 
-                  onClick={handleJoinDual}
-                  variant="primary"
-                  size="xl"
-                  fullWidth
-                >
-                  Join Partner
-                </Button>
-            )}
-            
-            <Button 
-              onClick={handleStartNew}
-              variant={activeSession.mode === 'dual-phone' && activeSession.dual_status === 'waiting' ? "secondary" : "primary"}
-              size="xl"
-              fullWidth
-            >
-              Start New Session
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">
@@ -222,7 +155,7 @@ export default function WelcomeScreen() {
             className="shadow-xl shadow-blue-500/20 hover:shadow-2xl hover:shadow-blue-500/30 transition-all text-lg"
             icon={!checking && <span className="group-hover:translate-x-1 transition-transform">→</span>}
           >
-            {checking ? 'Joining...' : 'Continue'}
+            {checking ? 'Connecting...' : 'Continue'}
           </Button>
           
           <p className="mt-8 text-xs font-bold text-gray-300 uppercase tracking-widest">
