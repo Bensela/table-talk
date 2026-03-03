@@ -13,7 +13,7 @@ export default function ModeSelection() {
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   
-  // View State: 'mode-select' only, 'show-code'/'enter-code' removed
+  // View State: 'mode-select' only now
   const [view, setView] = useState('mode-select');
   const [error, setError] = useState(null);
 
@@ -64,6 +64,9 @@ export default function ModeSelection() {
     }
   };
 
+  const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
+  const [createdSessionId, setCreatedSessionId] = useState(null); // Track session ID for websocket
+
   const handleStartDual = async () => {
     setLoading(true);
     try {
@@ -73,7 +76,7 @@ export default function ModeSelection() {
         mode: 'dual-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
-      // New Flow: Directly go to game. Partner joins via QR code scan.
+      // Directly navigate to game, waiting for partner to join via "One-Scan"
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
       console.error(err);
@@ -82,10 +85,135 @@ export default function ModeSelection() {
       setLoading(false);
     }
   };
-  
-  // Removed: PairingCodeDisplay component and associated logic (socket listeners for partner join)
-  // The partner now joins instantly by scanning the QR code, which triggers WelcomeScreen -> autoJoin logic.
-  
+
+  // WebSocket Listener for Auto-Dismiss
+  useEffect(() => {
+    if (view !== 'show-code' || !createdSessionId) return;
+
+    const socketUrl = isDev 
+      ? 'http://localhost:5000' 
+      : 'https://octopus-app-ibal3.ondigitalocean.app';
+
+    const socket = io(socketUrl, {
+      path: isDev ? '/socket.io/' : '/api/socket.io/',
+      transports: ['websocket'],
+      upgrade: false
+    });
+
+    const stored = getStoredParticipant();
+    if (stored.participantId) {
+       socket.emit('join_session', { session_id: createdSessionId, participant_id: stored.participantId });
+    }
+
+    const onPartnerJoined = ({ joined_role }) => {
+      if (joined_role === 'B') {
+        // Partner joined! Dismiss modal and go to game
+        navigate(`/session/${createdSessionId}/game`);
+      }
+    };
+
+    socket.on('dual_partner_joined', onPartnerJoined);
+
+    return () => {
+      socket.off('dual_partner_joined', onPartnerJoined);
+      socket.disconnect();
+    };
+  }, [view, createdSessionId, navigate, isDev]);
+
+// ...
+
+function PairingCodeDisplay({ code, expiresAt, onContinue }) {
+    const [timeLeft, setTimeLeft] = useState(null);
+
+    useEffect(() => {
+      const timer = setInterval(() => {
+        const seconds = Math.floor((new Date(expiresAt) - new Date()) / 1000);
+        setTimeLeft(seconds);
+        
+        if (seconds <= 0) {
+          clearInterval(timer);
+        }
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [expiresAt]);
+
+    return (
+      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
+        <div className="max-w-md w-full text-center space-y-8">
+          <h2 className="text-3xl font-extrabold text-gray-900">Share This Code</h2>
+          
+          <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 shadow-xl">
+            <div className="text-6xl font-black tracking-widest text-blue-600 font-mono">
+              {code}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-gray-600 text-lg">
+              Have your partner scan the same QR code and select <br/>
+              <span className="font-bold text-gray-900">"Join Dual-Phone Session"</span>
+            </p>
+            
+            {timeLeft !== null && timeLeft > 0 ? (
+                <p className="text-sm text-gray-400 font-medium uppercase tracking-wide">
+                Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                </p>
+            ) : (
+                 <p className="text-sm text-red-500 font-bold uppercase tracking-wide">
+                 Code expired. Please start a new session.
+                 </p>
+            )}
+          </div>
+
+          <Button 
+            onClick={onContinue}
+            variant="primary"
+            size="xl"
+            fullWidth
+            className="mt-8"
+          >
+            Continue to Questions →
+          </Button>
+        </div>
+      </div>
+    );
+}
+
+// ... in main render ...
+  const handleJoinDual = async () => {
+    if (joinCode.length !== 6) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await joinDualSession({
+        table_token: tableToken,
+        code: joinCode
+      });
+      storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      navigate(`/session/${data.session_id}/game`);
+    } catch (err) {
+      console.error(err);
+      setError(err.response?.data?.error || 'Invalid code. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleContinueToGame = () => {
+    // For the creator of Dual Phone session, once they share code
+    // They navigate to game where they will wait for partner
+    // We already stored participant_id in handleStartDual
+    // We need the sessionId from somewhere... wait, we need to store it in state or session storage
+    const storedSessionId = sessionStorage.getItem('session_id');
+    if (storedSessionId) {
+      navigate(`/session/${storedSessionId}/game`);
+    } else {
+      setError("Session lost. Please restart.");
+      setView('mode-select');
+    }
+  };
+
   const container = {
     hidden: { opacity: 0 },
     show: { opacity: 1, transition: { staggerChildren: 0.1 } }
@@ -174,8 +302,6 @@ export default function ModeSelection() {
               className="hover:border-purple-200 hover:shadow-xl hover:shadow-purple-500/5 py-6"
             />
           </motion.div>
-
-          {/* Option 3: Join Dual-Phone - REMOVED per user request */}
         </motion.div>
       </main>
       
