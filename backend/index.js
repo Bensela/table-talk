@@ -28,9 +28,14 @@ const allowedOrigins = [
   "https://octopus-app-ibal3.ondigitalocean.app"
 ];
 
+// Add FRONTEND_URL to whitelist if set
 if (process.env.FRONTEND_URL) {
   allowedOrigins.push(process.env.FRONTEND_URL);
 }
+
+// Development: Allow wildcard in dev mode if origin is not explicitly whitelisted
+// This helps when Vite uses different ports or hostnames locally.
+// But corsOptions must handle it properly.
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -41,8 +46,14 @@ const corsOptions = {
     if (allowedOrigins.includes(origin) || origin.endsWith('.ngrok-free.dev')) {
       callback(null, true);
     } else {
-      // For MVP, default to allow to prevent blocking unexpected valid sources
-      callback(null, true);
+      // In development, allow localhost variations
+      if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+         callback(null, true);
+      } else {
+         // Default to allow for MVP robustness, but warn
+         console.warn(`[CORS] Allowing non-whitelisted origin: ${origin}`);
+         callback(null, true);
+      }
     }
   },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
