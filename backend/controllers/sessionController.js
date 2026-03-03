@@ -396,10 +396,12 @@ const endSession = async (req, res) => {
         res.status(200).json({ message: 'Session deleted' });
     } else {
         console.warn(`[API] Delete command ran but no rows affected for session ${session_id}`);
+        // Consider it success if it's already gone
         res.status(200).json({ message: 'Session likely already deleted' });
     }
   } catch (err) {
     console.error('Error deleting session:', err);
+    // If it's a foreign key violation or other DB error, send 500
     res.status(500).json({ error: 'Server error' });
   }
 };
@@ -451,48 +453,91 @@ const heartbeat = async (req, res) => {
   }
 };
 
-const resumeSessionByQr = async (req, res) => {
-  const { table_token, restaurant_id, participant_token } = req.body;
+const resolveSession = async (req, res) => {
+  const { restaurant_id, table_token, device_token } = req.body;
 
-  if (!table_token || !participant_token) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!table_token) {
+    return res.status(400).json({ error: 'table_token is required' });
   }
 
   try {
-    const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
+    const restaurantId = restaurant_id || 'default';
 
-    // Find active session for this table where the participant belongs
-    // Join sessions and session_participants
-    const result = await db.query(`
-      SELECT s.*, sp.participant_id, sp.role
-      FROM sessions s
-      JOIN session_participants sp ON s.session_id = sp.session_id
-      WHERE s.table_token = $1
-        AND s.restaurant_id = $2
-        AND sp.participant_token_hash = $3
-        AND s.expires_at > NOW()
-      ORDER BY s.created_at DESC
-      LIMIT 1
-    `, [table_token, restaurant_id || 'default', participantTokenHash]);
+    // 1. Attempt Resume by Device Token
+    if (device_token) {
+      const participantTokenHash = crypto.createHash('sha256').update(device_token).digest('hex');
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'No active session found for this participant.' });
+      const resumeResult = await db.query(`
+        SELECT s.*, sp.participant_id, sp.role
+        FROM sessions s
+        JOIN session_participants sp ON s.session_id = sp.session_id
+        WHERE s.table_token = $1
+          AND s.restaurant_id = $2
+          AND sp.participant_token_hash = $3
+          AND s.expires_at > NOW()
+        ORDER BY s.created_at DESC
+        LIMIT 1
+      `, [table_token, restaurantId, participantTokenHash]);
+
+      if (resumeResult.rows.length > 0) {
+        const session = resumeResult.rows[0];
+        return res.json({
+          action: 'resume',
+          session_id: session.session_id,
+          mode: session.mode,
+          role: session.role,
+          context: session.context,
+          participant_id: session.participant_id
+        });
+      }
     }
 
-    const session = result.rows[0];
+    // 2. Check for Waiting Dual Session (Auto-Join)
+    // Find active dual session for this table that is WAITING
+    const dualResult = await db.query(`
+      SELECT * FROM sessions
+      WHERE table_token = $1
+        AND restaurant_id = $2
+        AND mode = 'dual-phone'
+        AND dual_status != 'ended'
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [table_token, restaurantId]);
 
-    res.json({
-      session_id: session.session_id,
-      participant_id: session.participant_id,
-      role: session.role,
-      mode: session.mode,
-      context: session.context,
-      dual_status: session.dual_status
+    if (dualResult.rows.length > 0) {
+      const dualSession = dualResult.rows[0];
+
+      if (dualSession.dual_status === 'waiting') {
+        // Double check if Role B is actually taken (redundancy check)
+        // But dual_status='waiting' implies B is open.
+        // Let's verify via participants count just to be safe?
+        // Actually, dual_status is the source of truth.
+        return res.json({
+          action: 'join_dual',
+          session_id: dualSession.session_id,
+          role: 'B'
+        });
+      } else if (dualSession.dual_status === 'paired') {
+        // A and B already exist.
+        // User C starts new session.
+        return res.json({
+          action: 'start_new',
+          reason: 'dual_session_full'
+        });
+      }
+    }
+
+    // 3. Start New Session
+    // No resume, no waiting dual session -> Start New
+    return res.json({
+      action: 'start_new'
     });
+
   } catch (err) {
-    console.error('Error resuming session by QR:', err);
+    console.error('Error resolving session:', err);
     res.status(500).json({ error: 'Server error' });
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat };
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession };

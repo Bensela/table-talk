@@ -14,6 +14,9 @@ export const createSession = ({ table_token, context, mode }) =>
 export const joinDualSession = ({ table_token, code, session_id }) =>
   api.post('/sessions/join-dual', { table_token, code, session_id });
 
+export const resolveSession = ({ restaurant_id, table_token, device_token }) =>
+  api.post('/sessions/resolve', { restaurant_id, table_token, device_token });
+
 export const resumeSessionByQr = ({ table_token, participant_token }) =>
   api.post('/sessions/resume-by-qr', { table_token, participant_token });
 
