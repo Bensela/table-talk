@@ -13,10 +13,8 @@ export default function ModeSelection() {
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   
-  // View State: 'mode-select', 'show-code', 'enter-code'
-  const [view, setView] = useState(location.state?.view || 'mode-select');
-  const [pairingCode, setPairingCode] = useState(null);
-  const [joinCode, setJoinCode] = useState('');
+  // View State: 'mode-select' only, 'show-code'/'enter-code' removed
+  const [view, setView] = useState('mode-select');
   const [error, setError] = useState(null);
 
   // Get context from previous step (if in new flow)
@@ -66,9 +64,6 @@ export default function ModeSelection() {
     }
   };
 
-  const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
-  const [createdSessionId, setCreatedSessionId] = useState(null); // Track session ID for websocket
-
   const handleStartDual = async () => {
     setLoading(true);
     try {
@@ -78,10 +73,8 @@ export default function ModeSelection() {
         mode: 'dual-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
-      setPairingCode(data.pairing_code);
-      setPairingExpiresAt(data.pairing_expires_at); // Store expiry time
-      setCreatedSessionId(data.session_id);
-      setView('show-code');
+      // New Flow: Directly go to game. Partner joins via QR code scan.
+      navigate(`/session/${data.session_id}/game`);
     } catch (err) {
       console.error(err);
       setError('Failed to create session.');
@@ -89,135 +82,10 @@ export default function ModeSelection() {
       setLoading(false);
     }
   };
-
-  // WebSocket Listener for Auto-Dismiss
-  useEffect(() => {
-    if (view !== 'show-code' || !createdSessionId) return;
-
-    const socketUrl = isDev 
-      ? 'http://localhost:5000' 
-      : 'https://octopus-app-ibal3.ondigitalocean.app';
-
-    const socket = io(socketUrl, {
-      path: isDev ? '/socket.io/' : '/api/socket.io/',
-      transports: ['websocket'],
-      upgrade: false
-    });
-
-    const stored = getStoredParticipant();
-    if (stored.participantId) {
-       socket.emit('join_session', { session_id: createdSessionId, participant_id: stored.participantId });
-    }
-
-    const onPartnerJoined = ({ joined_role }) => {
-      if (joined_role === 'B') {
-        // Partner joined! Dismiss modal and go to game
-        navigate(`/session/${createdSessionId}/game`);
-      }
-    };
-
-    socket.on('dual_partner_joined', onPartnerJoined);
-
-    return () => {
-      socket.off('dual_partner_joined', onPartnerJoined);
-      socket.disconnect();
-    };
-  }, [view, createdSessionId, navigate, isDev]);
-
-// ...
-
-function PairingCodeDisplay({ code, expiresAt, onContinue }) {
-    const [timeLeft, setTimeLeft] = useState(null);
-
-    useEffect(() => {
-      const timer = setInterval(() => {
-        const seconds = Math.floor((new Date(expiresAt) - new Date()) / 1000);
-        setTimeLeft(seconds);
-        
-        if (seconds <= 0) {
-          clearInterval(timer);
-        }
-      }, 1000);
-
-      return () => clearInterval(timer);
-    }, [expiresAt]);
-
-    return (
-      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
-        <div className="max-w-md w-full text-center space-y-8">
-          <h2 className="text-3xl font-extrabold text-gray-900">Share This Code</h2>
-          
-          <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 shadow-xl">
-            <div className="text-6xl font-black tracking-widest text-blue-600 font-mono">
-              {code}
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <p className="text-gray-600 text-lg">
-              Have your partner scan the same QR code and select <br/>
-              <span className="font-bold text-gray-900">"Join Dual-Phone Session"</span>
-            </p>
-            
-            {timeLeft !== null && timeLeft > 0 ? (
-                <p className="text-sm text-gray-400 font-medium uppercase tracking-wide">
-                Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
-                </p>
-            ) : (
-                 <p className="text-sm text-red-500 font-bold uppercase tracking-wide">
-                 Code expired. Please start a new session.
-                 </p>
-            )}
-          </div>
-
-          <Button 
-            onClick={onContinue}
-            variant="primary"
-            size="xl"
-            fullWidth
-            className="mt-8"
-          >
-            Continue to Questions →
-          </Button>
-        </div>
-      </div>
-    );
-}
-
-// ... in main render ...
-  const handleJoinDual = async () => {
-    if (joinCode.length !== 6) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data } = await joinDualSession({
-        table_token: tableToken,
-        code: joinCode
-      });
-      storeParticipant(data.participant_id, data.session_id, data.participant_token);
-      navigate(`/session/${data.session_id}/game`);
-    } catch (err) {
-      console.error(err);
-      setError(err.response?.data?.error || 'Invalid code. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleContinueToGame = () => {
-    // For the creator of Dual Phone session, once they share code
-    // They navigate to game where they will wait for partner
-    // We already stored participant_id in handleStartDual
-    // We need the sessionId from somewhere... wait, we need to store it in state or session storage
-    const storedSessionId = sessionStorage.getItem('session_id');
-    if (storedSessionId) {
-      navigate(`/session/${storedSessionId}/game`);
-    } else {
-      setError("Session lost. Please restart.");
-      setView('mode-select');
-    }
-  };
-
+  
+  // Removed: PairingCodeDisplay component and associated logic (socket listeners for partner join)
+  // The partner now joins instantly by scanning the QR code, which triggers WelcomeScreen -> autoJoin logic.
+  
   const container = {
     hidden: { opacity: 0 },
     show: { opacity: 1, transition: { staggerChildren: 0.1 } }
@@ -229,73 +97,6 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
   };
 
   // --- RENDER VIEWS ---
-
-  if (view === 'show-code') {
-    return (
-      <PairingCodeDisplay 
-        code={pairingCode} 
-        expiresAt={pairingExpiresAt}
-        onContinue={handleContinueToGame} 
-      />
-    );
-  }
-  
-  if (view === 'enter-code') {
-    return (
-      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
-        <div className="max-w-md w-full space-y-8">
-          <div className="text-center">
-            <h2 className="text-3xl font-extrabold text-gray-900 mb-2">Enter Join Code</h2>
-            <p className="text-gray-500">Enter the 6-digit code from your partner's screen.</p>
-          </div>
-          
-          <div className="space-y-4">
-            <input 
-              type="text" 
-              inputMode="numeric" 
-              pattern="[0-9]*" 
-              maxLength={6} 
-              value={joinCode} 
-              onChange={(e) => {
-                const val = e.target.value.replace(/\D/g, '');
-                setJoinCode(val);
-                setError(null);
-              }}
-              placeholder="000000" 
-              className="w-full text-center text-5xl font-bold tracking-[0.5em] p-6 border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all placeholder:text-gray-200 font-mono text-gray-900"
-              autoFocus 
-            />
-            
-            {error && (
-              <p className="text-red-500 text-center font-medium animate-pulse">
-                {error}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-3 pt-4">
-            <Button 
-              disabled={joinCode.length !== 6 || loading} 
-              onClick={handleJoinDual} 
-              variant="primary"
-              size="xl"
-              fullWidth
-              className="shadow-xl shadow-blue-500/20"
-            >
-              {loading ? 'Joining...' : 'Join Session'}
-            </Button>
-
-            <button 
-              onClick={() => setView('mode-select')} 
-              className="w-full py-4 text-gray-500 font-bold hover:text-gray-900 transition-colors"
-            >
-              ← Back
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-white flex flex-col p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">
