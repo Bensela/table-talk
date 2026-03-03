@@ -78,9 +78,14 @@ export default function SessionGame() {
         setLoading(false);
       } catch (err) {
         console.error(err);
-        // If session not found or error, clear local storage to prevent resume loops
-        clearStoredParticipant();
-        setError('Session expired or not found. Please start a new one.');
+        // Only treat as error if 404/403 (expired/invalid)
+        // If 500 or network error, maybe retry?
+        if (err.response && (err.response.status === 404 || err.response.status === 403)) {
+           clearStoredParticipant();
+           setError('Session expired or not found. Please start a new one.');
+        } else {
+           setError('Connection error. Please refresh.');
+        }
         setLoading(false);
       }
     };
