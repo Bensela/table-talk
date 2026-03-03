@@ -50,32 +50,20 @@ const createSession = async (req, res) => {
 
     // 2. Prepare Session Data
     const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
-    let pairingCode = null;
-    let pairingCodeHash = null;
-    let pairingExpiresAt = null;
+    // Remove pairing code generation entirely per new requirements
+    const pairingCode = null;
+    const pairingCodeHash = null;
+    const pairingExpiresAt = null;
     let dualStatus = null;
 
     // 3. Handle Dual-Phone Logic
     if (mode === 'dual-phone') {
-      // Feature Flag check
-      if (process.env.DUAL_PAIRING_CODE_ENABLED === 'false') {
-         return res.status(503).json({ error: 'Dual phone mode is currently disabled.' });
-      }
-
       dualStatus = 'waiting';
-      pairingCode = generatePairingCode();
-      // We need session_id to hash, but we don't have it yet.
-      // We'll insert first, then hash and update, OR generate session_id manually.
-      // Postgres generates UUID by default, but we can generate one here.
+      // No pairing code needed.
     }
 
     // Generate explicit UUID for session to use in hash
     const sessionId = crypto.randomUUID();
-    
-    if (mode === 'dual-phone') {
-      pairingCodeHash = hashPairingCode(pairingCode, sessionId);
-      pairingExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-    }
 
     // 4. Ensure deck session exists (seed generation)
     if (context) {
@@ -204,11 +192,18 @@ const joinDualPhoneSession = async (req, res) => {
     }
 
     // 3. Update Session Status
-    await db.query(`
+    // Ensure we are the first to claim Role B
+    const updateResult = await db.query(`
       UPDATE sessions 
       SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
-      WHERE session_id = $1
+      WHERE session_id = $1 AND dual_status = 'waiting'
+      RETURNING *
     `, [validSession.session_id]);
+
+    if (updateResult.rowCount === 0) {
+      // Race condition: Someone else grabbed it just now
+      return res.status(409).json({ error: 'SESSION_FULL' });
+    }
 
     // 4. Create Participant (Role B)
     const participantId = crypto.randomUUID();
