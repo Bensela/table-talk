@@ -28,16 +28,32 @@ export default function WelcomeScreen() {
       // 1. Check if there is an active session for this table
       const { data } = await getSessionByTable(tableToken);
       
-      // If active session exists, show "Active Session Found" screen
+      // If active session exists, check if user is already in it or needs to join waiting
       if (data && data.session_id) {
-        // Check if user is trying to resume (legacy check or fast resume failed)
         const stored = getStoredParticipant();
         if (stored.sessionId === data.session_id && stored.participantId) {
              // Valid resume
              navigate(`/session/${data.session_id}/game`);
-        } else {
-             // New user or stranger scanning active table
+        } else if (data.mode === 'dual-phone' && data.dual_status === 'waiting') {
+             // If there's a waiting dual session, show the Join UI (handled by setActiveSession)
+             // This allows the second person to join easily.
              setActiveSession(data);
+        } else {
+             // For all other cases (single phone active, or dual phone full),
+             // We treat it as "No Session" for the new user so they can start their own flow?
+             // OR we just let them start new.
+             // The user request says: "Remove all active-session detection logic... so that every user can access the session at any time without encountering an 'Active Session Found' message."
+             
+             // INTERPRETATION: 
+             // 1. If I scan QR and someone else is using it, I shouldn't be blocked.
+             // 2. I should just be able to "Start New".
+             // 3. BUT if I am the partner trying to join, I NEED to see the join option.
+             
+             // So: 
+             // - If 'waiting' dual session -> Show Join Option (Vital for dual mode).
+             // - Else -> Just go to Context Selection (Start New).
+             
+             navigate(`/t/${tableToken}/context`);
         }
       } else {
         // No session -> Standard flow
