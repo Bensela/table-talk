@@ -23,18 +23,6 @@ export default function WelcomeScreen() {
       setStatus('Finding your table...');
       
       try {
-        // Attempt to resolve based on local session token
-        const stored = getStoredParticipant();
-        if (stored.sessionId && stored.participantId) {
-           // We have a local token. Let's try to resume it blindly first
-           // because checking backend for resume might be redundant if the user
-           // just reloaded the page. 
-           // BUT the prompt says "Scanning always routes immediately".
-           // If we scan a NEW QR code for a DIFFERENT table, we shouldn't resume the OLD session.
-           // So we must validate tableToken match.
-           // The resolveSessionForScan service handles this validation via backend resume call.
-        }
-
         const result = await resolveSessionForScan(tableToken);
         
         if (result.action === 'resume') {
