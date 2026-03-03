@@ -38,6 +38,7 @@ export default function SessionGame() {
   const [mode, setMode] = useState('single-phone');
   const [isConnected, setIsConnected] = useState(false);
   const [participantId, setParticipantId] = useState(null);
+  const [partnerConnected, setPartnerConnected] = useState(false);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -55,19 +56,20 @@ export default function SessionGame() {
       try {
         // 1. Get Session Data
         const sessionRes = await api.get(`/sessions/${sessionId}`);
-        if (sessionRes.data.expires_at && new Date(sessionRes.data.expires_at) < new Date()) {
-          setError('Session expired. Please start a new one.');
-          setLoading(false);
-          return;
-        }
+        // Remove expired check logic as per infinite session request
+        // if (sessionRes.data.expires_at ...) { ... }
+        
         setMode(sessionRes.data.mode);
+        // Pre-set partner connected if dual status is already 'paired'
+        if (sessionRes.data.mode === 'dual-phone' && sessionRes.data.dual_status === 'paired') {
+            setPartnerConnected(true);
+        }
 
         // 2. Get Participant ID
         const stored = getStoredParticipant();
         if (stored.sessionId === sessionId && stored.participantId) {
           setParticipantId(stored.participantId);
         } else if (sessionRes.data.mode === 'dual-phone') {
-           // If dual mode but no participant ID, we might be in trouble or need to re-join
            console.warn('Missing participant ID for dual session');
         }
 
@@ -94,13 +96,11 @@ export default function SessionGame() {
 
     const isDev = import.meta.env.DEV;
     
-    // 1. Force the URL to the base domain in production
     const socketUrl = isDev 
       ? 'http://localhost:5000' 
       : 'https://octopus-app-ibal3.ondigitalocean.app';
 
     const socket = io(socketUrl, {
-      // 2. CRITICAL: Add the /api prefix to the path to match DO Routing
       path: isDev ? '/socket.io/' : '/api/socket.io/',
       transports: ['websocket'],
       upgrade: false,
@@ -127,7 +127,6 @@ export default function SessionGame() {
     });
 
     socket.on('connect_error', (err) => {
-      // This will now show the actual reason in your console
       console.error('❌ Socket Connection Error:', err.message);
       setIsConnected(false);
     });
@@ -139,7 +138,6 @@ export default function SessionGame() {
 
     socket.on('error', (data) => {
       console.error('Socket Error:', data);
-      // Handle auth errors
       if (data.message === 'Invalid participant or session') {
          setError('Connection refused. Invalid session.');
       }
@@ -147,7 +145,12 @@ export default function SessionGame() {
 
     socket.on('partner_status', (data) => {
       console.log('Partner status:', data);
-      // Can update UI to show partner connected
+      if (data.users_connected >= 2) {
+          setPartnerConnected(true);
+          setWaitingForPartner(false); // If we were waiting for partner to join
+      } else {
+          setPartnerConnected(false);
+      }
     });
 
     socket.on('answer_revealed', () => {
@@ -360,8 +363,8 @@ export default function SessionGame() {
         <div className="flex items-center gap-2">
           {/* Connection Status Indicator */}
           {mode === 'dual-phone' && (
-            <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 animate-pulse'}`} 
-                 title={isConnected ? 'Connected' : 'Disconnected'}
+            <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? (partnerConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-yellow-500 animate-pulse') : 'bg-red-500 animate-pulse'}`} 
+                 title={isConnected ? (partnerConnected ? 'Connected to Partner' : 'Waiting for Partner') : 'Disconnected'}
             />
           )}
           

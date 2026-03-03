@@ -8,82 +8,48 @@ import { getStoredParticipant, storeParticipant } from '../utils/sessionStorage'
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
-  const [checking, setChecking] = useState(true); // Start checking immediately
+  const [checking, setChecking] = useState(false); // Do not auto-check on mount
   const [activeSession, setActiveSession] = useState(null);
   const [statusMessage, setStatusMessage] = useState('Connecting...');
 
-  // Auto-Join Logic (Instant Entrance)
-  useEffect(() => {
-    const autoJoin = async () => {
-      if (!tableToken) return;
+  // Auto-Join Logic REMOVED per user request.
+  // User now wants to land on Welcome Screen first.
 
-      try {
-        setStatusMessage('Checking for active session...');
-        // 1. Check for active session
-        const { data } = await getSessionByTable(tableToken);
-        
-        if (data && data.session_id) {
-            // Check if user is ALREADY part of this session
-            const stored = getStoredParticipant();
-            if (stored.sessionId === data.session_id && stored.participantId) {
-                 console.log('Resuming existing session...');
-                 navigate(`/session/${data.session_id}/game`);
-                 return;
-            }
+  const handleContinue = async () => {
+    if (!tableToken) {
+      navigate('/');
+      return;
+    }
 
-            // New User Logic
-            if (data.mode === 'dual-phone' && data.dual_status === 'waiting') {
-                // Auto-Join Waiting Session (Role B)
-                setStatusMessage('Joining partner...');
-                try {
-                    const joinRes = await joinDualSession({ table_token: tableToken });
-                    // Store new participant token
-                    storeParticipant({
-                        participantId: joinRes.data.participant_token,
-                        sessionId: data.session_id,
-                        role: 'participant_b'
-                    });
-                    navigate(`/session/${data.session_id}/game`);
-                    return;
-                } catch (joinErr) {
-                    console.error('Auto-join failed:', joinErr);
-                    // Fallback to manual UI if auto-join fails
-                    setActiveSession(data);
-                }
-            } else {
-                // Session exists but not waiting (e.g. single-phone or full)
-                // Just join as observer or re-connect?
-                // For now, let's treat it as "Active Session Found" UI or redirect to game?
-                // User said "allow ANY device to instantly join".
-                // Let's redirect to game. If they don't have a token, they might be an observer.
-                // But SessionGame requires a participantId usually.
-                // Let's show the "Active Session" UI for now if we can't auto-join as Role B.
-                // Or maybe just generate a guest ID and go?
-                // "Anonymous guest session".
-                
-                // If single phone, maybe we just join?
-                // But single phone doesn't have "join" logic in backend usually (it's created with 1 user).
-                // Let's stick to showing the UI for non-waiting sessions to be safe.
-                setActiveSession(data);
-            }
+    setChecking(true);
+    setStatusMessage('Checking for active session...');
+    
+    try {
+      // 1. Check if there is an active session for this table
+      const { data } = await getSessionByTable(tableToken);
+      
+      // If active session exists, show "Active Session Found" screen
+      if (data && data.session_id) {
+        // Check if user is trying to resume (legacy check or fast resume failed)
+        const stored = getStoredParticipant();
+        if (stored.sessionId === data.session_id && stored.participantId) {
+             // Valid resume
+             navigate(`/session/${data.session_id}/game`);
         } else {
-            // No session -> Redirect to Context Selection (Start New)
-            // "If not logged in, create anonymous guest session... Redirect... to SessionGame"
-            // But we need a CONTEXT first.
-            // So redirecting to ContextSelection is the correct "Start New" flow.
-            navigate(`/t/${tableToken}/context`);
+             // New user or stranger scanning active table
+             setActiveSession(data);
         }
-      } catch (err) {
-        console.error('Error checking session:', err);
-        // Fallback: Go to Context Selection
+      } else {
+        // No session -> Standard flow
         navigate(`/t/${tableToken}/context`);
-      } finally {
-        setChecking(false);
       }
-    };
-
-    autoJoin();
-  }, [tableToken, navigate]);
+    } catch (err) {
+      // 404 means no session -> Standard flow
+      navigate(`/t/${tableToken}/context`);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const handleStartNew = () => {
     navigate(`/t/${tableToken}/context`);
