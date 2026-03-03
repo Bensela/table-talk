@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import api from '../api';
 import QuestionCard from '../components/QuestionCard';
-import ProgressBar from '../components/ProgressBar';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import { getStoredParticipant } from '../utils/sessionStorage';
@@ -261,26 +260,6 @@ export default function SessionGame() {
   };
 
   const handleNext = async () => {
-    // Check if session is ending
-    if (question.index === question.total) {
-        try {
-            console.log(`[Frontend] Ending session ${sessionId}...`);
-            await api.delete(`/sessions/${sessionId}`);
-            console.log('[Frontend] Session ended. Navigating home.');
-            
-            // Clear local storage for this session
-            sessionStorage.removeItem('table_talk_participant'); 
-            
-            // Force a hard navigation to root to clear any in-memory state
-            window.location.href = '/'; 
-        } catch (err) {
-            console.error('Error ending session:', err);
-            sessionStorage.removeItem('table_talk_participant'); 
-            window.location.href = '/';
-        }
-        return;
-    }
-
     // Single Phone Logic
     if (mode === 'single-phone' || mode === 'single') {
       try {
@@ -395,10 +374,6 @@ export default function SessionGame() {
           </div>
         </div>
       </header>
-
-      <div className="relative z-10 mb-8">
-        <ProgressBar current={question.index} total={question.total} />
-      </div>
 
       <div className="relative z-10 flex-1 flex flex-col">
         <QuestionCard 

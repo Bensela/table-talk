@@ -97,6 +97,7 @@ async function cleanupSessions() {
 }
 
 // Schedule: every 5 minutes
-cron.schedule('*/5 * * * *', cleanupSessions);
+// DISABLED for Persistent Architecture (Phase 3)
+// cron.schedule('*/5 * * * *', cleanupSessions);
 
 module.exports = { cleanupSessions };

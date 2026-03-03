@@ -12,7 +12,7 @@ export const createSession = ({ table_token, context, mode }) =>
   api.post('/sessions', { table_token, context, mode });
 
 export const joinDualSession = ({ table_token, code }) =>
-  api.post('/sessions/join-dual', { table_token, code });
+  api.post('/sessions/join-dual', { table_token, code }); // Code is now optional in backend
 
 export const resumeSessionByQr = ({ table_token, participant_token }) =>
   api.post('/sessions/resume-by-qr', { table_token, participant_token });

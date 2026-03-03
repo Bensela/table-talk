@@ -371,27 +371,20 @@ export default function QuestionCard({
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (question.index === question.total) {
-                                // End Session Logic
-                                onNext();
-                            } else {
-                                // Toggle Ready -> Triggers Next if both ready
-                                handleReadyToggle();
-                            }
+                            // Always toggle Ready -> Triggers Next if both ready
+                            handleReadyToggle();
                           }}
                           variant={ready ? "black" : "black"}
                           size="lg"
                           fullWidth
                           className={`shadow-xl hover:shadow-2xl transition-all ${ready ? "bg-green-600 border-green-600 hover:bg-green-700" : ""}`}
-                          icon={question.index !== question.total && (ready ? <span>✓</span> : <span>→</span>)}
+                          icon={ready ? <span>✓</span> : <span>→</span>}
                         >
-                          {question.index === question.total 
-                            ? "End Session" 
-                            : (ready ? "Waiting for Partner..." : "I'm Ready")}
+                          {ready ? "Waiting for Partner..." : "I'm Ready"}
                         </Button>
                     )}
                     
-                    {partnerReady && !ready && question.index !== question.total && showReadyButton && (
+                    {partnerReady && !ready && showReadyButton && (
                       <p className="text-center text-sm text-blue-600 font-medium animate-pulse">
                         Partner is ready! Press "I'm Ready" to continue.
                       </p>
@@ -422,7 +415,7 @@ export default function QuestionCard({
                   className="shadow-xl hover:shadow-2xl"
                   icon={<span>→</span>}
                 >
-                  {question.index === question.total ? "End Session" : "Next Question"}
+                  Next Question
                 </Button>
               </motion.div>
             </AnimatePresence>
