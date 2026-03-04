@@ -581,4 +581,50 @@ const resolveSession = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession };
+const getSessionState = async (req, res) => {
+  const { session_id } = req.params;
+  try {
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const session = sessionResult.rows[0];
+
+    // Get current question (position_index)
+    let position_index = 0;
+    if (session.context) {
+      const today = new Date().toISOString().split('T')[0];
+      const deckResult = await db.query(
+        `SELECT position_index FROM deck_sessions 
+         WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
+        [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+      );
+      if (deckResult.rows.length > 0) {
+        position_index = deckResult.rows[0].position_index;
+      }
+    }
+    
+    // Get current question via Deck Service
+    // This handles deck_session lookup, seed usage, and shuffling
+    const question = await deckService.getCurrentQuestion({
+      restaurant_id: session.restaurant_id || 'default',
+      table_token: session.table_token,
+      context: session.context,
+      session_group_id: session.session_group_id
+    });
+
+    res.json({
+      session_id: session.session_id,
+      mode: session.mode,
+      context: session.context,
+      dual_status: session.dual_status,
+      position_index: position_index,
+      current_question: question // Will be null if deck empty
+    });
+  } catch (err) {
+    console.error('Error getting session state:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState };

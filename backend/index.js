@@ -364,6 +364,18 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle Session Migration (Menu Switch)
+  socket.on('migrate_session', ({ newSessionId }) => {
+    if (!socket.participantId || !newSessionId) return;
+    console.log(`[Socket] Migrating session ${socket.sessionId} to ${newSessionId}`);
+    
+    // Notify all other clients in the room to move
+    socket.to(socket.sessionId).emit('session_migrated', { 
+      newSessionId,
+      initiator: socket.participantId 
+    });
+  });
+
   // Legacy/Single Mode Handler
   socket.on('request_next', async () => {
     if (!socket.participantId) return;

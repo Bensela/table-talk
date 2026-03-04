@@ -9,6 +9,7 @@ router.post('/join-dual', joinRateLimiter, sessionController.joinDualPhoneSessio
 router.post('/resolve', sessionController.resolveSession);
 router.post('/resume-by-qr', sessionController.resumeSessionByQr);
 router.get('/:session_id', sessionController.getSession);
+router.get('/:session_id/state', sessionController.getSessionState); // Add state route
 router.post('/:session_id/heartbeat', sessionController.heartbeat); // Add heartbeat route
 router.get('/by-table/:table_token', sessionController.getSessionByTable);
 router.patch('/:session_id', sessionController.updateSession);

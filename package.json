@@ -16,13 +16,16 @@
     "test": "cd backend && npm test && cd ../frontend && npm test"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "chai": "^6.2.2",
+    "concurrently": "^8.2.2",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "supertest": "^7.2.2"
   },
   "engines": {
     "node": "20.x"
   },
   "dependencies": {
-    "socket.io-client": "^4.8.3",
     "uuid": "^13.0.0"
   }
 }

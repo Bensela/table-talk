@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { io } from 'socket.io-client';
-import api, { createSession } from '../api';
+// Removed local io import to use global provider
+import api from '../api';
 import QuestionCard from '../components/QuestionCard';
 import SessionMenu from '../components/SessionMenu';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt } from '../utils/sessionStorage';
+import { useSocket, useEnsureSessionRoom } from '../context/SocketContext';
 
 // Hook for session activity tracking
 function useSessionActivity(sessionId, participantId) {
@@ -42,6 +43,7 @@ export default function SessionGame() {
   const [isConnected, setIsConnected] = useState(false);
   const [participantId, setParticipantId] = useState(null);
   const [tableToken, setTableToken] = useState(null);
+  const [hasClickedNext, setHasClickedNext] = useState(false);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -50,7 +52,18 @@ export default function SessionGame() {
     icon: null
   });
   
-  const socketRef = useRef(null);
+  // Use Global Socket Provider
+  const { socket: globalSocket, isConnected: globalIsConnected, ensureConnection } = useSocket();
+  const socketRef = useRef(null); // Keep ref for local compatibility if needed, or replace usages
+  
+  // Sync global socket to local ref for minimal code changes
+  useEffect(() => {
+      socketRef.current = globalSocket;
+  }, [globalSocket]);
+
+  // Ensure we are in the right room
+  useEnsureSessionRoom(sessionId, mode);
+
   const reconnectAttempts = useRef(0);
 
   // Initialize Session
@@ -73,13 +86,26 @@ export default function SessionGame() {
         if (stored.sessionId === sessionId && stored.participantId) {
           setParticipantId(stored.participantId);
         } else if (sessionRes.data.mode === 'dual-phone') {
-           // If dual mode but no participant ID, we might be in trouble or need to re-join
-           console.warn('Missing participant ID for dual session');
+           console.warn('Missing participant ID for dual session. Redirecting to join...');
+           // Redirect to table landing to resolve/join properly
+           if (sessionRes.data.table_token) {
+             window.location.href = `/t/${sessionRes.data.table_token}`;
+             return; // Stop execution to prevent loading invalid state
+           }
         }
 
-        // 3. Get Question
-        const questionRes = await api.get(`/sessions/${sessionId}/questions/current`);
-        setQuestion(questionRes.data);
+        // 3. Get Initial State
+        // Only fetch if not already loaded (though useEffect dep is sessionId, so it runs once per session load)
+        const stateRes = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}`);
+        console.log('[SessionGame] Initial State Response:', stateRes.data);
+        if (stateRes.data && stateRes.data.current_question) {
+          // Check if we have a stale question locally (unlikely on fresh load, but good practice)
+          setQuestion(stateRes.data.current_question);
+        } else {
+           // Handle case where deck is empty or finished
+           console.warn('[SessionGame] current_question is null in initial state:', stateRes.data);
+           setQuestion(null);
+        }
         setLoading(false);
       } catch (err) {
         console.error(err);
@@ -103,102 +129,101 @@ export default function SessionGame() {
 
   // Socket Connection Logic
   useEffect(() => {
-    if (!participantId) return; // Wait for participant ID
+    if (!participantId || !globalSocket) return; // Wait for participant ID and socket init
 
-    const isDev = import.meta.env.DEV;
+    // Join the session room
+    ensureConnection(sessionId, participantId);
+
+    const socket = globalSocket;
     
-    // 1. Force the URL to the base domain in production
-    const socketUrl = isDev 
-      ? 'http://localhost:5000' 
-      : 'https://octopus-app-ibal3.ondigitalocean.app';
-
-    const socket = io(socketUrl, {
-      // 2. CRITICAL: Add the /api prefix to the path to match DO Routing
-      path: isDev ? '/socket.io/' : '/api/socket.io/',
-      transports: ['websocket'],
-      upgrade: false,
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      timeout: 20000,
-      secure: !isDev,
-      rejectUnauthorized: false
-    });
-    
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('✅ Connected to socket server via /api/socket.io/');
+    // Listeners
+    const onConnect = () => {
+      console.log('✅ [SessionGame] Socket Connected');
       setIsConnected(true);
       reconnectAttempts.current = 0;
       
-      // Authenticated Join
+      // Re-assert join on reconnect
       socket.emit('join_session', { 
         session_id: sessionId, 
         participant_id: participantId 
       });
-    });
 
-    socket.on('connect_error', (err) => {
-      // This will now show the actual reason in your console
+      // Fetch current question state on reconnect to ensure sync
+      fetchCurrentQuestion();
+    };
+
+    const onMigrate = (data) => {
+      if (data && data.newSessionId) {
+        console.log('[SessionGame] Partner migrated session. Following...');
+        window.location.href = `/session/${data.newSessionId}/game`;
+      }
+    };
+
+    // Attach listeners
+    socket.on('connect', onConnect);
+    socket.on('session_migrated', onMigrate);
+    
+    // Also run onConnect immediately if already connected
+    if (socket.connected) {
+        onConnect();
+    } else {
+        socket.connect();
+    }
+
+    // Other listeners...
+    const onConnectError = (err) => {
       console.error('❌ Socket Connection Error:', err.message);
       setIsConnected(false);
-    });
+    };
 
-    socket.on('disconnect', (reason) => {
+    const onDisconnect = (reason) => {
       console.log('🔌 Disconnected:', reason);
       setIsConnected(false);
-    });
+    };
 
-    socket.on('error', (data) => {
+    const onError = (data) => {
       console.error('Socket Error:', data);
-      // Handle auth errors
       if (data.message === 'Invalid participant or session') {
          setError('Connection refused. Invalid session.');
       }
-    });
+    };
 
-    socket.on('partner_status', (data) => {
+    const onPartnerStatus = (data) => {
       console.log('Partner status:', data);
-      // Can update UI to show partner connected
-    });
+    };
 
-    socket.on('answer_revealed', () => {
+    const onAnswerRevealed = () => {
       setIsRevealed(true);
-    });
+    };
 
-    socket.on('reveal_answers', (data) => {
+    const onRevealAnswers = (data) => {
        console.log('[SessionGame] Received reveal_answers:', data);
        if (data && data.selections) {
          setPartnerSelections(data.selections);
        }
        setIsRevealed(true);
        setWaitingForPartner(false);
-    });
+    };
 
-    socket.on('advance_question', () => {
-      console.log('Received advance_question event');
+    const onAdvanceQuestion = (data) => {
+      console.log('Received advance_question event', data);
       fetchCurrentQuestion();
       setIsRevealed(false);
       setWaitingForPartner(false);
-      setPartnerSelections({}); // Reset selections on new question
-    });
+      setPartnerSelections({});
+      setHasClickedNext(false);
+      setModalState(prev => ({ ...prev, isOpen: false }));
+    };
 
-    socket.on('waiting_for_partner', () => {
+    const onWaitingForPartner = () => {
       setWaitingForPartner(true);
-    });
+    };
     
-    socket.on('both_ready', () => {
-       // Manual Advancement Logic:
-       // When both are ready, we trigger the visual "Fade Gate".
-       // We do NOT auto-advance. The users must now click "Next Question".
-       setWaitingForPartner(false); // No longer waiting, we are synced.
-       // The QuestionCard component will handle the UI update via 'bothReady' prop
-       // or we can pass a specific state here if needed.
-       // Actually, QuestionCard listens to 'both_ready' internally too.
-    });
+    const onBothReady = () => {
+       setWaitingForPartner(false);
+    };
 
-    socket.on('wait_timeout', () => {
+    const onWaitTimeout = () => {
       setWaitingForPartner(false);
       setModalState({
         isOpen: true,
@@ -207,21 +232,110 @@ export default function SessionGame() {
         action: () => setModalState(prev => ({ ...prev, isOpen: false })),
         icon: '⏳'
       });
-    });
+    };
+
+    const onNextIntentUpdate = ({ count }) => {
+      if (count >= 1 && !hasClickedNext) {
+          setModalState({
+            isOpen: true,
+            title: "Partner is Ready!",
+            message: "Your partner is ready to move on. Finish up and click 'I'm Ready'!",
+            action: () => setModalState(prev => ({ ...prev, isOpen: false })),
+            icon: '👋'
+          });
+      }
+    };
+
+    socket.on('connect_error', onConnectError);
+    socket.on('disconnect', onDisconnect);
+    socket.on('error', onError);
+    socket.on('partner_status', onPartnerStatus);
+    socket.on('answer_revealed', onAnswerRevealed);
+    socket.on('reveal_answers', onRevealAnswers);
+    socket.on('advance_question', onAdvanceQuestion);
+    socket.on('waiting_for_partner', onWaitingForPartner);
+    socket.on('both_ready', onBothReady);
+    socket.on('wait_timeout', onWaitTimeout);
+    socket.on('next_intent_update', onNextIntentUpdate);
 
     return () => {
-      if (socket) socket.disconnect();
+      // CLEANUP: Remove listeners but DO NOT disconnect socket
+      socket.off('connect', onConnect);
+      socket.off('session_migrated', onMigrate);
+      socket.off('connect_error', onConnectError);
+      socket.off('disconnect', onDisconnect);
+      socket.off('error', onError);
+      socket.off('partner_status', onPartnerStatus);
+      socket.off('answer_revealed', onAnswerRevealed);
+      socket.off('reveal_answers', onRevealAnswers);
+      socket.off('advance_question', onAdvanceQuestion);
+      socket.off('waiting_for_partner', onWaitingForPartner);
+      socket.off('both_ready', onBothReady);
+      socket.off('wait_timeout', onWaitTimeout);
+      socket.off('next_intent_update', onNextIntentUpdate);
     };
-  }, [sessionId, participantId]); 
+  }, [sessionId, participantId, hasClickedNext, globalSocket]); // Dependencies updated
+
+  // Handle Visibility Change (Background/Foreground)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[SessionGame] App foregrounded. Syncing state...');
+        fetchCurrentQuestion();
+        if (globalSocket && !globalSocket.connected) {
+            globalSocket.connect();
+        }
+      }
+    };
+    
+    // ... rest of visibility logic
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [sessionId, globalSocket]); 
+
+  // Handle Visibility Change (Background/Foreground)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[SessionGame] App foregrounded. Syncing state...');
+        fetchCurrentQuestion();
+        if (socketRef.current && !socketRef.current.connected) {
+          socketRef.current.connect();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [sessionId]); // Re-bind if sessionId changes 
 
   const fetchCurrentQuestion = async () => {
-    try {
-      const res = await api.get(`/sessions/${sessionId}/questions/current`);
-      setQuestion(res.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+      try {
+        const res = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}`);
+        console.log('[SessionGame] State Response (Raw):', res);
+        console.log('[SessionGame] State Data:', res.data);
+        
+        if (res.data && res.data.current_question) {
+          console.log('[SessionGame] Setting question:', res.data.current_question);
+          setQuestion(res.data.current_question);
+        } else {
+          console.warn('[SessionGame] current_question is missing/null:', res.data);
+          setQuestion(null);
+        }
+        
+        // Ensure mode/context is up to date in case it changed remotely
+        if (res.data) {
+            setMode(res.data.mode);
+            setContext(res.data.context);
+        }
+      } catch (err) {
+        console.error('Error syncing state:', err);
+      }
+    };
 
   const handleReveal = async () => {
     // If dual mode, emit socket event first for sync
@@ -257,6 +371,7 @@ export default function SessionGame() {
     if (socketRef.current?.connected) {
         // Emit dual_next_intent (New Flow)
         socketRef.current.emit('dual_next_intent');
+        setHasClickedNext(true); // Mark locally as clicked
     } else {
         // Attempt to reconnect if disconnected
         console.warn('Socket disconnected, attempting reconnect...');
@@ -270,6 +385,7 @@ export default function SessionGame() {
             setModalState(prev => ({ ...prev, isOpen: false }));
             if (socketRef.current?.connected) {
                socketRef.current.emit('dual_next_intent');
+               setHasClickedNext(true); // Mark locally as clicked
             }
           },
           icon: '🔄'
@@ -281,8 +397,10 @@ export default function SessionGame() {
     if (!tableToken) return;
     setLastResetAt(); // Mark that user explicitly reset
     clearStoredParticipant();
-    if (socketRef.current) socketRef.current.disconnect();
-    window.location.href = `/t/${tableToken}`;
+    
+    // Do not disconnect socket manually, provider handles it or keeps it alive.
+    // window.location.href = `/t/${tableToken}`; // Old behavior
+    window.location.href = '/'; // Correct behavior: Front Page
   };
 
   if (loading && !question) {
@@ -294,6 +412,20 @@ export default function SessionGame() {
         </div>
       </div>
     );
+  }
+
+  // Ensure question exists before rendering QuestionCard to prevent null prop errors
+  if (!question && !loading && !error) {
+      // Fallback for empty deck or state sync issue
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6 bg-white">
+           <div className="text-center">
+              <h2 className="text-xl font-bold text-gray-800 mb-2">No Question Available</h2>
+              <p className="text-gray-500 mb-6">We couldn't load the current question.</p>
+              <Button onClick={() => window.location.reload()} variant="black">Reload</Button>
+           </div>
+        </div>
+      );
   }
 
   if (error) {

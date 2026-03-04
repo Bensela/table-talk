@@ -257,3 +257,51 @@ No new heavy redesign.
 Do not add accounts, PII, or long flows.
 
 Changes must be production-safe and reversible.
+
+
+Fix three issues:
+
+Dual Mode de-sync after Phone B backgrounding
+When Phone B is backgrounded (user switches apps, locks screen, or OS suspends the app), it loses sync and starts showing different questions than Phone A.
+Target behavior: on focus/foreground/reconnect, Phone B must reattach to the active dual session and re-render the server-authoritative current question.
+
+Menu switching should not break Dual session
+When Phone A opens Menu, switches to Single Mode or changes Context, then switches back to Dual Mode, Phone A should resume the ongoing Dual session and continue syncing with Phone B, assuming the Dual session is still within 24h and not ended.
+Target behavior: “switch to single/context” must not mutate or destroy the active Dual session unless user explicitly ends it, and switching back to Dual must resume it.
+
+Start Fresh routing
+The “Start Fresh” menu option must redirect to the QR scanner page, not the welcome page.
+
+Constraints
+
+No heavy rewrite.
+
+No PII.
+
+Production-safe, additive changes where possible.
+
+Keep UX simple and reliable.
+
+
+Fix these issues without introducing technical debt:
+
+Dual Mode loses synchronization whenever a MENU option is used
+Root symptom: selecting any Menu option breaks socket room membership or resets session state, leading to drift or disconnect.
+
+Start Fresh routes to Welcome, must route to Front Page (QR scanner)
+
+Multiple Choice UI duplication
+After locking an answer, there is an “answer revealed” display above the “I am Ready” button. Remove it. Keep only the main Answers section.
+
+Dual Mode popup instruction to Phone B
+When Phone A presses “I am Ready,” Phone B should receive a popup instruction telling them what to do next to advance the question.
+
+Constraints
+
+No new pages.
+
+No PII.
+
+Keep UX clean, minimal, and stable.
+
+Preserve 24-hour resume behavior.

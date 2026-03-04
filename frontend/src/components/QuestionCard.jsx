@@ -14,6 +14,14 @@ export default function QuestionCard({
   userId,
   partnerSelectionsData = {}
 }) {
+  if (!question) {
+    return (
+        <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto text-center p-8">
+            <h2 className="text-xl text-gray-400 font-medium">Loading question...</h2>
+        </div>
+    );
+  }
+
   const [localRevealed, setLocalRevealed] = useState(isRevealed);
   
   // Dual Mode State (New Flow)
@@ -82,15 +90,15 @@ export default function QuestionCard({
     if (!pAuthId) return '...';
     
     return text || '...';
-  }, [localRevealed, partnerSelections, userId, selectedOption, question.options]);
+  }, [localRevealed, partnerSelections, userId, selectedOption, question?.options]);
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
-  }, [isRevealed, question.question_id]);
+  }, [isRevealed, question?.question_id]);
 
   // Delay "I'm Ready" button for Multiple Choice to allow viewing results
   useEffect(() => {
-    if (question.question_type === 'multiple-choice' && localRevealed) {
+    if (question?.question_type === 'multiple-choice' && localRevealed) {
       setShowReadyButton(false);
       const timer = setTimeout(() => {
         setShowReadyButton(true);
@@ -100,7 +108,7 @@ export default function QuestionCard({
       // Immediate for open-ended or unrevealed
       setShowReadyButton(true);
     }
-  }, [localRevealed, question.question_type]);
+  }, [localRevealed, question?.question_type]);
 
   // Reset state on new question
   useEffect(() => {
@@ -113,7 +121,8 @@ export default function QuestionCard({
     setPartnerSelections({});
     setLocalRevealed(false);
     setShowReadyButton(false);
-  }, [question.question_id]);
+  }, [question?.question_id]);
+
 
   // Socket Listeners
   useEffect(() => {
@@ -291,33 +300,6 @@ export default function QuestionCard({
         {/* ACTION BAR (Bottom) */}
         <div className="mt-8 space-y-4">
           
-          {/* MULTIPLE CHOICE RESULT SUMMARY */}
-          {mode === 'dual-phone' && isMultipleChoice && localRevealed && (
-             <motion.div 
-               initial={{ opacity: 0, y: 10 }} 
-               animate={{ opacity: 1, y: 0 }}
-               className="bg-gray-50 rounded-xl p-4 border border-gray-200 shadow-sm"
-             >
-                <div className="flex justify-between items-start gap-4">
-                   <div className="flex-1 text-center">
-                      <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest mb-1">You Picked</p>
-                      <p className="text-gray-900 font-bold text-sm leading-snug">
-                        {question.options?.options?.find(o => o.id === selectedOption)?.text || '-'}
-                      </p>
-                   </div>
-                   
-                   <div className="w-px bg-gray-200 self-stretch"></div>
-
-                   <div className="flex-1 text-center">
-                      <p className="text-[10px] font-bold text-green-500 uppercase tracking-widest mb-1">Partner Picked</p>
-                      <p className="text-gray-900 font-bold text-sm leading-snug">
-                        {partnerPickedText}
-                      </p>
-                   </div>
-                </div>
-             </motion.div>
-          )}
-
           {/* DUAL MODE: Ready Button Only (Replaces Next) */}
           {mode === 'dual-phone' && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>

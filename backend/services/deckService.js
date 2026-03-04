@@ -150,12 +150,7 @@ const getCurrentQuestion = async (session) => {
       console.error('[DeckService] Deck session is null/undefined');
       return null;
   }
-  if (!deckSession.seed) {
-      console.error('[DeckService] Deck session seed is missing:', deckSession);
-      // Fallback: Generate a temporary seed if missing (should not happen with new creation logic)
-      deckSession.seed = crypto.randomBytes(8).toString('hex');
-  }
-
+  
   // 2. Get Questions for Context
   const allQuestions = await getAllQuestions();
   // Filter questions that match the context (or if context is null/global)
@@ -163,28 +158,33 @@ const getCurrentQuestion = async (session) => {
     !q.context || q.context === session.context
   );
 
+  console.log(`[DeckService] Context: ${session.context}, Total Qs: ${allQuestions.length}, Filtered Qs: ${deckQuestions.length}`);
+
   if (deckQuestions.length === 0) {
+    console.warn(`[DeckService] No questions found for context: ${session.context}`);
     return null; // Handle empty deck
   }
 
   // 3. Shuffle
+  if (!deckSession.seed) {
+      deckSession.seed = 'default-seed'; // Fallback
+  }
   const shuffledDeck = shuffle(deckQuestions, deckSession.seed);
 
   // 4. Get Current Position
-  // If position_index is greater than deck length (e.g. deck shrank or changed), wrap it
   const index = deckSession.position_index % shuffledDeck.length;
   
-  // Safety check: ensure index is valid (though modulo should handle it)
   if (!shuffledDeck[index]) {
       console.error('[DeckService] Invalid index after shuffle:', index, 'Length:', shuffledDeck.length);
       return null;
   }
 
-  return {
+  const result = {
     ...shuffledDeck[index],
-    // Removed index and total to support infinite loop without numbering
     deck_session_id: deckSession.deck_context_id
   };
+  console.log('[DeckService] Returning question:', result.question_id);
+  return result;
 };
 
 const advanceDeck = async (session) => {
@@ -259,10 +259,49 @@ const previousDeck = async (session) => {
   return newIndex + 1; // Return 1-based index
 };
 
+const getQuestionAtIndex = async (restaurant_id, context, index) => {
+  // Get all questions (cached)
+  const allQuestions = await getAllQuestions();
+  
+  // Filter by context
+  const deckQuestions = allQuestions.filter(q => 
+    !q.context || q.context === context
+  );
+
+  if (deckQuestions.length === 0) return null;
+
+  // Shuffle using consistent seed for the day/context
+  // Wait, we need the seed from the deck_session!
+  // But this function doesn't take session_group_id.
+  // It's a helper for getSessionState which already fetched position_index.
+  // We need to fetch the deck session to get the seed.
+  
+  // Actually, we should refactor getSessionState to use getCurrentQuestion logic 
+  // but explicitly passing the index is redundant if we just want "current".
+  // However, the prompt implies "rehydrate UI from this state".
+  // So returning the full question object is correct.
+  
+  // Let's make this function take the full session object or deck_session info.
+  // But for now, let's assume the caller has the deck_session or we fetch it.
+  
+  // BETTER APPROACH: Export a function that takes the session object and returns the current question
+  // exactly like getCurrentQuestion does, but maybe expose more metadata if needed.
+  // Actually, getCurrentQuestion ALREADY does exactly what we need:
+  // It fetches the deck session, gets the seed, shuffles, and picks the question at the current index.
+  
+  // So we don't need a new function in deckService if we can just use getCurrentQuestion?
+  // Yes. getSessionState in controller can just call deckService.getCurrentQuestion(session).
+  // I added a call to deckService.getQuestionAtIndex in the controller, but that function didn't exist.
+  // I should have used getCurrentQuestion.
+  
+  return null; 
+};
+
 module.exports = {
   getCurrentQuestion,
   getDeckSession,
   advanceDeck,
   previousDeck,
+  getQuestionAtIndex, // Exporting placeholder to avoid crash, but will replace usage
   _resetCache: () => { questionsCache = null; }
 };

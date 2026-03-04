@@ -9,7 +9,7 @@ const isLocal = process.env.DATABASE_URL && (
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: isLocal ? false : { rejectUnauthorized: false }
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
 console.log(`🔌 DB Connection: ${isLocal ? 'Local (No SSL)' : 'Remote (SSL)'}`);
