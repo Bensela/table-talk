@@ -22,10 +22,21 @@ export default function Home() {
     try {
       console.log('[Home] QR Scan Success:', decodedText);
       let tableId = decodedText;
+      
+      // Handle Full URL (e.g., https://octopus-app-ibal3.ondigitalocean.app/t/table001)
       if (decodedText.includes('/t/')) {
         const parts = decodedText.split('/t/');
         if (parts.length > 1) {
-          tableId = parts[1].replace(/\/$/, '');
+          // Take the part after /t/ and remove any trailing slashes or query params
+          // We assume the table ID is the immediate next segment
+          let potentialId = parts[1];
+          
+          // Clean up: remove query strings, hashes, trailing slashes
+          potentialId = potentialId.split('?')[0].split('#')[0].replace(/\/$/, '');
+          
+          if (potentialId) {
+             tableId = potentialId;
+          }
         }
       }
       
