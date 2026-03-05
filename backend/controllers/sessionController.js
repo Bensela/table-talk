@@ -139,6 +139,24 @@ const createSession = async (req, res) => {
       [sessionId, 'session_created', { table_token, context, mode, session_group_id: sessionGroupId }]
     );
 
+    // Notify Setup Channel that session is created
+    // This releases any waiting users (Phone B)
+    try {
+        const { io } = require('../index');
+        if (io) {
+            io.to(`setup_${table_token}`).emit('setup_completed', { 
+                mode, 
+                sessionId,
+                sessionGroupId 
+            });
+            // Note: The setup lock will be cleared when Phone A disconnects from setup room
+            // or we can explicitly clear it if we exposed a clearLock function.
+            // But relying on socket disconnect/release from client is fine.
+        }
+    } catch (e) {
+        console.warn('Could not emit setup_completed event:', e);
+    }
+
     // 8. Return Response
     const response = {
       ...newSession.rows[0],

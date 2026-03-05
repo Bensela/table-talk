@@ -125,6 +125,10 @@ const sessionStates = new Map(); // sessionId -> { ready: Map<participantId, boo
 // sessionId -> { pendingContext: { A: 'Exploring', B: null }, active: boolean }
 const pendingContexts = new Map();
 
+// Setup Locks for Welcome Screen Synchronization
+// tableToken -> { socketId: string, timestamp: number }
+const setupLocks = new Map();
+
 function getSessionState(sessionId) {
   if (!sessionStates.has(sessionId)) {
     sessionStates.set(sessionId, {
@@ -592,8 +596,80 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- Welcome Screen Setup Synchronization ---
+
+  socket.on('join_table_setup', ({ tableToken }) => {
+    if (!tableToken) return;
+    const room = `setup_${tableToken}`;
+    socket.join(room);
+    socket.tableSetupToken = tableToken; // Track for disconnect
+    console.log(`[Socket] ${socket.id} joined setup room for ${tableToken}`);
+    
+    // Check if locked
+    const lock = setupLocks.get(tableToken);
+    if (lock) {
+      if (lock.socketId === socket.id) {
+        socket.emit('setup_status', { status: 'granted' });
+      } else {
+        // Check if lock is stale (e.g. > 5 mins)
+        const now = Date.now();
+        if (now - lock.timestamp > 5 * 60 * 1000) {
+           setupLocks.delete(tableToken);
+           socket.emit('setup_status', { status: 'available' });
+        } else {
+           socket.emit('setup_status', { status: 'busy' });
+        }
+      }
+    } else {
+      socket.emit('setup_status', { status: 'available' });
+    }
+  });
+
+  socket.on('claim_setup', ({ tableToken }, callback) => {
+    if (!tableToken) return;
+    
+    const lock = setupLocks.get(tableToken);
+    
+    if (lock && lock.socketId !== socket.id) {
+       // Check staleness
+       const now = Date.now();
+       if (now - lock.timestamp > 5 * 60 * 1000) {
+          // Steal lock
+          setupLocks.set(tableToken, { socketId: socket.id, timestamp: Date.now() });
+          io.to(`setup_${tableToken}`).emit('setup_claimed', { socketId: socket.id });
+          if (callback) callback({ status: 'granted' });
+       } else {
+          if (callback) callback({ status: 'busy' });
+       }
+    } else {
+       // Grant lock
+       setupLocks.set(tableToken, { socketId: socket.id, timestamp: Date.now() });
+       // Notify others in room
+       socket.to(`setup_${tableToken}`).emit('setup_claimed', { socketId: socket.id });
+       if (callback) callback({ status: 'granted' });
+    }
+  });
+  
+  socket.on('release_setup', ({ tableToken }) => {
+      const lock = setupLocks.get(tableToken);
+      if (lock && lock.socketId === socket.id) {
+          setupLocks.delete(tableToken);
+          io.to(`setup_${tableToken}`).emit('setup_released');
+      }
+  });
+
   socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
+    
+    // Release setup lock if held
+    if (socket.tableSetupToken) {
+        const lock = setupLocks.get(socket.tableSetupToken);
+        if (lock && lock.socketId === socket.id) {
+            setupLocks.delete(socket.tableSetupToken);
+            io.to(`setup_${socket.tableSetupToken}`).emit('setup_released');
+            console.log(`[Socket] Released setup lock for ${socket.tableSetupToken} due to disconnect`);
+        }
+    }
     
     if (socket.participantId) {
       try {

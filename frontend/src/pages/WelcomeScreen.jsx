@@ -1,15 +1,87 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../components/ui/Button';
 import { resolveSession, joinDualSession, createSession } from '../api';
 import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
+import { useSocket } from '../context/SocketContext';
 
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
+  const { socket, isConnected, ensureConnection } = useSocket();
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState(null);
+  const [setupStatus, setSetupStatus] = useState('available'); // 'available', 'busy', 'granted'
+  const [waitingForA, setWaitingForA] = useState(false);
+  const setupCompletedRef = useRef(false);
+
+  // Join setup room on mount
+  useEffect(() => {
+    if (tableToken && socket) {
+      ensureConnection();
+    }
+  }, [tableToken, socket, ensureConnection]);
+
+  useEffect(() => {
+    if (isConnected && socket && tableToken) {
+      console.log('[Welcome] Joining setup room for', tableToken);
+      socket.emit('join_table_setup', { tableToken });
+
+      const handleStatus = (data) => {
+        console.log('[Welcome] Setup status:', data.status);
+        setSetupStatus(data.status);
+      };
+
+      const handleClaimed = (data) => {
+        if (data.socketId !== socket.id) {
+          setSetupStatus('busy');
+        }
+      };
+
+      const handleReleased = () => {
+        setSetupStatus('available');
+        setWaitingForA(false);
+      };
+
+      const handleSetupCompleted = async (data) => {
+        console.log('[Welcome] Setup completed by partner:', data);
+        setupCompletedRef.current = true;
+        
+        if (data.mode === 'dual-phone') {
+          setStatus('Joining partner...');
+          try {
+            const joinRes = await joinDualSession({ session_id: data.sessionId });
+            const { participant_id, participant_token, session_id } = joinRes.data;
+            storeParticipant(participant_id, session_id, participant_token);
+            storeDualSession(tableToken, session_id, participant_id, participant_token);
+            navigate(`/session/${session_id}/game`);
+          } catch (err) {
+            console.error('Auto-join failed:', err);
+            setWaitingForA(false);
+            setStatus(null);
+          }
+        } else {
+          // Phone A chose Single Mode. Phone B is released to start their own.
+          setWaitingForA(false);
+          setStatus(null);
+          setSetupStatus('available');
+        }
+      };
+
+      socket.on('setup_status', handleStatus);
+      socket.on('setup_claimed', handleClaimed);
+      socket.on('setup_released', handleReleased);
+      socket.on('setup_completed', handleSetupCompleted);
+
+      return () => {
+        socket.off('setup_status', handleStatus);
+        socket.off('setup_claimed', handleClaimed);
+        socket.off('setup_released', handleReleased);
+        socket.off('setup_completed', handleSetupCompleted);
+      };
+    }
+  }, [isConnected, socket, tableToken, navigate]);
 
   const handleContinue = async () => {
     setChecking(true);
@@ -71,11 +143,32 @@ export default function WelcomeScreen() {
 
       if (action === 'start_new') {
           // If we resolved to "Start New", it means we should go to context selection
-          // UNLESS we want to force start immediately?
-          // The previous logic routed to `/t/:token/context`.
-          // Let's stick to that flow for new sessions.
-          setStatus('Ready to start');
-          navigate(`/t/${tableToken}/context`);
+          // NEW LOGIC: Check Setup Lock
+          setStatus('Checking availability...');
+          
+          const claimPromise = new Promise((resolve) => {
+              if (socket && isConnected) {
+                  socket.emit('claim_setup', { tableToken }, (response) => {
+                      resolve(response);
+                  });
+                  // Timeout fallback
+                  setTimeout(() => resolve({ status: 'timeout' }), 2000);
+              } else {
+                  resolve({ status: 'offline' }); // Fallback to allow offline/local dev?
+              }
+          });
+          
+          const claimRes = await claimPromise;
+          console.log('[Welcome] Claim result:', claimRes);
+          
+          if (claimRes.status === 'granted' || claimRes.status === 'offline') {
+              setStatus('Ready to start');
+              navigate(`/t/${tableToken}/context`);
+          } else {
+              // Busy
+              setWaitingForA(true);
+              setStatus(null);
+          }
           return;
       }
 
@@ -87,6 +180,48 @@ export default function WelcomeScreen() {
       setChecking(false);
     }
   };
+
+  // Waiting UI for Phone B
+  if (waitingForA) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 font-sans text-center relative overflow-hidden">
+         {/* Background Ambience */}
+         <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
+         
+         <div className="relative z-10">
+             <div className="mb-8 relative mx-auto w-24 h-24">
+                 <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center animate-pulse border border-blue-100">
+                    <span className="text-4xl">⏳</span>
+                 </div>
+                 {/* Ping animation */}
+                 <div className="absolute top-0 left-0 w-24 h-24 bg-blue-400 rounded-full opacity-20 animate-ping"></div>
+             </div>
+             
+             <h2 className="text-2xl font-extrabold text-gray-900 mb-4 tracking-tight">
+                Waiting for Partner
+             </h2>
+             <p className="text-gray-500 max-w-xs mx-auto mb-10 leading-relaxed">
+                Wait to join a conversation or Create session
+             </p>
+             
+             <div className="space-y-4">
+                 <div className="flex justify-center gap-2">
+                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></span>
+                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
+                 </div>
+                 
+                 <button 
+                    onClick={() => setWaitingForA(false)}
+                    className="text-sm font-bold text-gray-400 hover:text-gray-600 transition-colors uppercase tracking-widest mt-8"
+                 >
+                    Cancel
+                 </button>
+             </div>
+         </div>
+      </div>
+    );
+  }
 
   // Format table token for display
   const displayTable = tableToken 
