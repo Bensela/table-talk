@@ -179,6 +179,12 @@ export default function QuestionCard({
 
   const isMultipleChoice = question.question_type === 'multiple-choice';
 
+  const cleanQuestionText = (text) => {
+    if (!text) return '';
+    // Remove (40) or [12] at the end, handling optional spaces
+    return text.replace(/\s*[\(\[]\d+[\)\]]\s*$/, '');
+  };
+
   return (
     <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto">
       {/* Main Card */}
@@ -207,7 +213,7 @@ export default function QuestionCard({
             <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
               fadeApplied ? 'text-gray-200 opacity-20 blur-[1px]' : 'text-gray-900'
             }`}>
-              {question.question_text}
+              {cleanQuestionText(question.question_text)}
             </h2>
             {fadeApplied && (
                <div className="absolute inset-0 flex items-center justify-center">
