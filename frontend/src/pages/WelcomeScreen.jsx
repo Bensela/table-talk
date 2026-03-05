@@ -63,9 +63,11 @@ export default function WelcomeScreen() {
           }
         } else {
           // Phone A chose Single Mode. Phone B is released to start their own.
+          console.log('[Welcome] Partner chose Single Mode. Proceeding to create new session.');
           setWaitingForA(false);
           setStatus(null);
           setSetupStatus('available');
+          navigate(`/t/${tableToken}/context`);
         }
       };
 

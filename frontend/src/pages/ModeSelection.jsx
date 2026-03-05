@@ -6,11 +6,13 @@ import { createSession, getSession, updateSessionMode, joinDualSession } from '.
 import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
 import { storeParticipant, getStoredParticipant } from '../utils/sessionStorage';
+import { useSocket } from '../context/SocketContext';
 
 export default function ModeSelection() {
   const { tableToken, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
   const navigate = useNavigate();
   const location = useLocation();
+  const { socket } = useSocket();
   const [loading, setLoading] = useState(false);
   
   // View State: 'mode-select' only now
@@ -55,6 +57,13 @@ export default function ModeSelection() {
         mode: 'single-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      
+      // Release setup lock so others can use the table
+      if (socket && tableToken) {
+          console.log('[ModeSelection] Releasing setup lock');
+          socket.emit('release_setup', { tableToken });
+      }
+
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
       console.error(err);
@@ -76,6 +85,13 @@ export default function ModeSelection() {
         mode: 'dual-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      
+      // Release setup lock so others can use the table
+      if (socket && tableToken) {
+          console.log('[ModeSelection] Releasing setup lock');
+          socket.emit('release_setup', { tableToken });
+      }
+
       // Directly navigate to game, waiting for partner to join via "One-Scan"
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
