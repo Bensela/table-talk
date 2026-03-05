@@ -251,16 +251,16 @@ export default function QuestionCard({
                 const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
                 
                 // Determine style based on state
-                let optionStyle = 'border-gray-100 hover:border-gray-200 text-gray-700 bg-white';
+                let optionStyle = 'border-gray-200 hover:border-gray-300 text-gray-900 bg-white';
                 if (isSelected && isPartnerSelected) {
                     // Both picked same
-                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2';
+                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2 shadow-md';
                 } else if (isSelected) {
                     // You picked
-                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900';
+                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm';
                 } else if (isPartnerSelected) {
                     // Partner picked
-                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2';
+                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2 shadow-md';
                 }
 
                 return (
@@ -269,14 +269,14 @@ export default function QuestionCard({
                     onClick={() => !submitted && setSelectedOption(opt.id)}
                     disabled={submitted || localRevealed}
                     className={`
-                      w-full p-4 rounded-xl border-2 text-left transition-all flex justify-between items-center group
+                      w-full px-5 py-4 rounded-2xl border-2 text-left transition-all flex justify-between items-center group
                       ${optionStyle}
                     `}
                   >
-                    <span className="font-medium">{opt.text}</span>
+                    <span className="font-semibold text-lg">{opt.text}</span>
                     <div className="flex gap-2 text-xs uppercase font-bold tracking-wider">
-                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-500"}>You</span>}
-                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-500"}>Partner</span>}
+                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-600"}>You</span>}
+                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-600"}>Partner</span>}
                     </div>
                   </button>
                 );
