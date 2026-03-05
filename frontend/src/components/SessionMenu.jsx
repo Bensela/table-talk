@@ -1,10 +1,18 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-// SessionMenu: Handles global session navigation and resets
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from './ui/Button';
 import { createSession } from '../api';
-import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt, storeDualSession, getDualSession, clearDualSession } from '../utils/sessionStorage';
+import { 
+  getStoredParticipant, 
+  clearStoredParticipant, 
+  storeParticipant, 
+  setLastResetAt, 
+  storeDualSession, 
+  getDualSession, 
+  clearDualSession 
+} from '../utils/sessionStorage';
+import { SCANNER_ROUTE } from '../constants/routes';
 
 export default function SessionMenu({
   tableToken,
@@ -17,26 +25,44 @@ export default function SessionMenu({
   const [loading, setLoading] = useState(false);
 
   const handleRestart = () => {
-    if (!tableToken) return;
+    if (!tableToken) {
+        console.error("[Menu] handleRestart called but tableToken is missing");
+        return;
+    }
+    
+    console.log("[Menu] handleRestart called. Mode:", currentMode, "Token:", tableToken);
+
+    // If currently in Dual Mode, handle termination intent
+    if (currentMode === 'dual-phone') {
+       // Notify server of Fresh Intent (if socket active)
+       if (socketRef?.current?.connected) {
+           console.log("[Menu] Sending Fresh Intent");
+           socketRef.current.emit('fresh_intent');
+       }
+
+       // We save local credentials in dual storage just in case we are the "First" one leaving
+       // and want to resume later if the partner didn't leave (and session wasn't terminated).
+       const current = getStoredParticipant();
+       console.log("[Menu] Storing dual session backup:", current);
+       if (current.sessionId && current.participantToken) {
+           storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
+       } else {
+           console.warn("[Menu] Missing credentials, cannot store dual backup");
+       }
+    }
+
     setLastResetAt();
     
-    // Clear session-specific data but KEEP persistent tokens if needed
+    // Clear session-specific data
     clearStoredParticipant();
     
-    // Also clear dual session history to truly start fresh
-    // If product wants "Start Fresh" to mean "Forget everything about this table for now",
-    // then clearing the dual session pointer is correct.
-    clearDualSession(tableToken);
-
-    // Note: Do NOT clear the global socket. The user might just be resetting state.
-    // The socket provider handles connection lifecycle.
-    
-    // Redirect to scanner/landing
-    // The requirement says "Redirect to QR Code scanner page".
-    // In our app, the QR scanner is on the Home page ('/').
-    // The WelcomeScreen (/t/:token) is the *result* of a scan.
-    // "QR Code scanner front page" likely means the Home page where you click "Scan QR".
-    window.location.href = '/';
+    // Redirect to scanner with slight delay to ensure socket emit
+    setTimeout(() => {
+        if (socketRef?.current) {
+            socketRef.current.disconnect();
+        }
+        window.location.href = SCANNER_ROUTE;
+    }, 100);
   };
 
   const handleQuickSwitch = async (updates = {}) => {
@@ -45,94 +71,26 @@ export default function SessionMenu({
     const newContext = updates.context || currentContext;
     const newMode = updates.mode || currentMode;
     
-    // Check if resuming Dual Mode
+    // 1. Resume Dual Mode Check
     if (newMode === 'dual-phone' && currentMode !== 'dual-phone') {
-      const resumableSessionId = getDualSession(tableToken);
-      if (resumableSessionId) {
-        // Resume existing dual session instead of creating new
-        setLoading(true);
-        setIsOpen(false);
-        
-        // We need to fetch participant info for this session if not in storage
-        // But storage only holds ONE active session.
-        // So we need to re-join or resolve.
-        // Actually, resolveSession API can handle this if we pass the session ID?
-        // Or we just redirect and let SessionGame handle the re-join via participant ID if stored?
-        // Wait, if we switched to Single, we overwrote participant_id in storage.
-        // So we lost the credentials for the Dual session unless we stored them separately.
-        
-        // Revised Plan: We need to rely on the backend `joinDualPhoneSession` or `resolveSession` 
-        // to recover the participant or create a new one for the EXISTING session.
-        
-        // Let's try to join the resumable session.
-        try {
-           // We redirect to the session. The SessionGame will try to use current participant_id.
-           // But current participant_id is for the SINGLE session.
-           // So SessionGame will fail auth.
-           
-           // We need to "switch" credentials.
-           // Since we didn't store dual credentials separately in the plan (only session ID),
-           // we treat this as a "New Participant Joining Existing Session".
-           // This is valid. The user is re-joining.
-           
-           // Call join-dual to get new credentials for the old session
-           // OR if we are A/B, we might need to reclaim role?
-           // If we lost the token, we can't reclaim role A easily without a "device_token" persistent cookie.
-           
-           // Simplified approach for now:
-           // Redirect to the dual session ID. 
-           // SessionGame will see it has no valid participant_id for this session.
-           // It should trigger a join? 
-           // Currently SessionGame expects stored participant.
-           
-           // Let's use the resolver logic:
-           // We can't use createSession.
-           // We should use joinDualPhoneSession with the session_id.
-           const { joinDualSession } = require('../api'); // Need to import this or add to imports
-           // Ah, createSession is imported from api.
-           
-           // Actually, let's just let the standard flow handle it?
-           // If we redirect to /session/:id/game, SessionGame runs.
-           // It checks getStoredParticipant().sessionId === :id.
-           // It will be FALSE (because we are in Single mode).
-           // So it will say "Missing participant ID".
-           // We need a way to auto-join.
-           
-           // Ideally, we should have stored the dual participant_token too.
-           // But given the constraints, let's just create a new participant in that session?
-           // But Role A and B might be taken?
-           // If I am A, and I left, and I come back, I want to be A.
-           // Without my token, I can't prove I am A.
-           
-           // CRITICAL: We need to store participant credentials alongside the session ID for resume.
-           // Let's update sessionStorage.js to store a blob.
-           
-           // For this specific step, let's assume we implement the "create new if fail" fallback 
-           // but prioritize the dual session.
-           
-           // Since I can't easily change the storage schema safely in one go without breaking types,
-           // I will use the `createSession` flow but pass the `session_id` if I want to join it?
-           // No, `createSession` makes a NEW one.
-           
-           // Let's just create a new session for now to satisfy the "Switch" requirement 
-           // BUT implementing the "Resume" logic requires the "device_token" which we do have (maybe).
-           
-           // Wait, the prompt says: "Switching to Single... must not mutate existing Dual".
-           // "When user switches back... if active, resume it."
-           
-           // Okay, let's assume the user is "Phone A".
-           // If Phone A drops credentials, they can't resume as Phone A.
-           // So we MUST persist credentials.
-           
-           // Let's rely on the `resolveSession` endpoint?
-           // It takes `device_token`. 
-           // If we send the `participant_token` from the DUAL session as `device_token`, we get back in.
-           // So we need to store the `participant_token` of the Dual session before we switch away.
-           
-           // Action: Update `storeDualSession` to take credentials.
-        } catch (e) {
-           console.error("Resume failed", e);
-        }
+      const dualData = getDualSession(tableToken);
+      if (dualData) {
+          console.log("Resuming previous dual session:", dualData.sessionId);
+          // Restore credentials
+          storeParticipant(dualData.participantId, dualData.sessionId, dualData.participantToken);
+          
+          // Update context if needed
+          if (newContext !== currentContext) {
+             try {
+                 const api = require('../api').default; 
+                 await api.patch(`/sessions/${dualData.sessionId}`, { context: newContext });
+             } catch (e) {
+                 console.error("Failed to update context on resume", e);
+             }
+          }
+          
+          window.location.href = `/session/${dualData.sessionId}/game`;
+          return;
       }
     }
 
@@ -140,56 +98,66 @@ export default function SessionMenu({
     setIsOpen(false);
 
     try {
-      // If currently in Dual Mode, save it for later resume
+      // 2. Dual Mode Context Switch (Mutation via Socket)
+      if (currentMode === 'dual-phone' && newMode === 'dual-phone' && newContext !== currentContext) {
+          if (socketRef?.current?.connected) {
+             console.log("[Menu] Sending Context Switch Intent:", newContext);
+             
+             // Emit intent
+             socketRef.current.emit('context_switch_intent', { context: newContext });
+             
+             // OPTIONAL: We can set a "pending" flag in parent if needed, 
+             // but SessionGame handles the "pendingSwitchContext" logic for popups.
+             // We assume SessionGame will receive the event if we are on that page?
+             // Ah, SessionMenu is rendered INSIDE SessionGame (via header).
+             // But SessionMenu doesn't have access to SessionGame's state setter.
+             // We need to inform SessionGame that WE initiated the switch so it ignores the echo.
+             
+             if (onSessionChange) {
+                 // Pass the intent up so SessionGame can set pendingSwitchContext
+                 onSessionChange({ pendingContext: newContext });
+             }
+             
+             setLoading(false);
+             return;
+          } else {
+             // Fallback to API if socket dead
+             const current = getStoredParticipant();
+             if (current.sessionId) {
+                  console.log("[Menu] Updating existing Dual Session context (Fallback):", newContext);
+                  const api = require('../api').default; 
+                  await api.patch(`/sessions/${current.sessionId}`, { context: newContext });
+                  window.location.reload();
+                  return;
+             }
+          }
+      }
+
+      // 3. Save Dual Session State before switching away (if leaving Dual Mode)
       if (currentMode === 'dual-phone') {
-         // We need the current session ID and credentials.
-         // We can get them from storage before clearing.
-         // getStoredParticipant is imported from sessionStorage.js
          const current = getStoredParticipant();
          if (current.sessionId && current.participantToken) {
              storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
          }
       }
 
-      setLastResetAt();
-      clearStoredParticipant();
-      // Socket disconnect moved to after migration emit
-
-      // Check if we are RESUMING a dual session
-      if (newMode === 'dual-phone') {
-          const dualData = getDualSession(tableToken);
-          if (dualData) {
-              console.log("Resuming previous dual session:", dualData.sessionId);
-              // Restore credentials
-              storeParticipant(dualData.participantId, dualData.sessionId, dualData.participantToken);
-              window.location.href = `/session/${dualData.sessionId}/game`;
-              return;
-          }
-      }
-
+      // 4. Standard Session Creation (New Session)
+      // For switching modes or starting fresh context in Single Mode
       const { data } = await createSession({
         table_token: tableToken,
         context: newContext,
         mode: newMode
       });
 
-      // Notify partner to follow to new session (if connected)
-      // ONLY if the new session is also Dual Mode. 
-      // If switching to Single, we leave the partner behind in the old session (as per rules).
+      // Notify partner to follow (if migrating from Single to Dual or similar)
       if (socketRef?.current?.connected && newMode === 'dual-phone') {
         console.log('[Menu] Migrating partner to', data.session_id);
         socketRef.current.emit('migrate_session', { newSessionId: data.session_id });
-        
-        // Give a tiny delay for the emit to go out before killing connection/redirecting?
-        // Socket.io emits are usually async but fire-and-forget.
         await new Promise(r => setTimeout(r, 100));
       }
 
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       if (socketRef?.current) socketRef.current.disconnect();
-      
-      // Optional: Add toast/notification logic here if global toast provider exists
-      // For now, simple redirect is sufficient as the page reload acts as feedback
       
       window.location.href = `/session/${data.session_id}/game`;
     } catch (err) {

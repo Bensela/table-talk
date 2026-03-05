@@ -20,6 +20,7 @@ export default function Home() {
 
   const handleScanSuccess = (decodedText) => {
     try {
+      console.log('[Home] QR Scan Success:', decodedText);
       let tableId = decodedText;
       if (decodedText.includes('/t/')) {
         const parts = decodedText.split('/t/');
@@ -30,6 +31,7 @@ export default function Home() {
       
       if (tableId) {
         setShowScanner(false);
+        console.log('[Home] Navigating to:', `/t/${tableId}`);
         navigate(`/t/${tableId}`);
       }
     } catch (e) {

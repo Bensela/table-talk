@@ -12,7 +12,8 @@ export default function QuestionCard({
   socket,
   sessionId,
   userId,
-  partnerSelectionsData = {}
+  partnerSelectionsData = {},
+  partnerIsReady = false
 }) {
   if (!question) {
     return (
@@ -332,6 +333,7 @@ export default function QuestionCard({
                             <p className="text-gray-500 font-medium animate-pulse">Viewing Results...</p>
                         </div>
                     ) : (
+                      <>
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -357,6 +359,19 @@ export default function QuestionCard({
                                 ? "Next Question" 
                                 : "I'm Ready"}
                         </Button>
+                        
+                        {/* Partner Ready Indicator */}
+                        {partnerIsReady && !localNextIntent && (
+                           <div className="text-center animate-pulse pt-2">
+                              <p className="text-sm font-bold text-blue-600">
+                                👋 Partner is ready!
+                              </p>
+                              <p className="text-xs text-blue-400">
+                                Click "I'm Ready" to continue.
+                              </p>
+                           </div>
+                        )}
+                      </>
                     )}
                    </>
                  )}

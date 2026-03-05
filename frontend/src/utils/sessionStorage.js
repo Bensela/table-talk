@@ -22,11 +22,12 @@ export function storeDualSession(tableToken, sessionId, participantId, participa
     participantToken,
     timestamp: new Date().toISOString()
   };
-  sessionStorage.setItem(`last_dual_data_${tableToken}`, JSON.stringify(data));
+  // Use localStorage to survive browser restart/new tab for resumption
+  localStorage.setItem(`last_dual_data_${tableToken}`, JSON.stringify(data));
 }
 
 export function getDualSession(tableToken) {
-  const raw = sessionStorage.getItem(`last_dual_data_${tableToken}`);
+  const raw = localStorage.getItem(`last_dual_data_${tableToken}`);
   if (!raw) return null;
   
   try {
@@ -49,7 +50,7 @@ export function getDualSession(tableToken) {
 }
 
 export function clearDualSession(tableToken) {
-  sessionStorage.removeItem(`last_dual_data_${tableToken}`);
+  localStorage.removeItem(`last_dual_data_${tableToken}`);
 }
 
 export function clearStoredParticipant() {

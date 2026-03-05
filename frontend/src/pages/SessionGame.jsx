@@ -28,6 +28,8 @@ function useSessionActivity(sessionId, participantId) {
   }, [sessionId, participantId]);
 }
 
+import { SCANNER_ROUTE } from '../constants/routes';
+
 export default function SessionGame() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -44,6 +46,8 @@ export default function SessionGame() {
   const [participantId, setParticipantId] = useState(null);
   const [tableToken, setTableToken] = useState(null);
   const [hasClickedNext, setHasClickedNext] = useState(false);
+  const [partnerIsReady, setPartnerIsReady] = useState(false);
+  const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -148,7 +152,9 @@ export default function SessionGame() {
         participant_id: participantId 
       });
 
+      // FORCE STATE SYNC:
       // Fetch current question state on reconnect to ensure sync
+      // This overrides any local state that might have drifted while offline
       fetchCurrentQuestion();
     };
 
@@ -158,10 +164,28 @@ export default function SessionGame() {
         window.location.href = `/session/${data.newSessionId}/game`;
       }
     };
+    
+    // Listen for session updates (Context/Mode changes)
+    const onSessionUpdated = (data) => {
+        console.log('[SessionGame] Session updated:', data);
+        if (data.context) {
+            setContext(data.context);
+            // Clear pending switch context since it's now applied
+            setPendingSwitchContext(null);
+            // Close any open modals (e.g. Context Switch Request)
+            setModalState(prev => ({ ...prev, isOpen: false }));
+        }
+        if (data.mode) {
+            setMode(data.mode);
+        }
+        // ALWAYS fetch current question to ensure sync with server
+        fetchCurrentQuestion();
+    };
 
     // Attach listeners
     socket.on('connect', onConnect);
     socket.on('session_migrated', onMigrate);
+    socket.on('session_updated', onSessionUpdated);
     
     // Also run onConnect immediately if already connected
     if (socket.connected) {
@@ -212,6 +236,7 @@ export default function SessionGame() {
       setWaitingForPartner(false);
       setPartnerSelections({});
       setHasClickedNext(false);
+      setPartnerIsReady(false);
       setModalState(prev => ({ ...prev, isOpen: false }));
     };
 
@@ -236,14 +261,120 @@ export default function SessionGame() {
 
     const onNextIntentUpdate = ({ count }) => {
       if (count >= 1 && !hasClickedNext) {
-          setModalState({
-            isOpen: true,
-            title: "Partner is Ready!",
-            message: "Your partner is ready to move on. Finish up and click 'I'm Ready'!",
-            action: () => setModalState(prev => ({ ...prev, isOpen: false })),
-            icon: '👋'
-          });
+          setPartnerIsReady(true);
       }
+    };
+    
+    // Listen for partner context switch intent
+    const onPartnerContextIntent = ({ context, initiator_role }) => {
+        // If I am the initiator, ignore this event
+        // We can check role via local storage or if stored in state?
+        // We don't have local role stored in state easily, but we know who initiated.
+        // Wait, socket.io broadcasts to 'room'. If I am in the room, I get it.
+        // We should check if we initiated it.
+        // But the event says "initiator_role".
+        // We need to know OUR role.
+        // We fetch role in initSession but don't store it in state?
+        // Let's store role in state or check against socket.role if accessible?
+        // Actually, we can check if `socketRef.current` exists and check a property? No.
+        
+        // Easier: The server implementation of `socket.to(sessionId).emit(...)`
+        // `socket.to(...)` sends to everyone in the room EXCEPT the sender.
+        // So Phone A (sender) should NOT receive this event if the server uses `socket.to()`.
+        
+        // Let's verify backend code.
+        // Backend: `socket.to(sessionId).emit('partner_context_intent', ...)`
+        // This is correct. Phone A should NOT see it.
+        
+        // HOWEVER, Phone A *does* see the confirmation when Phone B clicks OK?
+        // When Phone B clicks OK, it emits `context_switch_intent` too.
+        // Then Server sees match -> broadcasts `session_updated`.
+        
+        // Why is Phone A seeing a popup "Context Switch Request"?
+        // If Phone A initiates, Server sends `partner_context_intent` to Phone B.
+        // Phone B sees popup. Phone B clicks OK.
+        // Phone B emits `context_switch_intent`.
+        // Server sees match.
+        // Server sends `partner_context_intent` to Phone A?
+        // In backend:
+        // `socket.on('context_switch_intent')` -> `socket.to(sessionId).emit('partner_context_intent')`
+        // YES. When Phone B confirms, it emits the intent.
+        // The server receives it, stores it, sees it matches A's pending intent.
+        // BUT it *also* emits `partner_context_intent` to A before checking the match?
+        // Let's check backend logic.
+        
+        /* Backend Logic:
+          // Store intent
+          const pending = getPendingContextState(sessionId);
+          pending[role] = context;
+          
+          // Notify partner
+          socket.to(sessionId).emit('partner_context_intent', { ... });
+          
+          // Check if both match
+          if (pending.A && pending.B && pending.A === pending.B) { ... }
+        */
+        
+        // So YES, when B confirms (sends intent), A gets the notification "Partner wants to switch".
+        // But since A *already* wants to switch (pending.A is set), A shouldn't see a request popup.
+        // A should just wait for the switch.
+        
+        // Fix: We need to filter this on the frontend.
+        // If I have already requested this context, I should ignore the partner's request (because it's just them agreeing).
+        // Or better: The backend shouldn't send it if it completes the handshake?
+        // Backend sends it *before* checking match.
+        
+        // Frontend Fix:
+        // We need to track "I have pending switch intent".
+        // But we don't have that state here easily.
+        // We can add `pendingSwitchContext` state.
+        
+        // If I requested "Established", and I get a request for "Established", I know it's a handshake completion.
+        // I should ignore the popup.
+        
+        // Let's add state `pendingSwitchContext`.
+        
+        if (pendingSwitchContext === context) {
+            console.log("Ignoring partner context intent (handshake match):", context);
+            return;
+        }
+
+        // Show modal informing user that partner wants to switch
+        setModalState({
+            isOpen: true,
+            title: "Context Switch Request",
+            message: `Your partner wants to switch to "${context}".`,
+            action: async () => {
+                // User Confirmed: Send intent to match partner
+                setModalState(prev => ({ ...prev, isOpen: false }));
+                // Set pending state so we don't get a loop if re-emitted
+                setPendingSwitchContext(context);
+                
+                if (socketRef.current?.connected) {
+                    console.log("[SessionGame] Confirming partner context switch:", context);
+                    socketRef.current.emit('context_switch_intent', { context });
+                }
+            },
+            icon: '🔄'
+        });
+    };
+    
+    // Listen for partner fresh intent
+    const onPartnerRequestedFresh = () => {
+        // Just show a toast/modal?
+        // "Partner has requested to Start Fresh. If you also Start Fresh, the session will end permanently."
+        // We don't force them out.
+        // We can just log it or show subtle indicator.
+        console.log('[SessionGame] Partner requested fresh intent.');
+    };
+    
+    const onDualGroupTerminated = () => {
+        // Both users confirmed Start Fresh.
+        // Force redirect to scanner.
+        console.log('[SessionGame] Dual Group Terminated. Redirecting...');
+        setLastResetAt();
+        clearStoredParticipant();
+        window.location.href = SCANNER_ROUTE;
     };
 
     socket.on('connect_error', onConnectError);
@@ -257,11 +388,15 @@ export default function SessionGame() {
     socket.on('both_ready', onBothReady);
     socket.on('wait_timeout', onWaitTimeout);
     socket.on('next_intent_update', onNextIntentUpdate);
+    socket.on('partner_context_intent', onPartnerContextIntent);
+    socket.on('partner_requested_fresh', onPartnerRequestedFresh);
+    socket.on('dual_group_terminated', onDualGroupTerminated);
 
     return () => {
       // CLEANUP: Remove listeners but DO NOT disconnect socket
       socket.off('connect', onConnect);
       socket.off('session_migrated', onMigrate);
+      socket.off('session_updated', onSessionUpdated);
       socket.off('connect_error', onConnectError);
       socket.off('disconnect', onDisconnect);
       socket.off('error', onError);
@@ -273,8 +408,11 @@ export default function SessionGame() {
       socket.off('both_ready', onBothReady);
       socket.off('wait_timeout', onWaitTimeout);
       socket.off('next_intent_update', onNextIntentUpdate);
+      socket.off('partner_context_intent', onPartnerContextIntent);
+      socket.off('partner_requested_fresh', onPartnerRequestedFresh);
+      socket.off('dual_group_terminated', onDualGroupTerminated);
     };
-  }, [sessionId, participantId, hasClickedNext, globalSocket]); // Dependencies updated
+  }, [sessionId, participantId, hasClickedNext, globalSocket]);
 
   // Handle Visibility Change (Background/Foreground)
   useEffect(() => {
@@ -473,6 +611,11 @@ export default function SessionGame() {
           currentContext={context}
           currentMode={mode}
           socketRef={socketRef}
+          onSessionChange={(data) => {
+             if (data.pendingContext) {
+                 setPendingSwitchContext(data.pendingContext);
+             }
+          }}
         />
         
         <div className="flex items-center gap-2">
@@ -505,6 +648,7 @@ export default function SessionGame() {
           sessionId={sessionId}
           userId={participantId}
           partnerSelectionsData={partnerSelections}
+          partnerIsReady={partnerIsReady}
         />
       </div>
     </div>

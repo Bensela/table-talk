@@ -305,3 +305,38 @@ No PII.
 Keep UX clean, minimal, and stable.
 
 Preserve 24-hour resume behavior.
+
+
+Fix Dual Mode behavior in two areas:
+
+1) Dual Mode context switching must keep the two phones in the same ongoing session
+
+Required behavior
+
+Phone A changes context (Established -> Exploring).
+
+Phone B also changes to the same context.
+
+Phone B must join Phone A’s session in the new context and remain synchronized.
+
+If Phone B quits and later scans the same QR within 24 hours, Phone B must rejoin the same dual session, same new context, and resync.
+
+Same applies if either device loses connection, closes browser, or goes offline; scanning QR within 24 hours resumes the ongoing dual session and sync.
+
+2) “Start Fresh” behavior in Dual Mode depends on whether both users confirm
+
+Required behavior
+
+If Phone B taps “Start Fresh,” it routes to QR scanner page.
+
+If Phone A also taps “Start Fresh,” then the current dual session must be terminated server-side, so neither phone can rejoin it; they can start a new session.
+
+But if Phone A does NOT tap “Start Fresh,” then Phone B scanning the same QR later within 24 hours should rejoin Phone A’s ongoing dual session and resync.
+
+Constraints
+
+No PII.
+
+Maintain 24-hour retention rule.
+
+Production-safe, minimal rewrite, primarily state handling.

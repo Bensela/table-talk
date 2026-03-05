@@ -2,36 +2,86 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/ui/Button';
-import { resolveSessionForScan } from '../services/sessionResolver';
-import { getStoredParticipant } from '../utils/sessionStorage';
+import { resolveSession, joinDualSession, createSession } from '../api';
+import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
 
 export default function WelcomeScreen() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(false);
-  const [status, setStatus] = useState(null); // Null status means show welcome screen, otherwise show loading
+  const [status, setStatus] = useState(null);
 
   const handleContinue = async () => {
     setChecking(true);
     setStatus('Connecting...');
     
     try {
-      const result = await resolveSessionForScan(tableToken);
+      // 1. Check for existing credentials (active or backup from dual mode)
+      const stored = getStoredParticipant();
+      const dualStored = getDualSession(tableToken);
       
-      if (result.action === 'resume') {
-        setStatus('Resuming session...');
-        navigate(`/session/${result.data.session_id}/game`);
-      } else if (result.action === 'join') {
-        setStatus('Joining partner...');
-        navigate(`/session/${result.data.session_id}/game`);
-      } else {
-        // New Session
-        setStatus('Ready to start');
-        navigate(`/t/${tableToken}/context`);
+      console.log("[Welcome] Stored Creds:", stored);
+      console.log("[Welcome] Dual Backup:", dualStored);
+
+      // Use active token first, fallback to backup token if we just "started fresh" but want to resume
+      const deviceToken = stored.participantToken || dualStored?.participantToken;
+      
+      console.log("[Welcome] Using Device Token:", deviceToken);
+
+      // 2. Resolve Session State
+      const resolveRes = await resolveSession({ 
+          table_token: tableToken, 
+          device_token: deviceToken 
+      });
+      
+      const { action, session_id, participant_id, participant_token, mode } = resolveRes.data;
+      console.log('[Welcome] Resolution Action:', action);
+
+      if (action === 'resume') {
+          setStatus('Resuming session...');
+          // Restore credentials if we used backup token
+          if (!stored.participantToken && deviceToken) {
+              console.log('[Welcome] Restoring backup credentials to session storage');
+              storeParticipant(participant_id, session_id, deviceToken);
+          }
+          // Navigate to game directly
+          navigate(`/session/${session_id}/game`);
+          return;
       }
+
+      if (action === 'join_dual') {
+          setStatus('Joining partner...');
+          console.log('[Welcome] Auto-joining dual session:', session_id);
+          // Auto-join waiting session (Phone B joins Phone A)
+          const joinRes = await joinDualSession({ session_id });
+          const { 
+              participant_id: newPid, 
+              participant_token: newToken, 
+              session_id: newSid 
+          } = joinRes.data;
+
+          // Store credentials
+          storeParticipant(newPid, newSid, newToken);
+          // Store backup for this new session
+          storeDualSession(tableToken, newSid, newPid, newToken);
+          
+          navigate(`/session/${newSid}/game`);
+          return;
+      }
+
+      if (action === 'start_new') {
+          // If we resolved to "Start New", it means we should go to context selection
+          // UNLESS we want to force start immediately?
+          // The previous logic routed to `/t/:token/context`.
+          // Let's stick to that flow for new sessions.
+          setStatus('Ready to start');
+          navigate(`/t/${tableToken}/context`);
+          return;
+      }
+
     } catch (err) {
       console.error('Resolution error:', err);
-      // Fallback: Start New
+      // Fallback: Start New Flow
       navigate(`/t/${tableToken}/context`);
     } finally {
       setChecking(false);

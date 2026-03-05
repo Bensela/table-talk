@@ -121,8 +121,9 @@ app.get('*', (req, res) => {
 // Store pending states
 const pendingNextClicks = new Map();
 const sessionStates = new Map(); // sessionId -> { ready: Map<participantId, bool>, answers: Map<participantId, optionId> }
-// socketToSession map is less useful now that we have socket.participantId, but can keep for disconnect cleanup if needed
-// Actually, with auth, we should rely on socket.participantId
+// Pending Context Switching States
+// sessionId -> { pendingContext: { A: 'Exploring', B: null }, active: boolean }
+const pendingContexts = new Map();
 
 function getSessionState(sessionId) {
   if (!sessionStates.has(sessionId)) {
@@ -133,6 +134,16 @@ function getSessionState(sessionId) {
     });
   }
   return sessionStates.get(sessionId);
+}
+
+function getPendingContextState(sessionId) {
+    if (!pendingContexts.has(sessionId)) {
+        pendingContexts.set(sessionId, {
+            A: null,
+            B: null
+        });
+    }
+    return pendingContexts.get(sessionId);
 }
 
 function clearSessionState(sessionId) {
@@ -212,6 +223,12 @@ io.on('connection', (socket) => {
       socket.sessionGroupId = participant.rows[0].session_group_id;
 
       console.log(`Participant ${participant_id} (${socket.role}) joined session ${session_id}`);
+
+      // Clear any pending Fresh Intent for this user (they are back!)
+      // Update DB to clear the flag
+      const intentField = socket.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+      await db.query(`UPDATE sessions SET ${intentField} = FALSE WHERE session_id = $1`, [session_id]);
+      console.log(`[Socket] Cleared ${intentField} for session ${session_id}`);
 
       // Notify room
       // Emit 'dual_partner_joined' specifically when Role B joins
@@ -376,6 +393,162 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Handle Dual Mode Context Switch Intent
+  socket.on('context_switch_intent', async ({ context }) => {
+      if (!socket.participantId || !socket.sessionId || !socket.role) return;
+      
+      const sessionId = socket.sessionId;
+      const role = socket.role;
+      
+      console.log(`[Socket] Context Switch Intent from ${role}: ${context}`);
+      
+      // Store intent
+      const pending = getPendingContextState(sessionId);
+      pending[role] = context;
+      
+      // Check if both match
+      // We need both A and B to have selected the SAME context
+      const isMatch = pending.A && pending.B && pending.A === pending.B;
+
+      if (!isMatch) {
+          // Notify partner ONLY if it's not a match yet (requesting a switch)
+          socket.to(sessionId).emit('partner_context_intent', { 
+              context,
+              initiator_role: role
+          });
+      } else {
+          // It IS a match (Handshake complete)
+          const newContext = pending.A;
+          console.log(`[Socket] Context Switch Confirmed: ${newContext}`);
+          
+          try {
+              // Perform the update (using Option A: Mutation)
+              // We can reuse the updateSession logic, but we need to do it here since this is socket-driven
+              // OR we can call the controller logic if we extract it.
+              // For simplicity, let's just do the DB update here or emit an event that triggers client to call API?
+              // Better: Server does it to be authoritative.
+              
+              // 1. Update Session Context in DB
+              await db.query(
+                `UPDATE sessions SET context = $1 WHERE session_id = $2`,
+                [newContext, sessionId]
+              );
+              
+              // 2. Ensure Deck Session Exists
+              // We need session details to get table/restaurant/group
+              const sessionRes = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
+              if (sessionRes.rows.length > 0) {
+                  const session = sessionRes.rows[0];
+                  await deckService.getDeckSession(
+                      session.restaurant_id || 'default', 
+                      session.table_token, 
+                      newContext, 
+                      session.session_group_id
+                  );
+                  
+                  // 3. Log Analytics
+                  await db.query(
+                    `INSERT INTO analytics_events (session_id, event_type, event_data)
+                     VALUES ($1, $2, $3)`,
+                    [sessionId, 'dual_context_switched_confirmed', { context: newContext }]
+                  );
+                  
+                  // 4. Clear pending state
+                  pendingContexts.delete(sessionId);
+                  
+                  // 5. Broadcast Final Change
+                  // This tells both clients to update their UI to the new context and fetch the new question
+                  io.to(sessionId).emit('session_updated', { 
+                      context: newContext,
+                      mode: 'dual-phone' // Implicit
+                  });
+              }
+          } catch (err) {
+              console.error('Error executing context switch:', err);
+              io.to(sessionId).emit('error', { message: 'Failed to switch context' });
+          }
+      }
+  });
+
+  // Handle Dual Mode Fresh Intent (Termination)
+  socket.on('fresh_intent', async () => {
+      if (!socket.participantId || !socket.sessionId || !socket.role) return;
+      const sessionId = socket.sessionId;
+      const role = socket.role;
+      
+      console.log(`[Socket] Fresh Intent from ${role} in session ${sessionId}`);
+      
+      try {
+          // 1. Update DB with intent
+          const intentField = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+          const updateResult = await db.query(
+              `UPDATE sessions SET ${intentField} = TRUE WHERE session_id = $1 RETURNING fresh_intent_a, fresh_intent_b`,
+              [sessionId]
+          );
+          
+          if (updateResult.rows.length === 0) return;
+          const { fresh_intent_a, fresh_intent_b } = updateResult.rows[0];
+          
+          // Notify partner
+          socket.to(sessionId).emit('partner_requested_fresh', { role });
+          
+          // 2. Check if both want fresh
+          if (fresh_intent_a && fresh_intent_b) {
+              console.log(`[Socket] Both confirmed Fresh Intent. Terminating session ${sessionId}`);
+              
+              // Mark session as ended in DB
+              // IMPORTANT: Use RETURNING * to confirm update
+              const endResult = await db.query(`
+                UPDATE sessions 
+                SET dual_status = 'ended', expires_at = NOW() 
+                WHERE session_id = $1
+                RETURNING *
+              `, [sessionId]);
+              
+              if (endResult.rows.length === 0) {
+                  console.error('Failed to mark session as ended in DB');
+              } else {
+                  console.log('Session marked as ended in DB');
+              }
+              
+              // Also terminate dual_group if using it
+              const sessionRes = await db.query('SELECT dual_group_id FROM sessions WHERE session_id = $1', [sessionId]);
+              if (sessionRes.rows.length > 0 && sessionRes.rows[0].dual_group_id) {
+                  const dualGroupId = sessionRes.rows[0].dual_group_id;
+                  await db.query(`
+                    UPDATE dual_groups 
+                    SET terminated_at = NOW() 
+                    WHERE dual_group_id = $1
+                  `, [dualGroupId]);
+                  
+                  // Also expire ALL sessions in this group
+                  await db.query(`
+                    UPDATE sessions 
+                    SET dual_status = 'ended', expires_at = NOW()
+                    WHERE dual_group_id = $1
+                  `, [dualGroupId]);
+              }
+
+              // Log Analytics
+              await db.query(
+                `INSERT INTO analytics_events (session_id, event_type, event_data)
+                 VALUES ($1, $2, $3)`,
+                [sessionId, 'dual_session_terminated_mutual', {}]
+              );
+              
+              // Broadcast termination
+              io.to(sessionId).emit('dual_group_terminated');
+              
+              // Clean up memory
+              pendingContexts.delete(sessionId);
+              clearSessionState(sessionId);
+              sessionStates.delete(sessionId);
+          }
+      } catch (err) {
+          console.error('Error handling fresh_intent:', err);
+      }
+  });
+
   // Legacy/Single Mode Handler
   socket.on('request_next', async () => {
     if (!socket.participantId) return;
@@ -456,4 +629,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = app;
+module.exports = { app, server, io };
