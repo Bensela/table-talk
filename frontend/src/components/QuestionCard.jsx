@@ -13,7 +13,10 @@ export default function QuestionCard({
   sessionId,
   userId,
   partnerSelectionsData = {},
-  partnerIsReady = false
+  partnerIsReady = false,
+  feedbackMessage = null,
+  conversationStarted = false,
+  onAdvanceTurn
 }) {
   if (!question) {
     return (
@@ -111,18 +114,26 @@ export default function QuestionCard({
     }
   }, [localRevealed, question?.question_type]);
 
+  const [waitingForAdvance, setWaitingForAdvance] = useState(false);
+
   // Reset state on new question
   useEffect(() => {
     setLocalNextIntent(false);
-    setFadeApplied(false);
-    setConversationState(false);
+    // setFadeApplied(false); // Controlled by conversationStarted prop now? 
+    // Wait, if conversationStarted is passed from parent, we should use that.
     
     setSelectedOption(null);
     setSubmitted(false);
     setPartnerSelections({});
     setLocalRevealed(false);
     setShowReadyButton(false);
+    setWaitingForAdvance(false);
   }, [question?.question_id]);
+
+  // Sync fade state with parent
+  useEffect(() => {
+      setFadeApplied(conversationStarted);
+  }, [conversationStarted]);
 
 
   // Socket Listeners
@@ -170,11 +181,11 @@ export default function QuestionCard({
   const handleNextIntent = () => {
     // 1. Set local state immediately
     setLocalNextIntent(true);
-    setFadeApplied(true);
-    setConversationState(true); // For backward compat with CSS
+    // setFadeApplied(true); // REMOVED: Wait for server confirmation (conversationStarted)
+    // setConversationState(true); 
 
     // 2. Emit Intent
-    onNext(); // This calls SessionGame's handleNext -> emits 'dual_next_intent'
+    onNext(); 
   };
 
   const isMultipleChoice = question.question_type === 'multiple-choice';
@@ -211,15 +222,13 @@ export default function QuestionCard({
         {/* Question Text */}
         <div className={`my-8 text-center relative z-10 ${fadeApplied ? 'pointer-events-none' : ''}`}>
             <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
-              fadeApplied ? 'text-gray-200 opacity-20 blur-[1px]' : 'text-gray-900'
+              fadeApplied ? 'text-gray-900/20 blur-[2px]' : 'text-gray-900'
             }`}>
               {cleanQuestionText(question.question_text)}
             </h2>
             {fadeApplied && (
-               <div className="absolute inset-0 flex items-center justify-center">
-                  <p className="text-sm text-gray-500 font-bold uppercase tracking-widest animate-pulse bg-white/80 px-4 py-2 rounded-full backdrop-blur-sm">
-                     Conversation in progress...
-                  </p>
+               <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <p className="text-gray-500 font-medium mb-2">Conversation in progress...</p>
                </div>
             )}
           </div>
@@ -343,27 +352,38 @@ export default function QuestionCard({
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (localNextIntent) {
-                                // Idempotent: Can press again, no harm
-                                handleNextIntent();
+                            if (conversationStarted) {
+                                // Phase 2: Manual Advance
+                                setWaitingForAdvance(true);
+                                onAdvanceTurn();
+                            } else if (localNextIntent) {
+                                // Idempotent: Waiting for partner
                             } else {
-                                // First press: Set intent + Fade
+                                // Phase 1: Mark Ready
                                 handleNextIntent();
                             }
                           }}
                           variant="black"
                           size="lg"
                           fullWidth
-                          className={`shadow-xl hover:shadow-2xl transition-all ${localNextIntent ? "bg-gray-800 border-gray-800 opacity-80" : ""}`}
+                          className={`shadow-xl hover:shadow-2xl transition-all ${
+                              (localNextIntent && !conversationStarted) || waitingForAdvance ? "bg-gray-800 border-gray-800 opacity-80 cursor-wait" : ""
+                          }`}
+                          disabled={(localNextIntent && !conversationStarted) || waitingForAdvance}
                           icon={
-                            (localNextIntent) 
-                               ? <span>→</span> 
-                               : <span>✓</span>
+                            (conversationStarted && !waitingForAdvance)
+                               ? <span>→</span>
+                               : ((localNextIntent) || waitingForAdvance)
+                                   ? <span className="animate-spin">⌛</span> 
+                                   : <span>✓</span>
                           }
                         >
-                          {localNextIntent
-                                ? "Next Question" 
-                                : "I'm Ready"}
+                          {conversationStarted
+                               ? (waitingForAdvance ? "Waiting..." : "Next Question")
+                               : (localNextIntent
+                                   ? "Syncing..." 
+                                   : "I'm Ready")
+                          }
                         </Button>
                         
                         {/* Partner Ready Indicator */}
@@ -375,6 +395,19 @@ export default function QuestionCard({
                               <p className="text-xs text-blue-400">
                                 Click "I'm Ready" to continue.
                               </p>
+                           </div>
+                        )}
+
+                        {/* Feedback Message (e.g. Request Declined) */}
+                        {feedbackMessage && (
+                           <div className="text-center pt-4">
+                              <motion.div 
+                                initial={{ opacity: 0, y: 5 }} 
+                                animate={{ opacity: 1, y: 0 }}
+                                className="inline-block px-4 py-2 bg-blue-50 text-blue-600 text-sm font-bold rounded-full border border-blue-100 shadow-sm"
+                              >
+                                {feedbackMessage}
+                              </motion.div>
                            </div>
                         )}
                       </>

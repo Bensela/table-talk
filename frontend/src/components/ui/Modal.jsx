@@ -9,6 +9,7 @@ export default function Modal({
   children,
   actionLabel,
   onAction,
+  closeLabel = "Close",
   icon = null
 }) {
   return (
@@ -59,7 +60,7 @@ export default function Modal({
                     onClick={onClose} 
                     fullWidth
                   >
-                    Close
+                    {closeLabel}
                   </Button>
                 )}
                 {onAction && actionLabel && (

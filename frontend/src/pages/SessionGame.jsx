@@ -47,7 +47,9 @@ export default function SessionGame() {
   const [tableToken, setTableToken] = useState(null);
   const [hasClickedNext, setHasClickedNext] = useState(false);
   const [partnerIsReady, setPartnerIsReady] = useState(false);
+  const [conversationStarted, setConversationStarted] = useState(false);
   const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
+  const [feedbackMessage, setFeedbackMessage] = useState(null);
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -237,7 +239,14 @@ export default function SessionGame() {
       setPartnerSelections({});
       setHasClickedNext(false);
       setPartnerIsReady(false);
+      setConversationStarted(false); // Reset Conversation Mode
+      setFeedbackMessage(null); // Clear any waiting message
       setModalState(prev => ({ ...prev, isOpen: false }));
+    };
+
+    const onConversationStart = () => {
+        console.log('[SessionGame] Conversation Started');
+        setConversationStarted(true);
     };
 
     const onWaitingForPartner = () => {
@@ -267,73 +276,7 @@ export default function SessionGame() {
     
     // Listen for partner context switch intent
     const onPartnerContextIntent = ({ context, initiator_role }) => {
-        // If I am the initiator, ignore this event
-        // We can check role via local storage or if stored in state?
-        // We don't have local role stored in state easily, but we know who initiated.
-        // Wait, socket.io broadcasts to 'room'. If I am in the room, I get it.
-        // We should check if we initiated it.
-        // But the event says "initiator_role".
-        // We need to know OUR role.
-        // We fetch role in initSession but don't store it in state?
-        // Let's store role in state or check against socket.role if accessible?
-        // Actually, we can check if `socketRef.current` exists and check a property? No.
-        
-        // Easier: The server implementation of `socket.to(sessionId).emit(...)`
-        // `socket.to(...)` sends to everyone in the room EXCEPT the sender.
-        // So Phone A (sender) should NOT receive this event if the server uses `socket.to()`.
-        
-        // Let's verify backend code.
-        // Backend: `socket.to(sessionId).emit('partner_context_intent', ...)`
-        // This is correct. Phone A should NOT see it.
-        
-        // HOWEVER, Phone A *does* see the confirmation when Phone B clicks OK?
-        // When Phone B clicks OK, it emits `context_switch_intent` too.
-        // Then Server sees match -> broadcasts `session_updated`.
-        
-        // Why is Phone A seeing a popup "Context Switch Request"?
-        // If Phone A initiates, Server sends `partner_context_intent` to Phone B.
-        // Phone B sees popup. Phone B clicks OK.
-        // Phone B emits `context_switch_intent`.
-        // Server sees match.
-        // Server sends `partner_context_intent` to Phone A?
-        // In backend:
-        // `socket.on('context_switch_intent')` -> `socket.to(sessionId).emit('partner_context_intent')`
-        // YES. When Phone B confirms, it emits the intent.
-        // The server receives it, stores it, sees it matches A's pending intent.
-        // BUT it *also* emits `partner_context_intent` to A before checking the match?
-        // Let's check backend logic.
-        
-        /* Backend Logic:
-          // Store intent
-          const pending = getPendingContextState(sessionId);
-          pending[role] = context;
-          
-          // Notify partner
-          socket.to(sessionId).emit('partner_context_intent', { ... });
-          
-          // Check if both match
-          if (pending.A && pending.B && pending.A === pending.B) { ... }
-        */
-        
-        // So YES, when B confirms (sends intent), A gets the notification "Partner wants to switch".
-        // But since A *already* wants to switch (pending.A is set), A shouldn't see a request popup.
-        // A should just wait for the switch.
-        
-        // Fix: We need to filter this on the frontend.
-        // If I have already requested this context, I should ignore the partner's request (because it's just them agreeing).
-        // Or better: The backend shouldn't send it if it completes the handshake?
-        // Backend sends it *before* checking match.
-        
-        // Frontend Fix:
-        // We need to track "I have pending switch intent".
-        // But we don't have that state here easily.
-        // We can add `pendingSwitchContext` state.
-        
-        // If I requested "Established", and I get a request for "Established", I know it's a handshake completion.
-        // I should ignore the popup.
-        
-        // Let's add state `pendingSwitchContext`.
-        
+        // If I have already requested this context (handshake match), ignore
         if (pendingSwitchContext === context) {
             console.log("Ignoring partner context intent (handshake match):", context);
             return;
@@ -344,6 +287,8 @@ export default function SessionGame() {
             isOpen: true,
             title: "Context Switch Request",
             message: `Your partner wants to switch to "${context}".`,
+            actionLabel: "Accept",
+            closeLabel: "Decline",
             action: async () => {
                 // User Confirmed: Send intent to match partner
                 setModalState(prev => ({ ...prev, isOpen: false }));
@@ -355,10 +300,32 @@ export default function SessionGame() {
                     socketRef.current.emit('context_switch_intent', { context });
                 }
             },
+            // If user closes/declines, we must notify server to cancel the pending intent
+            onClose: () => {
+                console.log("[SessionGame] Declining partner context switch");
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('cancel_context_switch');
+                }
+                setModalState(prev => ({ ...prev, isOpen: false }));
+            },
             icon: '🔄'
         });
     };
     
+    // Listen for partner cancellation
+    const onContextSwitchCancelled = ({ initiator }) => {
+        console.log("[SessionGame] Partner cancelled context switch");
+        setPendingSwitchContext(null); // Clear my pending state
+        
+        // Show non-intrusive feedback below the button
+        setFeedbackMessage("Partner declined the request");
+        
+        // Clear feedback after 5 seconds
+        setTimeout(() => {
+            setFeedbackMessage(null);
+        }, 5000);
+    };
+
     // Listen for partner fresh intent
     const onPartnerRequestedFresh = () => {
         // Just show a toast/modal?
@@ -377,6 +344,10 @@ export default function SessionGame() {
         window.location.href = SCANNER_ROUTE;
     };
 
+    const onWaitingForAdvancePartner = () => {
+        setFeedbackMessage("Waiting for partner to click Next...");
+    };
+
     socket.on('connect_error', onConnectError);
     socket.on('disconnect', onDisconnect);
     socket.on('error', onError);
@@ -384,11 +355,14 @@ export default function SessionGame() {
     socket.on('answer_revealed', onAnswerRevealed);
     socket.on('reveal_answers', onRevealAnswers);
     socket.on('advance_question', onAdvanceQuestion);
+    socket.on('conversation_start', onConversationStart);
     socket.on('waiting_for_partner', onWaitingForPartner);
+    socket.on('waiting_for_advance_partner', onWaitingForAdvancePartner);
     socket.on('both_ready', onBothReady);
     socket.on('wait_timeout', onWaitTimeout);
     socket.on('next_intent_update', onNextIntentUpdate);
     socket.on('partner_context_intent', onPartnerContextIntent);
+    socket.on('context_switch_cancelled', onContextSwitchCancelled);
     socket.on('partner_requested_fresh', onPartnerRequestedFresh);
     socket.on('dual_group_terminated', onDualGroupTerminated);
 
@@ -404,11 +378,14 @@ export default function SessionGame() {
       socket.off('answer_revealed', onAnswerRevealed);
       socket.off('reveal_answers', onRevealAnswers);
       socket.off('advance_question', onAdvanceQuestion);
+      socket.off('conversation_start', onConversationStart);
       socket.off('waiting_for_partner', onWaitingForPartner);
+      socket.off('waiting_for_advance_partner', onWaitingForAdvancePartner);
       socket.off('both_ready', onBothReady);
       socket.off('wait_timeout', onWaitTimeout);
       socket.off('next_intent_update', onNextIntentUpdate);
       socket.off('partner_context_intent', onPartnerContextIntent);
+      socket.off('context_switch_cancelled', onContextSwitchCancelled);
       socket.off('partner_requested_fresh', onPartnerRequestedFresh);
       socket.off('dual_group_terminated', onDualGroupTerminated);
     };
@@ -595,10 +572,11 @@ export default function SessionGame() {
       {/* Modal Popup */}
       <Modal
         isOpen={modalState.isOpen}
-        onClose={() => setModalState(prev => ({ ...prev, isOpen: false }))}
+        onClose={modalState.onClose || (() => setModalState(prev => ({ ...prev, isOpen: false })))}
         title={modalState.title}
-        actionLabel="OK"
+        actionLabel={modalState.actionLabel || "OK"}
         onAction={modalState.action}
+        closeLabel={modalState.closeLabel || "Close"}
         icon={modalState.icon}
       >
         {modalState.message}
@@ -649,6 +627,13 @@ export default function SessionGame() {
           userId={participantId}
           partnerSelectionsData={partnerSelections}
           partnerIsReady={partnerIsReady}
+          feedbackMessage={feedbackMessage}
+          conversationStarted={conversationStarted}
+          onAdvanceTurn={() => {
+              if (socketRef.current?.connected) {
+                  socketRef.current.emit('advance_turn');
+              }
+          }}
         />
       </div>
     </div>

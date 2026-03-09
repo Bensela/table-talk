@@ -134,7 +134,8 @@ function getSessionState(sessionId) {
     sessionStates.set(sessionId, {
       ready: new Map(),
       answers: new Map(),
-      nextIntent: new Set() // Track users who pressed "Next Question"
+      nextIntent: new Set(), // Track users who pressed "I'm Ready"
+      advanceIntent: new Set() // Track users who pressed "Next Question"
     });
   }
   return sessionStates.get(sessionId);
@@ -156,6 +157,7 @@ function clearSessionState(sessionId) {
       state.ready.clear();
       state.answers.clear();
       state.nextIntent.clear();
+      state.advanceIntent.clear();
   }
   pendingNextClicks.delete(sessionId);
 }
@@ -329,7 +331,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Dual Mode Next Intent Gating
+  // Dual Mode Next Intent Gating (Phase 1: Mark Ready)
   socket.on('dual_next_intent', async () => {
     if (!socket.participantId) return;
     const sessionId = socket.sessionId;
@@ -345,44 +347,67 @@ io.on('connection', (socket) => {
         const clientCount = room ? room.size : 0;
         
         // Check gating: Need intents from all connected clients (min 2)
-        // If clientCount is 1 (partner disconnected), we might want to allow advance?
-        // Spec says "Both devices". If one is missing, they are stuck.
-        // Let's enforce >= 2 for "Dual Mode".
         const requiredCount = Math.max(2, clientCount);
 
         // Emit 'next_intent_update' to notify clients of current intent count
-        // This is optional per prompt but helpful for debugging/UI
         io.to(sessionId).emit('next_intent_update', { count: state.nextIntent.size, required: requiredCount });
 
         if (state.nextIntent.size >= requiredCount) {
-            console.log(`[Socket] All intents received. Advancing session ${sessionId}...`);
-            
-            const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
-            if (sessionResult.rows.length === 0) return;
-            const session = sessionResult.rows[0];
-
-            // Advance Deck
-            await deckService.advanceDeck(session);
-
-            // Log Analytics
-            await db.query(
-                `INSERT INTO analytics_events (session_id, event_type, event_data)
-                 VALUES ($1, $2, $3)`,
-                [sessionId, 'question_advanced_dual', { socket_advance: true }]
-            );
-
-            // Reset Intents & State
-            clearSessionState(sessionId);
-
-            // Broadcast New Question Trigger
-            io.to(sessionId).emit('advance_question');
-        } else {
-            // Optional: Notify others that one is ready? 
-            // Current UI handles this via local "Waiting..." state on button press.
+            console.log(`[Socket] All players ready. Starting conversation mode for session ${sessionId}...`);
+            // DO NOT ADVANCE DECK YET
+            // Instead, tell clients to enter "Conversation Mode" (Blur question, show Next button)
+            io.to(sessionId).emit('conversation_start');
         }
     } catch (err) {
         console.error('Error in dual_next_intent:', err);
     }
+  });
+
+  // Dual Mode Manual Advance (Phase 2: Next Question)
+  socket.on('advance_turn', async () => {
+      if (!socket.participantId || !socket.sessionId) return;
+      const sessionId = socket.sessionId;
+      
+      try {
+          const state = getSessionState(sessionId);
+          
+          // Add to advanceIntent
+          state.advanceIntent.add(socket.participantId);
+          console.log(`[Socket] Advance Intent from ${socket.participantId} (Total: ${state.advanceIntent.size})`);
+          
+          const room = io.sockets.adapter.rooms.get(sessionId);
+          const clientCount = room ? room.size : 0;
+          const requiredCount = Math.max(2, clientCount);
+          
+          if (state.advanceIntent.size >= requiredCount) {
+             // Check if session exists
+             const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sessionId]);
+             if (sessionResult.rows.length === 0) return;
+             const session = sessionResult.rows[0];
+
+             // Advance Deck
+             await deckService.advanceDeck(session);
+
+             // Log Analytics
+             await db.query(
+                 `INSERT INTO analytics_events (session_id, event_type, event_data)
+                  VALUES ($1, $2, $3)`,
+                 [sessionId, 'question_advanced_dual_manual', { initiator: socket.participantId }]
+             );
+
+             // Reset Intents & State
+             clearSessionState(sessionId);
+
+             // Broadcast New Question Trigger
+             io.to(sessionId).emit('advance_question');
+          } else {
+             // Notify that we are waiting for partner
+             socket.emit('waiting_for_advance_partner');
+          }
+          
+      } catch (err) {
+          console.error('Error in advance_turn:', err);
+      }
   });
 
   // Handle Session Migration (Menu Switch)
@@ -472,6 +497,17 @@ io.on('connection', (socket) => {
               io.to(sessionId).emit('error', { message: 'Failed to switch context' });
           }
       }
+  });
+
+  // Handle Cancel Context Switch
+  socket.on('cancel_context_switch', () => {
+      if (!socket.sessionId) return;
+      console.log(`[Socket] Context switch cancelled by ${socket.participantId}`);
+      pendingContexts.delete(socket.sessionId);
+      // Notify partner that the request was declined/cancelled
+      socket.to(socket.sessionId).emit('context_switch_cancelled', { 
+          initiator: socket.participantId 
+      });
   });
 
   // Handle Dual Mode Fresh Intent (Termination)
