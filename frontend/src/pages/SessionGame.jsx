@@ -209,8 +209,8 @@ export default function SessionGame() {
 
     const onError = (data) => {
       console.error('Socket Error:', data);
-      if (data.message === 'Invalid participant or session') {
-         setError('Connection refused. Invalid session.');
+      if (data.message === 'Invalid participant or session' || data.message === 'Session expired') {
+         setError('Session expired or not found. Please start a new one.');
       }
     };
 
@@ -344,8 +344,8 @@ export default function SessionGame() {
         window.location.href = SCANNER_ROUTE;
     };
 
-    const onWaitingForAdvancePartner = () => {
-        setFeedbackMessage("Waiting for partner to click Next...");
+    const onPartnerWaitingToAdvance = () => {
+        setFeedbackMessage("Partner is waiting for you to click Next!");
     };
 
     socket.on('connect_error', onConnectError);
@@ -357,7 +357,7 @@ export default function SessionGame() {
     socket.on('advance_question', onAdvanceQuestion);
     socket.on('conversation_start', onConversationStart);
     socket.on('waiting_for_partner', onWaitingForPartner);
-    socket.on('waiting_for_advance_partner', onWaitingForAdvancePartner);
+    socket.on('partner_waiting_to_advance', onPartnerWaitingToAdvance);
     socket.on('both_ready', onBothReady);
     socket.on('wait_timeout', onWaitTimeout);
     socket.on('next_intent_update', onNextIntentUpdate);
@@ -380,7 +380,7 @@ export default function SessionGame() {
       socket.off('advance_question', onAdvanceQuestion);
       socket.off('conversation_start', onConversationStart);
       socket.off('waiting_for_partner', onWaitingForPartner);
-      socket.off('waiting_for_advance_partner', onWaitingForAdvancePartner);
+      socket.off('partner_waiting_to_advance', onPartnerWaitingToAdvance);
       socket.off('both_ready', onBothReady);
       socket.off('wait_timeout', onWaitTimeout);
       socket.off('next_intent_update', onNextIntentUpdate);
@@ -511,11 +511,11 @@ export default function SessionGame() {
   const handleRestart = () => {
     if (!tableToken) return;
     setLastResetAt(); // Mark that user explicitly reset
-    clearStoredParticipant();
+    // Remove clearStoredParticipant to remember device token so server can block/resume them
+    // clearStoredParticipant();
     
-    // Do not disconnect socket manually, provider handles it or keeps it alive.
-    // window.location.href = `/t/${tableToken}`; // Old behavior
-    window.location.href = '/'; // Correct behavior: Front Page
+    // Redirect to Front Page
+    window.location.href = '/';
   };
 
   if (loading && !question) {
@@ -544,6 +544,44 @@ export default function SessionGame() {
   }
 
   if (error) {
+    // Check if it's a specific "logged out" error or general error
+    // If the error message indicates expiration/inactivity, we can customize the UI.
+    const isLogout = error.includes('expired') || error.includes('not found') || error.includes('Invalid session');
+    
+    if (isLogout) {
+        // Redirect after 2 seconds
+        setTimeout(() => {
+            window.location.href = '/';
+        }, 2000);
+        
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6 bg-white/95 backdrop-blur-sm fixed inset-0 z-50">
+            <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="bg-white p-8 rounded-3xl border border-gray-100 text-center max-w-sm w-full shadow-2xl"
+            >
+              <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <span className="text-3xl">⚠️</span>
+              </div>
+              <h2 className="text-xl font-extrabold text-gray-900 mb-3">Logged Out</h2>
+              <p className="text-gray-500 font-medium mb-2">You have been logged out due to inactivity.</p>
+              <p className="text-sm text-gray-400 mb-6">Scan the QR code to rejoin your conversation.</p>
+              
+              <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: "0%" }}
+                    animate={{ width: "100%" }}
+                    transition={{ duration: 2 }}
+                    className="h-full bg-blue-500"
+                  />
+              </div>
+              <p className="text-xs text-gray-400 mt-3">Redirecting to scanner...</p>
+            </motion.div>
+          </div>
+        );
+    }
+
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-white">
         <div className="bg-gray-50 p-8 rounded-3xl border border-gray-100 text-center max-w-sm w-full">

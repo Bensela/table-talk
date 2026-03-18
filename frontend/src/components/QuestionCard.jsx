@@ -379,9 +379,9 @@ export default function QuestionCard({
                           }
                         >
                           {conversationStarted
-                               ? (waitingForAdvance ? "Waiting..." : "Next Question")
+                               ? (waitingForAdvance ? "Waiting for Partner..." : "Next Question")
                                : (localNextIntent
-                                   ? "Syncing..." 
+                                   ? "Waiting for Partner..." 
                                    : "I'm Ready")
                           }
                         </Button>

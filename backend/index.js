@@ -233,7 +233,18 @@ io.on('connection', (socket) => {
       // Clear any pending Fresh Intent for this user (they are back!)
       // Update DB to clear the flag
       const intentField = socket.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
-      await db.query(`UPDATE sessions SET ${intentField} = FALSE WHERE session_id = $1`, [session_id]);
+      await db.query(`
+        UPDATE sessions 
+        SET ${intentField} = FALSE
+        WHERE session_id = $1
+      `, [session_id]);
+      
+      // Clear fresh_intent_at if both are now false
+      await db.query(`
+        UPDATE sessions 
+        SET fresh_intent_at = NULL 
+        WHERE session_id = $1 AND fresh_intent_a = FALSE AND fresh_intent_b = FALSE
+      `, [session_id]);
       console.log(`[Socket] Cleared ${intentField} for session ${session_id}`);
 
       // Notify room
@@ -402,7 +413,8 @@ io.on('connection', (socket) => {
              io.to(sessionId).emit('advance_question');
           } else {
              // Notify that we are waiting for partner
-             socket.emit('waiting_for_advance_partner');
+             // Emit to the partner (everyone EXCEPT sender)
+             socket.to(sessionId).emit('partner_waiting_to_advance');
           }
           
       } catch (err) {
@@ -519,10 +531,16 @@ io.on('connection', (socket) => {
       console.log(`[Socket] Fresh Intent from ${role} in session ${sessionId}`);
       
       try {
-          // 1. Update DB with intent
+          // 1. Update DB with intent and timestamp if first intent
           const intentField = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+          
+          // Only set fresh_intent_at if it's not already set
           const updateResult = await db.query(
-              `UPDATE sessions SET ${intentField} = TRUE WHERE session_id = $1 RETURNING fresh_intent_a, fresh_intent_b`,
+              `UPDATE sessions 
+               SET ${intentField} = TRUE, 
+                   fresh_intent_at = COALESCE(fresh_intent_at, NOW())
+               WHERE session_id = $1 
+               RETURNING fresh_intent_a, fresh_intent_b`,
               [sessionId]
           );
           

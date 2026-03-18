@@ -43,13 +43,14 @@ const createSession = async (req, res) => {
 
   try {
     // 1. Determine Session Group
-    // Always create a new group for a new session creation request.
-    // Auto-joining logic has been removed to allow "Start New Session" to work predictably.
     const sessionGroupId = crypto.randomUUID();
     const isNewGroup = true;
 
-    // 2. Prepare Session Data
-    const expires_at = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000);
+    // 2. Prepare Session Data (Expire at next 00:00 UTC)
+    const nextMidnight = new Date();
+    nextMidnight.setUTCHours(24, 0, 0, 0);
+    const expires_at = nextMidnight;
+    
     // Remove pairing code generation entirely per new requirements
     const pairingCode = null;
     const pairingCodeHash = null;
@@ -576,60 +577,102 @@ const resolveSession = async (req, res) => {
     if (device_token) {
       const participantTokenHash = crypto.createHash('sha256').update(device_token).digest('hex');
 
-      // Add dual_status check to prevent resuming 'ended' sessions
-      const resumeResult = await db.query(`
-        SELECT s.session_id, s.mode, s.context, s.created_at, sp.participant_id, sp.role, s.dual_group_id, s.dual_status
+      // First, let's proactively terminate any sessions for this user that have a stale fresh_intent (> 5 mins)
+      const expiredResult = await db.query(`
+        UPDATE sessions s
+        SET dual_status = 'ended', expires_at = NOW()
+        FROM session_participants sp
+        WHERE s.session_id = sp.session_id
+          AND sp.participant_token_hash = $1
+          AND (s.fresh_intent_a = TRUE OR s.fresh_intent_b = TRUE)
+          AND s.fresh_intent_at <= NOW() - INTERVAL '5 minutes'
+          AND s.dual_status != 'ended'
+        RETURNING s.session_id
+      `, [participantTokenHash]);
+      
+      if (expiredResult.rows.length > 0) {
+          // Notify any remaining connected clients (like Phone B) that the session is dead
+          const io = require('../index').io;
+          if (io) {
+              expiredResult.rows.forEach(row => {
+                  io.to(row.session_id).emit('error', { message: 'Session expired' });
+                  io.to(row.session_id).disconnectSockets(true);
+              });
+          }
+      }
+
+      // Now check if they have ANY active session anywhere
+      const anyActiveSession = await db.query(`
+        SELECT s.session_id, s.table_token, s.mode, s.dual_status, sp.role
         FROM sessions s
         JOIN session_participants sp ON s.session_id = sp.session_id
-        WHERE s.table_token = $1
-          AND s.restaurant_id = $2
-          AND sp.participant_token_hash = $3
+        WHERE sp.participant_token_hash = $1
           AND s.expires_at > NOW()
           AND (s.dual_status IS NULL OR s.dual_status != 'ended')
         ORDER BY s.created_at DESC
         LIMIT 1
-      `, [table_token, restaurantId, participantTokenHash]);
+      `, [participantTokenHash]);
 
-      if (resumeResult.rows.length > 0) {
-        const session = resumeResult.rows[0];
-        console.log('[API] Resume Session Found:', session.session_id);
+      if (anyActiveSession.rows.length > 0) {
+        const activeSession = anyActiveSession.rows[0];
         
-        // DUAL GROUP ID CHECK (Option B Future Proofing / Option A Robustness)
-        // If this participant belongs to a dual_group_id, we should ensure they are
-        // resuming the LATEST session for that group, in case the session ID changed (Option B).
-        // Since we are using Option A (Mutation), session_id shouldn't change.
-        // But let's be safe: if dual_group_id exists, find the latest session for it.
-        
-        if (session.dual_group_id) {
-             const latestGroupSession = await db.query(`
-                SELECT session_id, context, mode FROM sessions 
-                WHERE dual_group_id = $1 
-                ORDER BY created_at DESC LIMIT 1
-             `, [session.dual_group_id]);
+        // If it's the SAME table, resume normally
+        if (activeSession.table_token === table_token) {
+           // Before resuming, check if this user has a pending "fresh_intent" that they are trying to bypass by rescanning
+           // If they scan the SAME table, we should clear their fresh_intent so they rejoin seamlessly
+           const intentField = activeSession.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+           await db.query(`
+             UPDATE sessions 
+             SET ${intentField} = FALSE 
+             WHERE session_id = $1
+           `, [activeSession.session_id]);
+           
+           // If both are false now, clear the timestamp
+           await db.query(`
+             UPDATE sessions 
+             SET fresh_intent_at = NULL 
+             WHERE session_id = $1 AND fresh_intent_a = FALSE AND fresh_intent_b = FALSE
+           `, [activeSession.session_id]);
+
+           const resumeResult = await db.query(`
+            SELECT s.session_id, s.mode, s.context, s.created_at, sp.participant_id, sp.role, s.dual_group_id, s.dual_status
+            FROM sessions s
+            JOIN session_participants sp ON s.session_id = sp.session_id
+            WHERE s.session_id = $1 AND sp.participant_token_hash = $2
+           `, [activeSession.session_id, participantTokenHash]);
+           
+           if (resumeResult.rows.length > 0) {
+             const session = resumeResult.rows[0];
              
-             if (latestGroupSession.rows.length > 0) {
-                 const latest = latestGroupSession.rows[0];
-                 // If the session ID is different (Option B scenario), we might need to migrate the participant?
-                 // Or just return the latest ID and let the frontend join it?
-                 // Since we use Mutation (Option A), latest.session_id should equal session.session_id.
-                 // But if we ever switch, this logic handles it.
-                 if (latest.session_id !== session.session_id) {
-                     console.log('[API] Participant belongs to older session in group. Redirecting to latest:', latest.session_id);
-                     // We technically need to move the participant record to the new session if we did Option B.
-                     // But for Option A, they match.
-                 }
+             // DUAL GROUP ID CHECK
+             if (session.dual_group_id) {
+                 const latestGroupSession = await db.query(`
+                    SELECT session_id, context, mode FROM sessions 
+                    WHERE dual_group_id = $1 
+                    ORDER BY created_at DESC LIMIT 1
+                 `, [session.dual_group_id]);
              }
-        }
 
-        return res.json({
-          action: 'resume',
-          session_id: session.session_id,
-          mode: session.mode,
-          role: session.role, 
-          context: session.context,
-          participant_id: session.participant_id,
-          created_at: session.created_at 
-        });
+             return res.json({
+               action: 'resume',
+               session_id: session.session_id,
+               mode: session.mode,
+               role: session.role, 
+               context: session.context,
+               participant_id: session.participant_id,
+               created_at: session.created_at 
+             });
+           }
+        } else {
+           // It's a DIFFERENT table, and the old session is still active
+           // Prevent starting a new session until the other one is terminated
+           if (activeSession.mode === 'dual-phone') {
+              return res.json({
+                 action: 'blocked_active_session',
+                 reason: 'You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.'
+              });
+           }
+        }
       }
     }
 

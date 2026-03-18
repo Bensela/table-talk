@@ -8,6 +8,11 @@ import Footer from '../components/Footer';
 
 export default function Home() {
   const navigate = useNavigate();
+
+  // If there's an error passed in state (e.g. from WelcomeScreen blocked session), show it
+  // Wait, navigate state isn't currently used, we're using a raw alert in WelcomeScreen.
+  // Actually, alert() blocks the UI thread which is fine for a simple MVP.
+  
   const [tableInput, setTableInput] = useState('');
   const [showScanner, setShowScanner] = useState(false);
 
@@ -92,24 +97,6 @@ export default function Home() {
             >
               Scan QR Code
             </Button>
-
-            {/* Manual Entry Fallback - Compact */}
-            <form onSubmit={handleManualJoin} className="relative w-full max-w-xs group">
-              <input
-                type="text"
-                placeholder="Or enter table code..."
-                value={tableInput}
-                onChange={(e) => setTableInput(e.target.value)}
-                className="w-full pl-4 pr-16 py-3 bg-transparent border-b-2 border-gray-200 focus:border-black rounded-none outline-none transition-all text-center placeholder:text-gray-300 focus:placeholder:text-gray-400"
-              />
-              <button
-                type="submit"
-                disabled={!tableInput.trim()}
-                className="absolute right-0 top-0 bottom-0 text-sm font-bold uppercase text-gray-400 hover:text-black disabled:opacity-0 transition-all"
-              >
-                Join
-              </button>
-            </form>
           </motion.div>
 
           {/* Mini How-It-Works Row */}

@@ -108,8 +108,17 @@ export default function WelcomeScreen() {
           device_token: deviceToken 
       });
       
-      const { action, session_id, participant_id, participant_token, mode } = resolveRes.data;
+      const { action, session_id, participant_id, participant_token, mode, reason } = resolveRes.data;
       console.log('[Welcome] Resolution Action:', action);
+
+      if (action === 'blocked_active_session') {
+          setStatus(null);
+          // Show alert to user
+          alert("You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.");
+          // Redirect to scanner
+          navigate('/');
+          return;
+      }
 
       if (action === 'resume') {
           setStatus('Resuming session...');
@@ -203,7 +212,7 @@ export default function WelcomeScreen() {
                 Waiting for Partner
              </h2>
              <p className="text-gray-500 max-w-xs mx-auto mb-10 leading-relaxed">
-                Wait to join a conversation or Create session
+                Partner will select Context and Mode to start session.
              </p>
              
              <div className="space-y-4">

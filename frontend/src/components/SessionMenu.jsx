@@ -53,8 +53,12 @@ export default function SessionMenu({
 
     setLastResetAt();
     
-    // Clear session-specific data
-    clearStoredParticipant();
+    // In Dual Mode, we keep the participantToken so the backend can recognize the user
+    // and enforce the "no new table while active" rule.
+    // In Single Mode, we clear it immediately so they can actually start fresh.
+    if (currentMode !== 'dual-phone') {
+        clearStoredParticipant();
+    }
     
     // Redirect to scanner with slight delay to ensure socket emit
     setTimeout(() => {

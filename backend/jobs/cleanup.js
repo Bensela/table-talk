@@ -31,33 +31,47 @@ async function cleanupSessions() {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
     }
 
-    // Rule 2: Expire inactive sessions (30 min no activity) - DISABLED per new requirement
-    // New requirement says "Session is valid only until expires_at (created_at + 24 hours)"
-    // So we should NOT expire them early based on inactivity.
-    /*
-    const expiredInactive = await db.query(`
+    // Rule 2: 5-minute timeout for unconfirmed Start Fresh intent
+    const expiredFreshIntents = await db.query(`
       UPDATE sessions
-      SET expires_at = NOW()
-      WHERE last_activity_at < NOW() - INTERVAL '30 minutes'
-        AND expires_at > NOW()
+      SET dual_status = 'ended',
+          expires_at = NOW()
+      WHERE (fresh_intent_a = TRUE OR fresh_intent_b = TRUE)
+        AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
+        AND dual_status != 'ended'
       RETURNING session_id
     `);
-    if (expiredInactive.rowCount > 0) {
-        console.log(`[CLEANUP] Expired ${expiredInactive.rowCount} inactive sessions`);
+    if (expiredFreshIntents.rowCount > 0) {
+        console.log(`[CLEANUP] Terminated ${expiredFreshIntents.rowCount} sessions due to unconfirmed Start Fresh intent`);
+        
+        // Notify any remaining connected clients that the session is dead
+        try {
+            const io = require('../index').io;
+            if (io) {
+                expiredFreshIntents.rows.forEach(row => {
+                    io.to(row.session_id).emit('error', { message: 'Session expired' });
+                    io.to(row.session_id).disconnectSockets(true);
+                });
+            }
+        } catch (e) {
+            console.error('[CLEANUP] Failed to emit socket termination event:', e);
+        }
     }
-    */
+
+    // Rule 3: Extend active sessions at midnight
+    // If a session expires (hits 00:00) but has recent activity, extend it by 24h
+    const extendedSessions = await db.query(`
+      UPDATE sessions
+      SET expires_at = expires_at + INTERVAL '24 hours'
+      WHERE expires_at <= NOW() 
+        AND last_activity_at >= NOW() - INTERVAL '15 minutes'
+      RETURNING session_id
+    `);
+    if (extendedSessions.rowCount > 0) {
+        console.log(`[CLEANUP] Extended ${extendedSessions.rowCount} active sessions past midnight`);
+    }
     
-    // Rule 4: Hard delete sessions expired > 24 hours (Cleanup old data)
-    // The requirement says "After expires_at, resolver must never return it".
-    // Our queries check `expires_at > NOW()`, so they already respect this.
-    // But we need to clean up the DB to prevent bloat.
-    // Requirement: "Implement Scheduled cleanup job that deletes expired sessions"
-    
-    // We delete sessions that have passed their expiration time.
-    // Since `expires_at` is set to created_at + 24h, this deletes them after 24h.
-    // We add a small buffer (e.g., 1 hour) just in case, or delete immediately?
-    // "After 24 hours, devices start fresh." -> So delete immediately after expiry is fine.
-    
+    // Rule 4: Hard delete sessions expired (midnight cleanup)
     const deletedSessions = await db.query(`
       DELETE FROM sessions
       WHERE expires_at < NOW()
@@ -65,14 +79,16 @@ async function cleanupSessions() {
     `);
     
     if (deletedSessions.rowCount > 0) {
-        console.log(`[CLEANUP] Deleted ${deletedSessions.rowCount} expired sessions (past 24h limit)`);
+        console.log(`[CLEANUP] Deleted ${deletedSessions.rowCount} expired sessions (midnight limit)`);
     }
 
     // Log cleanup analytics
-    if (expiredWaiting.rowCount > 0 || deletedSessions.rowCount > 0) {
+    if (expiredWaiting.rowCount > 0 || deletedSessions.rowCount > 0 || expiredFreshIntents.rowCount > 0 || extendedSessions.rowCount > 0) {
         await logAnalyticsEvent('cleanup_job_completed', {
             expired_waiting: expiredWaiting.rowCount,
-            deleted_sessions: deletedSessions.rowCount
+            deleted_sessions: deletedSessions.rowCount,
+            expired_fresh: expiredFreshIntents.rowCount,
+            extended_sessions: extendedSessions.rowCount
         });
     }
 
