@@ -14,9 +14,20 @@ export default function WelcomeScreen() {
   const [status, setStatus] = useState(null);
   const [setupStatus, setSetupStatus] = useState('available'); // 'available', 'busy', 'granted'
   const [waitingForA, setWaitingForA] = useState(false);
+  const [blockedError, setBlockedError] = useState(null); // Added state for blocked error UI
   const setupCompletedRef = useRef(false);
 
   // Join setup room on mount
+  useEffect(() => {
+    if (blockedError) {
+      // Auto-redirect after 3 seconds
+      const timer = setTimeout(() => {
+        setBlockedError(null);
+        navigate('/');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [blockedError, navigate]);
   useEffect(() => {
     if (tableToken && socket) {
       ensureConnection();
@@ -113,10 +124,8 @@ export default function WelcomeScreen() {
 
       if (action === 'blocked_active_session') {
           setStatus(null);
-          // Show alert to user
-          alert("You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.");
-          // Redirect to scanner
-          navigate('/');
+          // Show fine UI popup instead of alert
+          setBlockedError("You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.");
           return;
       }
 
@@ -255,6 +264,70 @@ export default function WelcomeScreen() {
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">
       
+      {/* Blocked Error Modal (Matches Image Spec) */}
+      <AnimatePresence>
+        {blockedError && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            {/* Dimmed Background */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/60 backdrop-blur-sm"
+              onClick={() => {
+                  setBlockedError(null);
+                  navigate('/');
+              }}
+            />
+            {/* Modal Content */}
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="relative bg-[#2f2f3a] w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden p-6"
+            >
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-4">
+                <svg className="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                </svg>
+                <span className="text-gray-300 font-medium text-sm tracking-wide">
+                  Table Talk
+                </span>
+              </div>
+              
+              {/* Body Text */}
+              <p className="text-gray-300 text-[15px] leading-relaxed mb-6">
+                {blockedError}
+              </p>
+
+              {/* Auto-redirect progress bar */}
+              <div className="w-full bg-gray-700 h-1 rounded-full overflow-hidden mb-6">
+                  <motion.div 
+                    initial={{ width: "0%" }}
+                    animate={{ width: "100%" }}
+                    transition={{ duration: 3, ease: "linear" }}
+                    className="h-full bg-[#06b6d4]"
+                  />
+              </div>
+              
+              {/* Footer / Action */}
+              <div className="flex justify-end">
+                <button
+                  onClick={() => {
+                      setBlockedError(null);
+                      navigate('/');
+                  }}
+                  className="bg-[#06b6d4] hover:bg-[#0891b2] text-gray-900 font-bold px-6 py-2 rounded-lg shadow-md transition-colors"
+                >
+                  OK
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Background Ambience */}
       <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
       <div className="absolute bottom-[-20%] right-[-20%] w-[500px] h-[500px] bg-purple-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />

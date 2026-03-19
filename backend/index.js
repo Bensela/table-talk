@@ -339,6 +339,8 @@ io.on('connection', (socket) => {
       io.to(socket.sessionId).emit('reveal_answers', { selections });
     } else {
       socket.emit('waiting_for_partner');
+      // Notify partner that this user has answered
+      socket.to(socket.sessionId).emit('partner_answered', { role: socket.role });
     }
   });
 

@@ -14,6 +14,7 @@ router.post('/:session_id/heartbeat', sessionController.heartbeat); // Add heart
 router.get('/by-table/:table_token', sessionController.getSessionByTable);
 router.patch('/:session_id', sessionController.updateSession);
 router.delete('/:session_id', sessionController.endSession);
+router.post('/:session_id/fresh_intent', sessionController.freshIntent);
 
 // Question routes
 router.get('/:session_id/questions/current', questionController.getCurrentQuestion);

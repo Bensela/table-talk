@@ -618,6 +618,7 @@ const resolveSession = async (req, res) => {
         
         // If it's the SAME table, resume normally
         if (activeSession.table_token === table_token) {
+           // ... (Resume Logic) ...
            // Before resuming, check if this user has a pending "fresh_intent" that they are trying to bypass by rescanning
            // If they scan the SAME table, we should clear their fresh_intent so they rejoin seamlessly
            const intentField = activeSession.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
@@ -643,16 +644,6 @@ const resolveSession = async (req, res) => {
            
            if (resumeResult.rows.length > 0) {
              const session = resumeResult.rows[0];
-             
-             // DUAL GROUP ID CHECK
-             if (session.dual_group_id) {
-                 const latestGroupSession = await db.query(`
-                    SELECT session_id, context, mode FROM sessions 
-                    WHERE dual_group_id = $1 
-                    ORDER BY created_at DESC LIMIT 1
-                 `, [session.dual_group_id]);
-             }
-
              return res.json({
                action: 'resume',
                session_id: session.session_id,
@@ -665,7 +656,218 @@ const resolveSession = async (req, res) => {
            }
         } else {
            // It's a DIFFERENT table, and the old session is still active
-           // Prevent starting a new session until the other one is terminated
+           // Check if this user has already expressed intent to leave (Start Fresh)
+           // If so, and the other user is gone (disconnected), we should allow them to leave.
+           // BUT the rule says "5 min timeout".
+           // However, if BOTH are disconnected?
+           // The query `anyActiveSession` checks `s.expires_at > NOW()`.
+           // If the session is active, it means it hasn't expired.
+           
+           // Let's check if the OTHER participant is disconnected.
+           // If I am trying to scan a NEW table, and my old session is active, but my partner is disconnected...
+           // Should I be blocked? "Wait for your partner to leave".
+           // Yes, blocked until 5 min timeout kills the session.
+           
+           // What if *I* already pressed Start Fresh (fresh_intent_X = TRUE)?
+           // If I pressed Start Fresh, I am waiting for partner to confirm.
+           // If partner is still there (connected), I am blocked.
+           // If partner is disconnected, I am blocked until timeout.
+           
+           // The user says: "When both phone logged out, they should be able to scan a new QR code, instantly".
+           // "Logged out" means pressing Start Fresh.
+           // If BOTH pressed Start Fresh, `fresh_intent` handler sets `expires_at = NOW()`.
+           // So `anyActiveSession` query should NOT return it.
+           // So they should be allowed.
+           
+           // CASE: Phone A presses Start Fresh. Phone B presses Start Fresh.
+           // -> Session ends.
+           // -> Phone A scans new table.
+           // -> `anyActiveSession` returns empty (because `expires_at` is NOW/past).
+           // -> Proceeds to Create New Session.
+           
+           // So why does the user think it's not instant?
+           // Maybe the update to `expires_at` in `index.js` is not committing or is race-conditiony?
+           // Or maybe `dual_status` check in `anyActiveSession` query is failing?
+           // Query: `AND (s.dual_status IS NULL OR s.dual_status != 'ended')`
+           // `fresh_intent` sets `dual_status = 'ended'`.
+           
+           // So if both press it, it should work.
+           
+           // Maybe the user means: Phone A presses Start Fresh. Phone B is *already* gone (disconnected, but didn't press Start Fresh).
+           // "When both phone logged out". "Logged out" is ambiguous.
+           // If B just closed the tab, `fresh_intent_b` is false.
+           // So session is active.
+           // A is blocked.
+           
+           // If user says "When both phone logged out... instantly", maybe they mean:
+           // If A logs out, and B is *disconnected*, it should end?
+           // "Phone A is prevent... applied when Phone B is still in the session... but When both phone logged out".
+           // This phrasing strongly implies "Both A and B performed the logout action".
+           
+           // Wait!
+           // "Start Fresh" clears local storage on the client side (`clearStoredParticipant`).
+           // If A clears storage, they lose `device_token`.
+           // If B clears storage, they lose `device_token`.
+           // If both clear storage, then when they scan a new code, `device_token` is null (or new).
+           // If `device_token` is new/null, `resolveSession` skips the "Attempt Resume" block!
+           // It goes straight to Step 2 (Join Dual) or Step 3 (Start New).
+           
+           // So if "Start Fresh" works correctly on frontend (clears storage), the backend doesn't even know it's them!
+           // So they should be able to scan instantly!
+           
+           // WHY is A blocked?
+           // "Phone A is prevent to access new session... that's great!"
+           // This means `device_token` MUST be preserved or identifying them somehow.
+           // Ah! In `SessionGame.jsx`: `handleRestart`:
+           // `// Remove clearStoredParticipant to remember device token so server can block/resume them`
+           // `// clearStoredParticipant();`
+           // I commented out `clearStoredParticipant` in a previous turn to implement blocking!
+           // So the token IS persisted.
+           
+           // So A has token. Backend finds active session. Blocked. Correct.
+           // B presses Start Fresh. Token persisted. Backend finds session?
+           // NO, backend terminates session. `dual_status='ended'`.
+           // So `anyActiveSession` query (`status != 'ended'`) returns 0 rows.
+           // So A should be free.
+           
+           // Is it possible that `index.js` `fresh_intent` logic is NOT setting `dual_status = 'ended'`?
+           // I see:
+           // `UPDATE sessions SET dual_status = 'ended', expires_at = NOW() ...`
+           // It seems correct.
+           
+           // Is it possible `anyActiveSession` query is finding *another* session?
+           // Unlikely.
+           
+           // Let's look at `index.js` line 559.
+           // `const endResult = await db.query(...)`.
+           // It updates.
+           
+           // What if the frontend "Start Fresh" isn't emitting `fresh_intent` correctly?
+           // In `SessionMenu.jsx` (I need to check it), "Start Fresh" emits `fresh_intent`.
+           
+           // Let's assume the user is correct and something is wrong.
+           // Maybe the query in `resolveSession` has a bug?
+           // `AND (s.dual_status IS NULL OR s.dual_status != 'ended')`
+           // If `dual_status` becomes 'ended', this condition fails -> row excluded -> No active session -> Allowed.
+           
+           // Wait. "When Phone A press Start at Fresh... Phone A is prevent... applied when Phone B is still in the session...".
+           // This implies A pressed it, B hasn't. Session active. A blocked.
+           // "When both phone logged out, they should be able to scan a new QR code, instantly".
+           // This implies A pressed, B pressed. Session ended. A blocked?
+           // If A is blocked *after* B pressed, then `dual_status` update failed OR query is wrong.
+           
+           // Let's verify `fresh_intent` handler in `index.js`.
+           // It listens on `socket.on('fresh_intent', ...)`.
+           // It checks `if (fresh_intent_a && fresh_intent_b)`.
+           
+           // Maybe `fresh_intent_b` isn't being set because B is "logged out"?
+           // If B presses "Start Fresh", they emit `fresh_intent`.
+           // BUT, if A already pressed it, A is redirected to Home. A's socket disconnects.
+           // Does A's `fresh_intent_a` flag persist in DB? Yes, `UPDATE sessions SET fresh_intent_a = TRUE`.
+           // So when B emits, `fresh_intent_a` is true in DB.
+           // `fresh_intent_b` becomes true.
+           // Both true -> Terminate.
+           
+           // Wait, I see `// Clear any pending Fresh Intent for this user (they are back!)` in `join_session` handler.
+           // If A scans a NEW QR code while blocked...
+           // `resolveSession` returns `blocked_active_session`.
+           // Client stays on "Blocked" modal.
+           // Does this trigger `join_session`? No.
+           // But if A scans the *OLD* QR code?
+           // `resolveSession` returns `resume`.
+           // Client joins session.
+           // `join_session` handler runs.
+           // `UPDATE sessions SET fresh_intent_a = FALSE`.
+           // So if A retries the OLD table, they clear their intent.
+           // But if they scan a NEW table, they are blocked, and intent remains TRUE.
+           
+           // So if A scans New Table -> Blocked. Intent A = True.
+           // B presses Start Fresh -> Intent B = True.
+           // Session ends.
+           // A scans New Table -> Should be allowed.
+           
+           // Is it possible the "Blocked" popup prevents A from scanning again?
+           // "The 5 min waiting period ... is applied when Phone B is still in the session ... but When both phone logged out, they should be able to scan a new QR code, instantly".
+           
+           // Maybe the user is observing that *Phone B* is blocked?
+           // If B presses Start Fresh, session ends immediately. B is redirected.
+           // B scans new table.
+           // Old session ended. B allowed.
+           
+           // Is there any 5 minute timer involved in the "Both logged out" case?
+           // Only `cleanup.js` or `resolveSession` stale check.
+           
+           // Let's look at `resolveSession` again.
+           // `AND s.fresh_intent_at <= NOW() - INTERVAL '5 minutes'`
+           // This is for *terminating* stale sessions.
+           
+           // Maybe the issue is:
+           // A logs out. A is blocked.
+           // B logs out. Session ends.
+           // A scans.
+           // Is A's `device_token` still associated with the ended session?
+           // Yes, in `session_participants`.
+           // But `resolveSession` query filters `s.dual_status != 'ended'`.
+           
+           // WAIT!
+           // `AND (s.dual_status IS NULL OR s.dual_status != 'ended')`
+           // If `dual_status` is 'ended', this returns FALSE.
+           // So `anyActiveSession` returns nothing.
+           // So A is allowed.
+           
+           // Is it possible `dual_status` is NOT 'ended'?
+           // In `index.js`, `fresh_intent` sets it to 'ended'.
+           
+           // Let's try to enforce the termination more aggressively?
+           // Or maybe there is a client-side issue?
+           // If A is on the "Blocked" screen, they need to close it to scan again.
+           
+           // What if "When both phone logged out" means "A logged out, then B logged out"?
+           // Maybe the user thinks they are still blocked because they see the message *from the previous scan*?
+           
+           // Let's assume there is a bug in `index.js`.
+           // `const { fresh_intent_a, fresh_intent_b } = updateResult.rows[0];`
+           // `if (fresh_intent_a && fresh_intent_b)`
+           
+           // If A emits, A disconnects.
+           // B emits.
+           // `updateResult` returns the ROW.
+           // Does `RETURNING fresh_intent_a` return the *current* DB value (including A's true)?
+           // Yes.
+           
+           // I will add a check in `resolveSession` to explicitely ignore 'ended' sessions to be 100% sure.
+           // It is already there.
+           
+           // Let's look at `resolveSession` again.
+           // `AND s.expires_at > NOW()`
+           // `fresh_intent` sets `expires_at = NOW()`.
+           // So `expires_at > NOW()` is FALSE.
+           // So it is excluded.
+           
+           // Could it be that `NOW()` precision causes issues?
+           // `expires_at = NOW()` might be equal to `NOW()` in the query?
+           // `expires_at > NOW()`: if equal, it's false. So excluded. Correct.
+           
+           // Maybe the "5 min waiting period" refers to something else?
+           // "Phone A is prevent to access new session ... but the 5 min waiting period to be a ble to scan a new QR code is applied when Phone B is still in the session".
+           // This describes the "Blocking" feature working correctly (A waits for B).
+           // "When both phone logged out, they should be able to scan a new QR code, instantly".
+           
+           // Is it possible that B's logout isn't triggering `fresh_intent`?
+           // If B clicks "Start Fresh", does it emit `fresh_intent`?
+           // I need to check `SessionMenu.jsx`.
+           
+           // If `SessionMenu.jsx` disconnects socket *before* emitting?
+           // Or if it uses HTTP to logout?
+           // If it uses HTTP, `index.js` socket handler won't run.
+           // I don't see a `logout` HTTP endpoint in `sessionController`.
+           // So it must be socket.
+           
+           // Let's check `SessionMenu.jsx`.
+           
+           // Also, I will add a failsafe in `resolveSession`.
+           // If `fresh_intent_a` AND `fresh_intent_b` are true in DB, but `dual_status` is somehow NOT 'ended' (race condition?), we should treat it as ended.
+           
            if (activeSession.mode === 'dual-phone') {
               return res.json({
                  action: 'blocked_active_session',
@@ -844,4 +1046,92 @@ const getSessionState = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState };
+const freshIntent = async (req, res) => {
+  const { session_id } = req.params;
+  const { participant_id } = req.body;
+
+  if (!participant_id) {
+    return res.status(400).json({ error: 'participant_id is required' });
+  }
+
+  try {
+    // 1. Get Role
+    const participant = await db.query(`
+      SELECT role FROM session_participants 
+      WHERE session_id = $1 AND participant_id = $2
+    `, [session_id, participant_id]);
+
+    if (participant.rows.length === 0) {
+      return res.status(404).json({ error: 'Participant not found in session' });
+    }
+    const role = participant.rows[0].role;
+    
+    // 2. Update Intent
+    const intentField = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+    
+    const updateResult = await db.query(
+        `UPDATE sessions 
+         SET ${intentField} = TRUE, 
+             fresh_intent_at = COALESCE(fresh_intent_at, NOW())
+         WHERE session_id = $1 
+         RETURNING fresh_intent_a, fresh_intent_b, dual_group_id`,
+        [session_id]
+    );
+    
+    if (updateResult.rows.length === 0) {
+       return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const { fresh_intent_a, fresh_intent_b, dual_group_id } = updateResult.rows[0];
+
+    // Notify partner via socket if possible
+    const io = require('../index').io;
+    if (io) {
+       io.to(session_id).emit('partner_requested_fresh', { role });
+    }
+
+    // 3. Check Termination
+    if (fresh_intent_a && fresh_intent_b) {
+        console.log(`[API] Both confirmed Fresh Intent. Terminating session ${session_id}`);
+        
+        await db.query(`
+          UPDATE sessions 
+          SET dual_status = 'ended', expires_at = NOW() 
+          WHERE session_id = $1
+        `, [session_id]);
+        
+        if (dual_group_id) {
+            await db.query(`
+              UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1
+            `, [dual_group_id]);
+            await db.query(`
+              UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1
+            `, [dual_group_id]);
+        }
+        
+        // Log Analytics
+        await db.query(
+          `INSERT INTO analytics_events (session_id, event_type, event_data)
+           VALUES ($1, $2, $3)`,
+          [session_id, 'dual_session_terminated_mutual', { source: 'api' }]
+        );
+        
+        if (io) {
+            io.to(session_id).emit('dual_group_terminated');
+            // Clean up memory in index.js requires access to index.js internal state?
+            // We can't easily access the Maps in index.js from here unless exported.
+            // But emitting 'dual_group_terminated' allows clients to disconnect, which cleans up socket state.
+            // For server memory, it will eventually be cleaned or overwritten.
+            // Ideally we expose a cleanup function, but for MVP this is acceptable.
+        }
+    }
+
+    res.json({ success: true, terminated: fresh_intent_a && fresh_intent_b });
+
+  } catch (err) {
+    console.error('Error handling fresh intent:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent };

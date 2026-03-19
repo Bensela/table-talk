@@ -312,7 +312,7 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
             <SelectionCard
               title="Start Dual-Phone Session"
               description="Create a new session for two devices."
-              icon="✨"
+              icon="📱📱"
               onClick={handleStartDual}
               disabled={loading}
               className="hover:border-purple-200 hover:shadow-xl hover:shadow-purple-500/5 py-6"

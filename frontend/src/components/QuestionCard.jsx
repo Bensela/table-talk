@@ -132,8 +132,11 @@ export default function QuestionCard({
 
   // Sync fade state with parent
   useEffect(() => {
-      setFadeApplied(conversationStarted);
-  }, [conversationStarted]);
+      // Only sync if not in MCQ submitted state (where we control fade locally)
+      if (question?.question_type !== 'multiple-choice' || !submitted) {
+          setFadeApplied(conversationStarted);
+      }
+  }, [conversationStarted, submitted, question?.question_type]);
 
 
   // Socket Listeners
@@ -146,6 +149,8 @@ export default function QuestionCard({
     const onRevealAnswers = ({ selections }) => {
       setPartnerSelections(selections);
       setLocalRevealed(true);
+      // Keep fadeApplied true to maintain "background" effect, or set it false?
+      // User said "popup out of the Conversation in Progress Background", so we keep the blur.
     };
 
     socket.on('reveal_answers', onRevealAnswers);
@@ -167,6 +172,8 @@ export default function QuestionCard({
   const handleSubmitAnswer = () => {
     if (selectedOption) {
       setSubmitted(true);
+      setFadeApplied(true); // Trigger "Conversation in Progress" visual state
+      
       // Emit selectionId as-is (assuming it is defined/truthy)
       console.log("Submitting answer:", selectedOption);
       socket.emit('answer_submitted', { 
@@ -258,8 +265,17 @@ export default function QuestionCard({
 
           {/* MULTIPLE CHOICE */}
           {isMultipleChoice && question.options && (
-            <div className="space-y-3 mt-4">
-              {question.options.options.map((opt) => {
+            <AnimatePresence mode="wait">
+              {(!submitted || localRevealed) && (
+                <motion.div 
+                  key="options-list"
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -20, scale: 0.95 }}
+                  transition={{ type: "spring", bounce: 0.4, duration: 0.6 }}
+                  className="space-y-3 mt-4 relative z-20"
+                >
+                  {question.options.options.map((opt) => {
                 const isSelected = selectedOption === opt.id;
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => String(uid) !== String(userId))?.[1];
@@ -296,7 +312,9 @@ export default function QuestionCard({
                   </button>
                 );
               })}
-            </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           )}
         </div>
 
@@ -355,10 +373,8 @@ export default function QuestionCard({
                             if (conversationStarted) {
                                 // Phase 2: Manual Advance
                                 setWaitingForAdvance(true);
-                                onAdvanceTurn();
-                            } else if (localNextIntent) {
-                                // Idempotent: Waiting for partner
-                            } else {
+                                if (onAdvanceTurn) onAdvanceTurn(); // Uses socket.emit('advance_turn')
+                            } else if (!localNextIntent) {
                                 // Phase 1: Mark Ready
                                 handleNextIntent();
                             }
@@ -382,12 +398,12 @@ export default function QuestionCard({
                                ? (waitingForAdvance ? "Waiting for Partner..." : "Next Question")
                                : (localNextIntent
                                    ? "Waiting for Partner..." 
-                                   : "I'm Ready")
+                                   : (isMultipleChoice && localRevealed ? "Next Question" : "I'm Ready"))
                           }
                         </Button>
                         
                         {/* Partner Ready Indicator */}
-                        {partnerIsReady && !localNextIntent && (
+                        {partnerIsReady && !localNextIntent && !conversationStarted && (
                            <div className="text-center animate-pulse pt-2">
                               <p className="text-sm font-bold text-blue-600">
                                 👋 Partner is ready!

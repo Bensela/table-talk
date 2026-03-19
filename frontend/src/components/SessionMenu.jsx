@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from './ui/Button';
-import { createSession } from '../api';
+import api, { createSession } from '../api';
 import { 
   getStoredParticipant, 
   clearStoredParticipant, 
@@ -24,7 +24,7 @@ export default function SessionMenu({
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleRestart = () => {
+  const handleRestart = async () => {
     if (!tableToken) {
         console.error("[Menu] handleRestart called but tableToken is missing");
         return;
@@ -34,15 +34,28 @@ export default function SessionMenu({
 
     // If currently in Dual Mode, handle termination intent
     if (currentMode === 'dual-phone') {
-       // Notify server of Fresh Intent (if socket active)
-       if (socketRef?.current?.connected) {
-           console.log("[Menu] Sending Fresh Intent");
-           socketRef.current.emit('fresh_intent');
-       }
-
        // We save local credentials in dual storage just in case we are the "First" one leaving
        // and want to resume later if the partner didn't leave (and session wasn't terminated).
        const current = getStoredParticipant();
+       
+       // Send HTTP request for reliability (Wait for it)
+       if (current.sessionId && current.participantId) {
+           console.log("[Menu] Sending Fresh Intent via API");
+           // We use fire-and-forget style if we want speed, but for "instantly" ensuring DB update:
+           // We should await.
+           try {
+               await api.post(`/sessions/${current.sessionId}/fresh_intent`, { participant_id: current.participantId });
+           } catch (e) {
+               console.error("Failed to send fresh intent API", e);
+           }
+       }
+       
+       // Also emit socket for realtime UI update (if connected)
+       if (socketRef?.current?.connected) {
+           console.log("[Menu] Sending Fresh Intent via Socket");
+           socketRef.current.emit('fresh_intent');
+       }
+
        console.log("[Menu] Storing dual session backup:", current);
        if (current.sessionId && current.participantToken) {
            storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);

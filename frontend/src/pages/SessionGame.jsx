@@ -9,6 +9,7 @@ import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt } from '../utils/sessionStorage';
 import { useSocket, useEnsureSessionRoom } from '../context/SocketContext';
+import { SCANNER_ROUTE } from '../constants/routes';
 
 // Hook for session activity tracking
 function useSessionActivity(sessionId, participantId) {
@@ -28,7 +29,60 @@ function useSessionActivity(sessionId, participantId) {
   }, [sessionId, participantId]);
 }
 
-import { SCANNER_ROUTE } from '../constants/routes';
+// Logout Screen Component
+function LogoutScreen({ navigate }) {
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            navigate('/');
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, [navigate]);
+
+    return (
+        <div className="min-h-screen flex items-center justify-center px-4 bg-gray-900/60 backdrop-blur-sm fixed inset-0 z-50">
+            <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                className="relative bg-[#2f2f3a] w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden p-6 text-left"
+            >
+                {/* Header */}
+                <div className="flex items-center gap-2 mb-4">
+                    <svg className="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <span className="text-gray-300 font-medium text-sm tracking-wide">
+                        Session Expired
+                    </span>
+                </div>
+                
+                {/* Body Text */}
+                <p className="text-gray-300 text-[15px] leading-relaxed mb-6">
+                    You have been logged out due to inactivity. You will be redirected to the home page to scan a new QR code.
+                </p>
+
+                {/* Auto-redirect progress bar */}
+                <div className="w-full bg-gray-700 h-1 rounded-full overflow-hidden mb-6">
+                    <motion.div 
+                        initial={{ width: "0%" }}
+                        animate={{ width: "100%" }}
+                        transition={{ duration: 3, ease: "linear" }}
+                        className="h-full bg-[#06b6d4]"
+                    />
+                </div>
+                
+                {/* Footer / Action */}
+                <div className="flex justify-end">
+                    <button
+                        onClick={() => navigate('/')}
+                        className="bg-[#06b6d4] hover:bg-[#0891b2] text-gray-900 font-bold px-6 py-2 rounded-lg shadow-md transition-colors"
+                    >
+                        OK
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    );
+}
 
 export default function SessionGame() {
   const { sessionId } = useParams();
@@ -211,6 +265,8 @@ export default function SessionGame() {
       console.error('Socket Error:', data);
       if (data.message === 'Invalid participant or session' || data.message === 'Session expired') {
          setError('Session expired or not found. Please start a new one.');
+         // Clear local storage so they don't try to auto-reconnect to a dead session
+         clearStoredParticipant();
       }
     };
 
@@ -222,6 +278,12 @@ export default function SessionGame() {
       setIsRevealed(true);
     };
 
+    const onPartnerAnswered = ({ role }) => {
+        setFeedbackMessage("Partner has locked in their answer!");
+        // Clear after a few seconds
+        setTimeout(() => setFeedbackMessage(null), 5000);
+    };
+
     const onRevealAnswers = (data) => {
        console.log('[SessionGame] Received reveal_answers:', data);
        if (data && data.selections) {
@@ -229,6 +291,13 @@ export default function SessionGame() {
        }
        setIsRevealed(true);
        setWaitingForPartner(false);
+       setFeedbackMessage(null); // Clear any waiting message
+       setPartnerIsReady(false); // Ensure "Partner is ready" is hidden
+       // For Multiple Choice, revealing answers completes Phase 1 automatically.
+       // Reset Phase 1 local state so Phase 2 ("Next Question") can track properly.
+       setHasClickedNext(false); 
+       // Auto-start "Conversation Mode" for MCQs so the button becomes "Next Question" immediately
+       setConversationStarted(true);
     };
 
     const onAdvanceQuestion = (data) => {
@@ -237,7 +306,7 @@ export default function SessionGame() {
       setIsRevealed(false);
       setWaitingForPartner(false);
       setPartnerSelections({});
-      setHasClickedNext(false);
+      setHasClickedNext(false); // Reset for the new question
       setPartnerIsReady(false);
       setConversationStarted(false); // Reset Conversation Mode
       setFeedbackMessage(null); // Clear any waiting message
@@ -247,6 +316,10 @@ export default function SessionGame() {
     const onConversationStart = () => {
         console.log('[SessionGame] Conversation Started');
         setConversationStarted(true);
+        // Clear partner readiness text when moving to conversation mode
+        setPartnerIsReady(false);
+        // We must also reset hasClickedNext so that Phase 2 (Next Question) tracking starts fresh
+        setHasClickedNext(false);
     };
 
     const onWaitingForPartner = () => {
@@ -269,8 +342,13 @@ export default function SessionGame() {
     };
 
     const onNextIntentUpdate = ({ count }) => {
-      if (count >= 1 && !hasClickedNext) {
-          setPartnerIsReady(true);
+      // Only set partnerIsReady if we are NOT in conversation mode. 
+      // If we are already in conversation mode, "Next Question" clicks shouldn't trigger "Partner is ready!"
+      if (!conversationStarted) {
+        setPartnerIsReady((prev) => {
+            if (!hasClickedNext && count >= 1) return true;
+            return prev;
+        });
       }
     };
     
@@ -345,7 +423,10 @@ export default function SessionGame() {
     };
 
     const onPartnerWaitingToAdvance = () => {
-        setFeedbackMessage("Partner is waiting for you to click Next!");
+        // Only show if we haven't clicked next ourselves
+        if (!hasClickedNext) {
+            setFeedbackMessage("Partner is waiting for you to click Next!");
+        }
     };
 
     socket.on('connect_error', onConnectError);
@@ -353,6 +434,7 @@ export default function SessionGame() {
     socket.on('error', onError);
     socket.on('partner_status', onPartnerStatus);
     socket.on('answer_revealed', onAnswerRevealed);
+    socket.on('partner_answered', onPartnerAnswered);
     socket.on('reveal_answers', onRevealAnswers);
     socket.on('advance_question', onAdvanceQuestion);
     socket.on('conversation_start', onConversationStart);
@@ -376,6 +458,7 @@ export default function SessionGame() {
       socket.off('error', onError);
       socket.off('partner_status', onPartnerStatus);
       socket.off('answer_revealed', onAnswerRevealed);
+      socket.off('partner_answered', onPartnerAnswered);
       socket.off('reveal_answers', onRevealAnswers);
       socket.off('advance_question', onAdvanceQuestion);
       socket.off('conversation_start', onConversationStart);
@@ -484,9 +567,12 @@ export default function SessionGame() {
     
     // Dual Phone Logic
     if (socketRef.current?.connected) {
-        // Emit dual_next_intent (New Flow)
+        // We do not setHasClickedNext(true) globally anymore here, because handleNext is used for both Phase 1 and Phase 2.
+        // Wait, handleNext is passed to QuestionCard as `onNext`. QuestionCard ONLY calls it for Phase 1 (`handleNextIntent`).
+        // For Phase 2, QuestionCard calls `onAdvanceTurn` directly!
+        // So `handleNext` is ONLY Phase 1 (dual_next_intent).
         socketRef.current.emit('dual_next_intent');
-        setHasClickedNext(true); // Mark locally as clicked
+        setHasClickedNext(true); // Mark locally as clicked (for Phase 1)
     } else {
         // Attempt to reconnect if disconnected
         console.warn('Socket disconnected, attempting reconnect...');
@@ -549,36 +635,9 @@ export default function SessionGame() {
     const isLogout = error.includes('expired') || error.includes('not found') || error.includes('Invalid session');
     
     if (isLogout) {
-        // Redirect after 2 seconds
-        setTimeout(() => {
-            window.location.href = '/';
-        }, 2000);
-        
+        // We use a separate useEffect to handle the redirect to avoid state/render conflicts during the timeout
         return (
-          <div className="min-h-screen flex items-center justify-center p-6 bg-white/95 backdrop-blur-sm fixed inset-0 z-50">
-            <motion.div 
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="bg-white p-8 rounded-3xl border border-gray-100 text-center max-w-sm w-full shadow-2xl"
-            >
-              <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <span className="text-3xl">⚠️</span>
-              </div>
-              <h2 className="text-xl font-extrabold text-gray-900 mb-3">Logged Out</h2>
-              <p className="text-gray-500 font-medium mb-2">You have been logged out due to inactivity.</p>
-              <p className="text-sm text-gray-400 mb-6">Scan the QR code to rejoin your conversation.</p>
-              
-              <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: "0%" }}
-                    animate={{ width: "100%" }}
-                    transition={{ duration: 2 }}
-                    className="h-full bg-blue-500"
-                  />
-              </div>
-              <p className="text-xs text-gray-400 mt-3">Redirecting to scanner...</p>
-            </motion.div>
-          </div>
+            <LogoutScreen navigate={navigate} />
         );
     }
 
@@ -670,6 +729,9 @@ export default function SessionGame() {
           onAdvanceTurn={() => {
               if (socketRef.current?.connected) {
                   socketRef.current.emit('advance_turn');
+                  // We need to mark that THIS client has clicked the advance button
+                  // so that they don't see the "Partner is waiting for you" message.
+                  setHasClickedNext(true); 
               }
           }}
         />
