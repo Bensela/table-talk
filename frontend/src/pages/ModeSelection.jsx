@@ -58,10 +58,14 @@ export default function ModeSelection() {
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       
-      // Release setup lock so others can use the table
+      // Release setup lock and notify others so they can act automatically
       if (socket && tableToken) {
-          console.log('[ModeSelection] Releasing setup lock');
-          socket.emit('release_setup', { tableToken });
+          console.log('[ModeSelection] Setup completed, notifying others');
+          socket.emit('setup_completed', { 
+              tableToken, 
+              mode: 'single-phone', 
+              sessionId: data.session_id 
+          });
       }
 
       navigate(`/session/${data.session_id}/game`);
@@ -86,10 +90,14 @@ export default function ModeSelection() {
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       
-      // Release setup lock so others can use the table
+      // Release setup lock and notify others to auto-join
       if (socket && tableToken) {
-          console.log('[ModeSelection] Releasing setup lock');
-          socket.emit('release_setup', { tableToken });
+          console.log('[ModeSelection] Setup completed, notifying others to auto-join');
+          socket.emit('setup_completed', { 
+              tableToken, 
+              mode: 'dual-phone', 
+              sessionId: data.session_id 
+          });
       }
 
       // Directly navigate to game, waiting for partner to join via "One-Scan"

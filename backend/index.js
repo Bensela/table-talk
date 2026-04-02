@@ -654,7 +654,7 @@ io.on('connection', (socket) => {
 
   // --- Welcome Screen Setup Synchronization ---
 
-  socket.on('join_table_setup', ({ tableToken }) => {
+  socket.on('join_table_setup', ({ tableToken, lockToken }) => {
     if (!tableToken) return;
     const room = `setup_${tableToken}`;
     socket.join(room);
@@ -664,45 +664,48 @@ io.on('connection', (socket) => {
     // Check if locked
     const lock = setupLocks.get(tableToken);
     if (lock) {
-      if (lock.socketId === socket.id) {
-        socket.emit('setup_status', { status: 'granted' });
+      if (lockToken && lock.lockToken === lockToken) {
+         socket.emit('setup_status', { status: 'granted' });
       } else {
-        // Check if lock is stale (e.g. > 5 mins)
-        const now = Date.now();
-        if (now - lock.timestamp > 5 * 60 * 1000) {
-           setupLocks.delete(tableToken);
-           socket.emit('setup_status', { status: 'available' });
-        } else {
-           socket.emit('setup_status', { status: 'busy' });
-        }
+         // If they don't have the token, they are busy unless stale
+         const now = Date.now();
+         if (now - lock.timestamp > 2 * 60 * 1000) {
+            setupLocks.delete(tableToken);
+            socket.emit('setup_status', { status: 'available' });
+         } else {
+            socket.emit('setup_status', { status: 'busy' });
+         }
       }
     } else {
       socket.emit('setup_status', { status: 'available' });
     }
   });
 
-  socket.on('claim_setup', ({ tableToken }, callback) => {
+  socket.on('claim_setup', ({ tableToken, lockToken }, callback) => {
     if (!tableToken) return;
     
     const lock = setupLocks.get(tableToken);
+    const now = Date.now();
     
-    if (lock && lock.socketId !== socket.id) {
+    // Check if locked by someone else
+    if (lock && lock.lockToken !== lockToken) {
        // Check staleness
-       const now = Date.now();
-       if (now - lock.timestamp > 5 * 60 * 1000) {
+       if (now - lock.timestamp > 2 * 60 * 1000) {
           // Steal lock
-          setupLocks.set(tableToken, { socketId: socket.id, timestamp: Date.now() });
-          io.to(`setup_${tableToken}`).emit('setup_claimed', { socketId: socket.id });
-          if (callback) callback({ status: 'granted' });
+          const newLockToken = require('crypto').randomUUID();
+          setupLocks.set(tableToken, { lockToken: newLockToken, timestamp: now });
+          io.to(`setup_${tableToken}`).emit('setup_claimed', { lockToken: newLockToken });
+          if (callback) callback({ status: 'granted', lockToken: newLockToken });
        } else {
           if (callback) callback({ status: 'busy' });
        }
     } else {
-       // Grant lock
-       setupLocks.set(tableToken, { socketId: socket.id, timestamp: Date.now() });
+       // Grant lock (or renew if they already had it)
+       const newLockToken = lockToken || require('crypto').randomUUID();
+       setupLocks.set(tableToken, { lockToken: newLockToken, timestamp: now });
        // Notify others in room
-       socket.to(`setup_${tableToken}`).emit('setup_claimed', { socketId: socket.id });
-       if (callback) callback({ status: 'granted' });
+       socket.to(`setup_${tableToken}`).emit('setup_claimed', { lockToken: newLockToken });
+       if (callback) callback({ status: 'granted', lockToken: newLockToken });
     }
   });
   
@@ -714,18 +717,20 @@ io.on('connection', (socket) => {
       }
   });
 
+  socket.on('setup_completed', ({ tableToken, mode, sessionId }) => {
+      // Clear the lock regardless of socket.id because the user might have reconnected
+      // with a new socket.id during the setup flow.
+      setupLocks.delete(tableToken);
+      io.to(`setup_${tableToken}`).emit('setup_completed', { mode, sessionId });
+  });
+
   socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
     
-    // Release setup lock if held
-    if (socket.tableSetupToken) {
-        const lock = setupLocks.get(socket.tableSetupToken);
-        if (lock && lock.socketId === socket.id) {
-            setupLocks.delete(socket.tableSetupToken);
-            io.to(`setup_${socket.tableSetupToken}`).emit('setup_released');
-            console.log(`[Socket] Released setup lock for ${socket.tableSetupToken} due to disconnect`);
-        }
-    }
+    // We intentionally DO NOT release the setup lock on disconnect anymore.
+    // Mobile browsers frequently drop websocket connections during page navigation.
+    // If we release the lock here, Phone B might slip in and start a concurrent setup.
+    // The lock will naturally expire after 5 minutes, or be cleared by 'setup_completed'.
     
     if (socket.participantId) {
       try {

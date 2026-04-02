@@ -37,7 +37,8 @@ export default function WelcomeScreen() {
   useEffect(() => {
     if (isConnected && socket && tableToken) {
       console.log('[Welcome] Joining setup room for', tableToken);
-      socket.emit('join_table_setup', { tableToken });
+      const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
+      socket.emit('join_table_setup', { tableToken, lockToken: existingLock });
 
       const handleStatus = (data) => {
         console.log('[Welcome] Setup status:', data.status);
@@ -48,7 +49,11 @@ export default function WelcomeScreen() {
       };
 
       const handleClaimed = (data) => {
-        if (data.socketId !== socket.id) {
+        // Since lockToken is managed internally or by session storage,
+        // we can just assume if we receive this, someone else claimed it.
+        // If WE claimed it, we would get the response via callback.
+        const myLock = sessionStorage.getItem(`table_lock_${tableToken}`);
+        if (data.lockToken !== myLock) {
           setSetupStatus('busy');
           setWaitingForA(true);
         }
@@ -86,8 +91,11 @@ export default function WelcomeScreen() {
           // Duplicate start_new logic to safely claim lock for Phone B before proceeding
           if (socket) {
               const doClaim = () => {
-                  socket.emit('claim_setup', { tableToken }, (response) => {
+                  const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
+                  // Proceed with claim
+                  socket.emit('claim_setup', { tableToken, lockToken: existingLock }, (response) => {
                       if (response.status === 'granted') {
+                          sessionStorage.setItem(`table_lock_${tableToken}`, response.lockToken);
                           setStatus('Ready to start');
                           navigate(`/t/${tableToken}/context`);
                       } else {
@@ -198,7 +206,11 @@ export default function WelcomeScreen() {
           const claimPromise = new Promise((resolve) => {
               if (socket) {
                   const doClaim = () => {
-                      socket.emit('claim_setup', { tableToken }, (response) => {
+                      const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
+                      socket.emit('claim_setup', { tableToken, lockToken: existingLock }, (response) => {
+                          if (response.status === 'granted') {
+                              sessionStorage.setItem(`table_lock_${tableToken}`, response.lockToken);
+                          }
                           resolve(response);
                       });
                   };
