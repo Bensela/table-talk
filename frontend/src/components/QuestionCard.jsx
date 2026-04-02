@@ -132,11 +132,9 @@ export default function QuestionCard({
 
   // Sync fade state with parent
   useEffect(() => {
-      // Only sync if not in MCQ submitted state (where we control fade locally)
-      if (question?.question_type !== 'multiple-choice' || !submitted) {
-          setFadeApplied(conversationStarted);
-      }
-  }, [conversationStarted, submitted, question?.question_type]);
+      // Sync fade state completely with conversationStarted for both open-ended and MCQ
+      setFadeApplied(conversationStarted);
+  }, [conversationStarted]);
 
 
   // Socket Listeners
@@ -172,7 +170,8 @@ export default function QuestionCard({
   const handleSubmitAnswer = () => {
     if (selectedOption) {
       setSubmitted(true);
-      setFadeApplied(true); // Trigger "Conversation in Progress" visual state
+      // Removed setFadeApplied(true) here. 
+      // We only want to fade/blur when BOTH partners lock their answers (handled via conversationStarted)
       
       // Emit selectionId as-is (assuming it is defined/truthy)
       console.log("Submitting answer:", selectedOption);
@@ -228,17 +227,17 @@ export default function QuestionCard({
 
         {/* Question Text */}
         <div className={`my-8 text-center relative z-10 ${fadeApplied ? 'pointer-events-none' : ''}`}>
-            <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
-              fadeApplied ? 'text-gray-900/20 blur-[2px]' : 'text-gray-900'
-            }`}>
-              {cleanQuestionText(question.question_text)}
-            </h2>
-            {fadeApplied && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <p className="text-gray-500 font-medium mb-2">Conversation in progress...</p>
-               </div>
-            )}
-          </div>
+          <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
+            fadeApplied ? 'text-gray-900/20 blur-[2px]' : 'text-gray-900'
+          }`}>
+            {cleanQuestionText(question.question_text)}
+          </h2>
+          {fadeApplied && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <p className="text-gray-500 font-medium mb-2">Conversation in progress...</p>
+            </div>
+          )}
+        </div>
 
         {/* CONTENT AREA (Hint or Options) */}
         <div className="relative z-10">
@@ -266,16 +265,20 @@ export default function QuestionCard({
           {/* MULTIPLE CHOICE */}
           {isMultipleChoice && question.options && (
             <AnimatePresence mode="wait">
-              {(!submitted || localRevealed) && (
-                <motion.div 
-                  key="options-list"
-                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -20, scale: 0.95 }}
-                  transition={{ type: "spring", bounce: 0.4, duration: 0.6 }}
-                  className="space-y-3 mt-4 relative z-20"
-                >
-                  {question.options.options.map((opt) => {
+              {/* Only show the options list if the answers haven't been revealed OR if it's the "Reveal" phase. 
+                  Since we no longer fade/hide locally on "submit", we can just keep showing it. 
+                  Wait, we want the cards to stay visible while waiting for the partner, but then what happens on reveal? 
+                  On reveal, it updates the styling to show "You" and "Partner" tags.
+              */}
+              <motion.div 
+                key="options-list"
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -20, scale: 0.95 }}
+                transition={{ type: "spring", bounce: 0.4, duration: 0.6 }}
+                className="space-y-3 mt-4 relative z-20"
+              >
+                {(question.options.options || question.options).map((opt) => {
                 const isSelected = selectedOption === opt.id;
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => String(uid) !== String(userId))?.[1];
@@ -312,8 +315,7 @@ export default function QuestionCard({
                   </button>
                 );
               })}
-                </motion.div>
-              )}
+              </motion.div>
             </AnimatePresence>
           )}
         </div>
