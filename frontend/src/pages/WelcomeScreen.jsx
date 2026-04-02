@@ -84,18 +84,28 @@ export default function WelcomeScreen() {
           setSetupStatus('available');
           
           // Duplicate start_new logic to safely claim lock for Phone B before proceeding
-          if (socket && socket.connected) {
-              socket.emit('claim_setup', { tableToken }, (response) => {
-                  if (response.status === 'granted') {
-                      setStatus('Ready to start');
-                      navigate(`/t/${tableToken}/context`);
-                  } else {
-                      setWaitingForA(true);
-                      setStatus(null);
-                  }
-              });
+          if (socket) {
+              const doClaim = () => {
+                  socket.emit('claim_setup', { tableToken }, (response) => {
+                      if (response.status === 'granted') {
+                          setStatus('Ready to start');
+                          navigate(`/t/${tableToken}/context`);
+                      } else {
+                          setWaitingForA(true);
+                          setStatus(null);
+                      }
+                  });
+              };
+              
+              if (socket.connected) {
+                  doClaim();
+              } else {
+                  console.log('[Welcome] Socket disconnected, waiting to reconnect before claiming setup...');
+                  socket.connect();
+                  socket.once('connect', doClaim);
+              }
           } else {
-              // If disconnected, just navigate and let next page handle errors
+              // If disconnected entirely, just navigate and let next page handle errors
               navigate(`/t/${tableToken}/context`);
           }
         }
@@ -186,12 +196,22 @@ export default function WelcomeScreen() {
           setStatus('Checking availability...');
           
           const claimPromise = new Promise((resolve) => {
-              if (socket && socket.connected) {
-                  socket.emit('claim_setup', { tableToken }, (response) => {
-                      resolve(response);
-                  });
+              if (socket) {
+                  const doClaim = () => {
+                      socket.emit('claim_setup', { tableToken }, (response) => {
+                          resolve(response);
+                      });
+                  };
+                  
+                  if (socket.connected) {
+                      doClaim();
+                  } else {
+                      console.log('[Welcome] Socket not connected, waiting for connection before claim...');
+                      socket.connect();
+                      socket.once('connect', doClaim);
+                  }
                   // Timeout fallback
-                  setTimeout(() => resolve({ status: 'timeout' }), 3000);
+                  setTimeout(() => resolve({ status: 'timeout' }), 4000);
               } else {
                   resolve({ status: 'offline' }); 
               }
