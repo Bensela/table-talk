@@ -42,11 +42,15 @@ export default function WelcomeScreen() {
       const handleStatus = (data) => {
         console.log('[Welcome] Setup status:', data.status);
         setSetupStatus(data.status);
+        if (data.status === 'busy') {
+          setWaitingForA(true);
+        }
       };
 
       const handleClaimed = (data) => {
         if (data.socketId !== socket.id) {
           setSetupStatus('busy');
+          setWaitingForA(true);
         }
       };
 
@@ -76,9 +80,24 @@ export default function WelcomeScreen() {
           // Phone A chose Single Mode. Phone B is released to start their own.
           console.log('[Welcome] Partner chose Single Mode. Proceeding to create new session.');
           setWaitingForA(false);
-          setStatus(null);
+          setStatus('Checking availability...');
           setSetupStatus('available');
-          navigate(`/t/${tableToken}/context`);
+          
+          // Duplicate start_new logic to safely claim lock for Phone B before proceeding
+          if (socket && socket.connected) {
+              socket.emit('claim_setup', { tableToken }, (response) => {
+                  if (response.status === 'granted') {
+                      setStatus('Ready to start');
+                      navigate(`/t/${tableToken}/context`);
+                  } else {
+                      setWaitingForA(true);
+                      setStatus(null);
+                  }
+              });
+          } else {
+              // If disconnected, just navigate and let next page handle errors
+              navigate(`/t/${tableToken}/context`);
+          }
         }
       };
 
@@ -167,25 +186,29 @@ export default function WelcomeScreen() {
           setStatus('Checking availability...');
           
           const claimPromise = new Promise((resolve) => {
-              if (socket && isConnected) {
+              if (socket && socket.connected) {
                   socket.emit('claim_setup', { tableToken }, (response) => {
                       resolve(response);
                   });
                   // Timeout fallback
-                  setTimeout(() => resolve({ status: 'timeout' }), 2000);
+                  setTimeout(() => resolve({ status: 'timeout' }), 3000);
               } else {
-                  resolve({ status: 'offline' }); // Fallback to allow offline/local dev?
+                  resolve({ status: 'offline' }); 
               }
           });
           
           const claimRes = await claimPromise;
           console.log('[Welcome] Claim result:', claimRes);
           
-          if (claimRes.status === 'granted' || claimRes.status === 'offline') {
+          if (claimRes.status === 'granted') {
               setStatus('Ready to start');
               navigate(`/t/${tableToken}/context`);
+          } else if (claimRes.status === 'offline') {
+              // Show error, don't bypass lock
+              alert("Connection issue. Please wait and try again.");
+              setStatus(null);
           } else {
-              // Busy
+              // Busy or timeout
               setWaitingForA(true);
               setStatus(null);
           }
