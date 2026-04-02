@@ -68,8 +68,17 @@ export default function SessionMenu({
     
     // In Dual Mode, we keep the participantToken so the backend can recognize the user
     // and enforce the "no new table while active" rule.
-    // In Single Mode, we clear it immediately so they can actually start fresh.
+    // In Single Mode, we permanently terminate the session.
     if (currentMode !== 'dual-phone') {
+        const current = getStoredParticipant();
+        if (current.sessionId) {
+            try {
+                await api.delete(`/sessions/${current.sessionId}`);
+                console.log("[Menu] Single Mode session permanently terminated.");
+            } catch (e) {
+                console.error("Failed to terminate single mode session", e);
+            }
+        }
         clearStoredParticipant();
     }
     
