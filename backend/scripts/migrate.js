@@ -45,6 +45,21 @@ const init = async () => {
     const v12Sql = fs.readFileSync(path.join(__dirname, '../database/migrations/004_v1_2_upgrade.sql'), 'utf8');
     await dbClient.query(v12Sql);
 
+    // 6. Run Dual Security Upgrade
+    console.log('📜 Running 005_v1_3_dual_security.sql...');
+    const dualSecSql = fs.readFileSync(path.join(__dirname, '../database/migrations/005_v1_3_dual_security.sql'), 'utf8');
+    await dbClient.query(dualSecSql);
+
+    // 7. Run Missing Hints Fix
+    console.log('📜 Running 006_fix_missing_hints.sql...');
+    const hintsSql = fs.readFileSync(path.join(__dirname, '../database/migrations/006_fix_missing_hints.sql'), 'utf8');
+    await dbClient.query(hintsSql);
+
+    // 8. Run Session Lifecycle Fields
+    console.log('📜 Running 007_add_session_lifecycle_fields.sql...');
+    const lifecycleSql = fs.readFileSync(path.join(__dirname, '../database/migrations/007_add_session_lifecycle_fields.sql'), 'utf8');
+    await dbClient.query(lifecycleSql);
+
     console.log('✅ Schema upgraded.');
 
     // 3. Seed Questions (Idempotent-ish)
