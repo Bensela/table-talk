@@ -134,8 +134,8 @@ function getSessionState(sessionId) {
     sessionStates.set(sessionId, {
       ready: new Map(),
       answers: new Map(),
-      nextIntent: new Set(), // Track users who pressed "I'm Ready"
-      advanceIntent: new Set() // Track users who pressed "Next Question"
+      nextIntent: new Set(), // Track roles who pressed "I'm Ready"
+      advanceIntent: new Set() // Track roles who pressed "Next Question"
     });
   }
   return sessionStates.get(sessionId);
@@ -286,13 +286,14 @@ io.on('connection', (socket) => {
 
   // Dual-Phone: Ready Ritual (Open-Ended)
   socket.on('ready_toggled', (data) => {
-    if (!socket.participantId) {
+    if (!socket.participantId || !socket.role) {
       socket.emit('error', { message: 'Not authenticated' });
       return;
     }
 
     const state = getSessionState(socket.sessionId);
-    state.ready.set(socket.participantId, data.ready);
+    // Use role to overwrite old disconnected participants
+    state.ready.set(socket.role, data.ready);
     
     // Broadcast status to room (including self, to confirm receipt)
     io.to(socket.sessionId).emit('ready_status_update', { 
@@ -302,10 +303,7 @@ io.on('connection', (socket) => {
     });
 
     // Check if both ready
-    const room = io.sockets.adapter.rooms.get(socket.sessionId);
-    const clientCount = room ? room.size : 0;
-    
-    if (clientCount >= 2 && state.ready.size >= 2) {
+    if (state.ready.size >= 2) {
       const allReady = Array.from(state.ready.values()).every(r => r);
       if (allReady) {
         io.to(socket.sessionId).emit('both_ready', { session_id: socket.sessionId });
@@ -319,22 +317,27 @@ io.on('connection', (socket) => {
 
     // If no participantId on socket, try to use user_id from payload (fallback)
     const pId = socket.participantId || user_id;
-    if (!pId) return;
+    if (!pId || !socket.role) return;
 
     const state = getSessionState(socket.sessionId);
     // Ensure selectionId is not undefined (use null to preserve key in JSON)
     const safeSelectionId = selectionId === undefined ? null : selectionId;
-    state.answers.set(pId, safeSelectionId);
+    
+    // Store by role to automatically overwrite old/disconnected participants who reclaimed the same role
+    state.answers.set(socket.role, {
+        participantId: pId,
+        optionId: safeSelectionId
+    });
 
     console.log(`[Backend] Current answers for session ${socket.sessionId}:`, Array.from(state.answers.entries()));
 
-    // Check if both submitted
-    const room = io.sockets.adapter.rooms.get(socket.sessionId);
-    const clientCount = room ? room.size : 0;
-
-    if (clientCount >= 2 && state.answers.size >= 2) {
-      // Reveal answers
-      const selections = Object.fromEntries(state.answers);
+    // A dual session requires 2 answers.
+    if (state.answers.size >= 2) {
+      // Reveal answers, mapping back to participantId for the frontend
+      const selections = {};
+      for (const [role, data] of state.answers.entries()) {
+          selections[data.participantId] = data.optionId;
+      }
       console.log('[Backend] Emitting reveal_answers:', selections);
       io.to(socket.sessionId).emit('reveal_answers', { selections });
     } else {
@@ -346,21 +349,21 @@ io.on('connection', (socket) => {
 
   // Dual Mode Next Intent Gating (Phase 1: Mark Ready)
   socket.on('dual_next_intent', async () => {
-    if (!socket.participantId) return;
+    if (!socket.participantId || !socket.role) return;
     const sessionId = socket.sessionId;
     
     try {
         const state = getSessionState(sessionId);
         
         // Idempotency: Add to set (duplicates ignored)
-        state.nextIntent.add(socket.participantId);
-        console.log(`[Socket] Next Intent from ${socket.participantId} (Total: ${state.nextIntent.size})`);
+        // Use ROLE instead of participantId to prevent bugs when users reconnect/reclaim a spot
+        state.nextIntent.add(socket.role);
+        console.log(`[Socket] Next Intent from ${socket.role} (Total: ${state.nextIntent.size})`);
 
-        const room = io.sockets.adapter.rooms.get(sessionId);
-        const clientCount = room ? room.size : 0;
-        
-        // Check gating: Need intents from all connected clients (min 2)
-        const requiredCount = Math.max(2, clientCount);
+        // A dual session always requires exactly 2 intents.
+        // Using room.size is dangerous because of "ghost" sockets from mobile disconnects
+        // or users opening multiple tabs, which could make room.size > 2 and block progress.
+        const requiredCount = 2;
 
         // Emit 'next_intent_update' to notify clients of current intent count
         io.to(sessionId).emit('next_intent_update', { count: state.nextIntent.size, required: requiredCount });
@@ -370,6 +373,8 @@ io.on('connection', (socket) => {
             // DO NOT ADVANCE DECK YET
             // Instead, tell clients to enter "Conversation Mode" (Blur question, show Next button)
             io.to(sessionId).emit('conversation_start');
+        } else {
+            socket.emit('waiting_for_partner_next');
         }
     } catch (err) {
         console.error('Error in dual_next_intent:', err);
@@ -378,19 +383,18 @@ io.on('connection', (socket) => {
 
   // Dual Mode Manual Advance (Phase 2: Next Question)
   socket.on('advance_turn', async () => {
-      if (!socket.participantId || !socket.sessionId) return;
+      if (!socket.participantId || !socket.sessionId || !socket.role) return;
       const sessionId = socket.sessionId;
       
       try {
           const state = getSessionState(sessionId);
           
-          // Add to advanceIntent
-          state.advanceIntent.add(socket.participantId);
-          console.log(`[Socket] Advance Intent from ${socket.participantId} (Total: ${state.advanceIntent.size})`);
+          // Add to advanceIntent using role
+          state.advanceIntent.add(socket.role);
+          console.log(`[Socket] Advance Intent from ${socket.role} (Total: ${state.advanceIntent.size})`);
           
-          const room = io.sockets.adapter.rooms.get(sessionId);
-          const clientCount = room ? room.size : 0;
-          const requiredCount = Math.max(2, clientCount);
+          // A dual session always requires exactly 2 intents.
+          const requiredCount = 2;
           
           if (state.advanceIntent.size >= requiredCount) {
              // Check if session exists
