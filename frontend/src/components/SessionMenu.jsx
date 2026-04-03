@@ -80,6 +80,7 @@ export default function SessionMenu({
             }
         }
         clearStoredParticipant();
+        clearDualSession(tableToken);
     }
     
     // Redirect to scanner with slight delay to ensure socket emit

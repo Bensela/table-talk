@@ -11,8 +11,8 @@ const api = axios.create({
 export const createSession = ({ table_token, context, mode }) => 
   api.post('/sessions', { table_token, context, mode });
 
-export const joinDualSession = ({ table_token, code, session_id }) =>
-  api.post('/sessions/join-dual', { table_token, code, session_id });
+export const joinDualSession = ({ table_token, code, session_id, reclaim_role }) =>
+  api.post('/sessions/join-dual', { table_token, code, session_id, reclaim_role });
 
 export const resolveSession = ({ restaurant_id, table_token, device_token }) =>
   api.post('/sessions/resolve', { restaurant_id, table_token, device_token });

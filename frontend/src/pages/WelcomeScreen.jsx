@@ -156,7 +156,7 @@ export default function WelcomeScreen() {
           device_token: deviceToken 
       });
       
-      const { action, session_id, participant_id, participant_token, mode, reason } = resolveRes.data;
+      const { action, session_id, participant_id, participant_token, mode, reason, role } = resolveRes.data;
       console.log('[Welcome] Resolution Action:', action);
 
       if (action === 'blocked_active_session') {
@@ -178,11 +178,14 @@ export default function WelcomeScreen() {
           return;
       }
 
-      if (action === 'join_dual') {
+      if (action === 'join_dual' || action === 'reclaim_dual') {
           setStatus('Joining partner...');
-          console.log('[Welcome] Auto-joining dual session:', session_id);
-          // Auto-join waiting session (Phone B joins Phone A)
-          const joinRes = await joinDualSession({ session_id });
+          console.log(`[Welcome] Auto-joining dual session (${action}):`, session_id);
+          // Auto-join waiting session (Phone B joins Phone A) or Reclaim spot
+          const joinRes = await joinDualSession({ 
+              session_id,
+              reclaim_role: action === 'reclaim_dual' ? role : undefined
+          });
           const { 
               participant_id: newPid, 
               participant_token: newToken, 

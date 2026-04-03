@@ -7,7 +7,7 @@ import QuestionCard from '../components/QuestionCard';
 import SessionMenu from '../components/SessionMenu';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
-import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt } from '../utils/sessionStorage';
+import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt, clearDualSession } from '../utils/sessionStorage';
 import { useSocket, useEnsureSessionRoom } from '../context/SocketContext';
 import { SCANNER_ROUTE } from '../constants/routes';
 
@@ -267,6 +267,9 @@ export default function SessionGame() {
          setError('Session expired or not found. Please start a new one.');
          // Clear local storage so they don't try to auto-reconnect to a dead session
          clearStoredParticipant();
+         if (tableToken) {
+             clearDualSession(tableToken);
+         }
       }
     };
 

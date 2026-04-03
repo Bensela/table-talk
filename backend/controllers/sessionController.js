@@ -180,7 +180,7 @@ const createSession = async (req, res) => {
 };
 
 const joinDualPhoneSession = async (req, res) => {
-  const { table_token, restaurant_id, session_id } = req.body;
+  const { table_token, restaurant_id, session_id, reclaim_role } = req.body;
 
   try {
     let validSession = null;
@@ -190,9 +190,9 @@ const joinDualPhoneSession = async (req, res) => {
       const result = await db.query(`
         SELECT * FROM sessions 
         WHERE session_id = $1 
-          AND dual_status = 'waiting'
+          AND (dual_status = 'waiting' OR (dual_status = 'paired' AND $2::text IS NOT NULL))
           AND expires_at > NOW()
-      `, [session_id]);
+      `, [session_id, reclaim_role || null]);
       
       if (result.rows.length > 0) validSession = result.rows[0];
     } else if (table_token) {
@@ -214,20 +214,30 @@ const joinDualPhoneSession = async (req, res) => {
     }
 
     // 3. Update Session Status
-    // Ensure we are the first to claim Role B
-    const updateResult = await db.query(`
-      UPDATE sessions 
-      SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
-      WHERE session_id = $1 AND dual_status = 'waiting'
-      RETURNING *
-    `, [validSession.session_id]);
+    if (!reclaim_role) {
+        // Ensure we are the first to claim Role B
+        const updateResult = await db.query(`
+          UPDATE sessions 
+          SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
+          WHERE session_id = $1 AND dual_status = 'waiting'
+          RETURNING *
+        `, [validSession.session_id]);
 
-    if (updateResult.rowCount === 0) {
-      // Race condition: Someone else grabbed it just now
-      return res.status(409).json({ error: 'SESSION_FULL' });
+        if (updateResult.rowCount === 0) {
+          // Race condition: Someone else grabbed it just now
+          return res.status(409).json({ error: 'SESSION_FULL' });
+        }
+    } else {
+        // We are reclaiming a disconnected role
+        // Delete the old disconnected participant
+        await db.query(`
+          DELETE FROM session_participants
+          WHERE session_id = $1 AND role = $2 AND disconnected_at IS NOT NULL
+        `, [validSession.session_id, reclaim_role]);
     }
 
-    // 4. Create Participant (Role B)
+    // 4. Create Participant (Role B or Reclaimed Role)
+    const assignedRole = reclaim_role || 'B';
     const participantId = crypto.randomUUID();
     const participantToken = crypto.randomBytes(32).toString('hex');
     const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
@@ -236,7 +246,7 @@ const joinDualPhoneSession = async (req, res) => {
       await db.query(
         `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash)
          VALUES ($1, $2, $3, $4)`,
-        [participantId, validSession.session_id, 'B', participantTokenHash]
+        [participantId, validSession.session_id, assignedRole, participantTokenHash]
       );
     } catch (err) {
       if (err.code === '23505') { // Unique constraint violation (session_id, role)
@@ -935,49 +945,13 @@ const resolveSession = async (req, res) => {
         `, [dualSession.session_id]);
         
         if (disconnectedRole.rows.length > 0) {
-            // A role is "open" (disconnected).
-            // We can allow this anonymous user to CLAIM it.
-            // This enables "Resume after clearing cache" behavior if the server knows the other person is gone.
-            // We should assign them the disconnected role.
-            // But wait, what if it's Phone C trying to hijack Phone B's spot while B is just restarting phone?
-            // This is a trade-off. MVP rule: "Smart Reconnection".
-            // Let's allow it for seamlessness.
-            
             const roleToReclaim = disconnectedRole.rows[0].role;
             console.log(`[API] Reclaiming disconnected role ${roleToReclaim} for session ${dualSession.session_id}`);
             
-            // We need to return 'join_dual' but with logic to REPLACE the old participant?
-            // Or just return join_dual and let the join endpoint handle the swap?
-            // joinDualPhoneSession endpoint logic needs to support "Reclaim".
-            // Currently it only supports 'waiting'.
-            // Let's update client to handle 'reclaim_dual'?
-            // Or easier: update dual_status to 'waiting' temporarily? No, risky.
-            
-            // Let's return 'join_dual' and ensure joinDualPhoneSession handles 'paired' status if we pass a flag?
-            // Actually, joinDualPhoneSession checks `dual_status = 'waiting'`.
-            // We need to support joining a 'paired' session if we are reclaiming.
-            
-            // Let's stick to the prompt requirement: "If group already has two participants... do not join".
-            // If "Phone B quitting" means they cleared storage, they are a NEW DEVICE.
-            // If the group is "paired", and we don't recognize them, we MUST start new session (Phone C rule).
-            // The only exception is if Phone B *didn't* clear storage (handled in step 1).
-            // OR if "quitting" means explicit "Leave Session" which sets disconnected_at?
-            
-            // Re-reading: "Phone B quitting and rescanning... rejoins".
-            // If "quitting" = closing tab -> Storage persists -> Step 1 handles it.
-            // If "quitting" = Start Fresh -> Storage cleared -> New Device -> Start New Session.
-            // This seems correct for security.
-            // "Works even if context switched during absence" -> This implies Step 1 (Resume) logic.
-            // If context switched, session_id might be same (Option A) or different (Option B).
-            // Step 1 logic I wrote handles `dual_group_id` lookup to find the *latest* session.
-            
-            // So, for this block (Step 2), we assume it's Phone C or a hard-reset Phone B.
-            // Hard-reset Phone B *should* probably start fresh or be blocked.
-            // I will implement "Start New" here to protect the session from Phone C.
-            
             return res.json({
-              action: 'start_new',
-              reason: 'dual_session_full'
+              action: 'reclaim_dual',
+              session_id: dualSession.session_id,
+              role: roleToReclaim
             });
         }
         

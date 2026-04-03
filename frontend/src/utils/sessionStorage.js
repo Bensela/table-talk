@@ -23,6 +23,7 @@ export function storeDualSession(tableToken, sessionId, participantId, participa
     timestamp: new Date().toISOString()
   };
   // Use localStorage to survive browser restart/new tab for resumption
+  // Note: Function name is historical, but it works for Single Mode too!
   localStorage.setItem(`last_dual_data_${tableToken}`, JSON.stringify(data));
 }
 

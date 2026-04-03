@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import { createSession, getSession, updateSessionMode, joinDualSession } from '../api';
 import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
-import { storeParticipant, getStoredParticipant } from '../utils/sessionStorage';
+import { storeParticipant, getStoredParticipant, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 
 export default function ModeSelection() {
@@ -57,6 +57,7 @@ export default function ModeSelection() {
         mode: 'single-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
       
       // Release setup lock and notify others so they can act automatically
       if (socket && tableToken) {
@@ -89,6 +90,7 @@ export default function ModeSelection() {
         mode: 'dual-phone'
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
       
       // Release setup lock and notify others to auto-join
       if (socket && tableToken) {
