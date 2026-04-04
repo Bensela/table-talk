@@ -1137,12 +1137,15 @@ const upgradeToDual = async (req, res) => {
     }
 
     // Create dual group
-    const dualGroupResult = await db.query(`
-      INSERT INTO dual_groups (restaurant_id, table_token, active_session_id)
-      VALUES ($1, $2, $3) RETURNING dual_group_id
-    `, [session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+    // Ensure we import crypto if not already done in the top scope
+    const crypto = require('crypto');
+    const dual_group_id = crypto.randomUUID();
     
-    const dual_group_id = dualGroupResult.rows[0].dual_group_id;
+    const dualGroupResult = await db.query(`
+      INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id)
+      VALUES ($1, $2, $3, $4) RETURNING dual_group_id
+    `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+    
 
     // Update session
     await db.query(`

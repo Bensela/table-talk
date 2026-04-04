@@ -89,6 +89,9 @@ cleanupSessions();
 
 const PORT = process.env.PORT || 5000;
 
+// Export io before setting up routes so controllers can use it
+module.exports = { app, io, server };
+
 // Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -764,10 +767,9 @@ io.on('connection', (socket) => {
   });
 });
 
+// IMPORTANT: Make sure this is at the END of the file
 if (require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
-
-module.exports = { app, server, io };
