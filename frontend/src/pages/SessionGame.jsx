@@ -133,7 +133,8 @@ export default function SessionGame() {
       try {
         // 1. Get Session Data
         const sessionRes = await api.get(`/sessions/${sessionId}`);
-        if (sessionRes.data.expires_at && new Date(sessionRes.data.expires_at) < new Date()) {
+        // Remove flaky client-side date checks, trust the backend.
+        if (sessionRes.data.dual_status === 'ended') {
           setError('Session expired. Please start a new one.');
           setLoading(false);
           return;
