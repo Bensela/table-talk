@@ -20,3 +20,9 @@ Instead change the require of index.js in C:\Users\Public\Documents\Table-Talk\b
     at TracingChannel.traceSync (node:diagnostics_channel:315:14)
     at upgradeToDual (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:1144:28)
 
+2026-04-04T11:33:04.617Z - Error upgrading session: une valeur NULL viole la contrainte NOT NULL de la colonne « expires_at » dans la relation « dual_groups »
+error: une valeur NULL viole la contrainte NOT NULL de la colonne « expires_at » dans la relation « dual_groups »
+    at C:\Users\Public\Documents\Table-Talk\backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async upgradeToDual (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:1167:9)
+

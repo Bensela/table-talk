@@ -1164,10 +1164,13 @@ const upgradeToDual = async (req, res) => {
     // references sessions(session_id), which is fine, BUT we are getting a 500.
     // Let's wrap in a try-catch to see the exact DB error.
     try {
+        const nextMidnight = new Date();
+        nextMidnight.setUTCHours(24, 0, 0, 0);
+
         await db.query(`
-          INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id)
-          VALUES ($1, $2, $3, $4)
-        `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+          INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id, expires_at)
+          VALUES ($1, $2, $3, $4, $5)
+        `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id, nextMidnight]);
     } catch (dbErr) {
         console.error("DB Error inserting dual_group:", dbErr);
         throw dbErr; // Rethrow to be caught by outer block
