@@ -7,6 +7,7 @@ async function clearSessions() {
     // Delete from dependent tables first (due to FK constraints)
     await db.query('DELETE FROM analytics_events');
     await db.query('DELETE FROM session_participants');
+    await db.query('DELETE FROM dual_groups');
     await db.query('DELETE FROM deck_sessions');
     await db.query('DELETE FROM sessions');
 
