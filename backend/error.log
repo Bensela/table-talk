@@ -6,3 +6,17 @@ error: une instruction insert ou update sur la table « analytics_events » viol
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     at async createSession (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:99:7)
 
+2026-04-04T11:29:49.867Z - Error upgrading session: require() of ES Module C:\Users\Public\Documents\Table-Talk\node_modules\uuid\dist-node\index.js from C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js not supported.
+Instead change the require of index.js in C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js to a dynamic import() which is available in all CommonJS modules.
+Error [ERR_REQUIRE_ESM]: require() of ES Module C:\Users\Public\Documents\Table-Talk\node_modules\uuid\dist-node\index.js from C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js not supported.
+Instead change the require of index.js in C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js to a dynamic import() which is available in all CommonJS modules.
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at upgradeToDual (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:1144:28)
+
+2026-04-04T11:31:08.567Z - Error upgrading session: require() of ES Module C:\Users\Public\Documents\Table-Talk\node_modules\uuid\dist-node\index.js from C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js not supported.
+Instead change the require of index.js in C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js to a dynamic import() which is available in all CommonJS modules.
+Error [ERR_REQUIRE_ESM]: require() of ES Module C:\Users\Public\Documents\Table-Talk\node_modules\uuid\dist-node\index.js from C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js not supported.
+Instead change the require of index.js in C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js to a dynamic import() which is available in all CommonJS modules.
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at upgradeToDual (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:1144:28)
+

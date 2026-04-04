@@ -1141,10 +1141,22 @@ const upgradeToDual = async (req, res) => {
     // Create dual group
     // Ensure we import crypto if not already done in the top scope
     const crypto = require('crypto');
-    const { v4: uuidv4 } = require('uuid'); // Fallback to uuid package
     
-    // Some node versions/environments might have issues with crypto.randomUUID
-    const dual_group_id = (typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : uuidv4();
+    // We use crypto.randomUUID() for generation. In environments where it's unavailable, 
+    // we use a simple hex generator fallback, since the `uuid` package is an ES Module and 
+    // causes require() errors in CommonJS backend.
+    let dual_group_id;
+    if (typeof crypto.randomUUID === 'function') {
+        dual_group_id = crypto.randomUUID();
+    } else {
+        dual_group_id = crypto.randomBytes(16).toString('hex');
+        // Add dashes to make it look like a UUID for Postgres UUID type:
+        dual_group_id = dual_group_id.slice(0, 8) + '-' + 
+                        dual_group_id.slice(8, 12) + '-' + 
+                        dual_group_id.slice(12, 16) + '-' + 
+                        dual_group_id.slice(16, 20) + '-' + 
+                        dual_group_id.slice(20);
+    }
     
     // We insert without active_session_id foreign key first to avoid circular dependency
     // if active_session_id isn't strictly required or if there's a race condition
