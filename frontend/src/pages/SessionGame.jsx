@@ -232,17 +232,6 @@ export default function SessionGame() {
         fetchCurrentQuestion();
     };
     
-    // Remove duplicate declaration
-    // const onDualGroupTerminated = () => {
-    //    console.log('[SessionGame] Dual session terminated by partner');
-    //    // Clear local storage so they don't try to auto-reconnect to a dead session
-    //    clearStoredParticipant();
-    //    if (tableToken) {
-    //        clearDualSession(tableToken);
-    //    }
-    //    window.location.href = '/'; // Redirect to scanner
-    // };
-
     // Listen for session updates (Context/Mode changes)
     const onSessionUpdated = (data) => {
         console.log('[SessionGame] Session updated:', data);
@@ -382,30 +371,34 @@ export default function SessionGame() {
       }
     };
     
-    // Listen for partner context switch intent
-    const onPartnerContextIntent = ({ context, initiator_role }) => {
-        // If I have already requested this context (handshake match), ignore
-        if (pendingSwitchContext === context) {
-            console.log("Ignoring partner context intent (handshake match):", context);
+    // Listen for context switch intents
+    const onPartnerContextIntent = ({ context: newContext }) => {
+        // Partner requested to switch context. Show prompt.
+        console.log("[SessionGame] Partner requested context switch to:", newContext);
+        
+        // If we also have a pending intent for the SAME context, we can just apply it locally
+        // or let the backend's 'session_updated' event handle it.
+        // We will just show the modal for now if they don't match.
+        if (pendingSwitchContext === newContext) {
+            console.log("[SessionGame] Mutual intent matched locally.");
             return;
         }
 
-        // Show modal informing user that partner wants to switch
         setModalState({
             isOpen: true,
-            title: "Context Switch Request",
-            message: `Your partner wants to switch to "${context}".`,
-            actionLabel: "Accept",
-            closeLabel: "Decline",
+            title: 'Change Deck?',
+            message: `Your partner wants to switch the conversation deck to "${newContext}". Do you agree?`,
+            actionLabel: 'Yes, switch',
+            closeLabel: 'No, keep current',
             action: async () => {
                 // User Confirmed: Send intent to match partner
                 setModalState(prev => ({ ...prev, isOpen: false }));
                 // Set pending state so we don't get a loop if re-emitted
-                setPendingSwitchContext(context);
+                setPendingSwitchContext(newContext);
                 
                 if (socketRef.current?.connected) {
-                    console.log("[SessionGame] Confirming partner context switch:", context);
-                    socketRef.current.emit('context_switch_intent', { context });
+                    console.log("[SessionGame] Confirming partner context switch:", newContext);
+                    socketRef.current.emit('context_switch_intent', { context: newContext });
                 }
             },
             // If user closes/declines, we must notify server to cancel the pending intent
@@ -415,13 +408,12 @@ export default function SessionGame() {
                     socketRef.current.emit('cancel_context_switch');
                 }
                 setModalState(prev => ({ ...prev, isOpen: false }));
-            },
-            icon: '🔄'
+            }
         });
     };
     
     // Listen for partner cancellation
-    const onContextSwitchCancelled = ({ initiator }) => {
+    const onContextSwitchCancelled = () => {
         console.log("[SessionGame] Partner cancelled context switch");
         setPendingSwitchContext(null); // Clear my pending state
         
