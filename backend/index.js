@@ -760,6 +760,35 @@ io.on('connection', (socket) => {
            users_connected: size 
         });
 
+        // Check if session should terminate (no active phones + fresh intent exists)
+        const sessionCheck = await db.query(`
+          SELECT s.session_id, s.fresh_intent_a, s.fresh_intent_b, s.dual_group_id,
+                 (SELECT COUNT(*) FROM session_participants p WHERE p.session_id = s.session_id AND p.disconnected_at IS NULL) as active_count
+          FROM sessions s
+          WHERE s.session_id = $1 AND s.dual_status != 'ended'
+        `, [socket.sessionId]);
+
+        if (sessionCheck.rows.length > 0) {
+            const s = sessionCheck.rows[0];
+            if (s.active_count == 0 && (s.fresh_intent_a || s.fresh_intent_b)) {
+                console.log(`[Socket] No active phones and fresh_intent exists. Terminating session ${s.session_id}`);
+                await db.query(`
+                  UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1
+                `, [s.session_id]);
+                if (s.dual_group_id) {
+                    await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [s.dual_group_id]);
+                    await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [s.dual_group_id]);
+                }
+                
+                // Log Analytics
+                await db.query(
+                  `INSERT INTO analytics_events (session_id, event_type, event_data)
+                   VALUES ($1, $2, $3)`,
+                  [s.session_id, 'dual_session_terminated_inactive', { source: 'socket_disconnect' }]
+                );
+            }
+        }
+
       } catch (err) {
         console.error('Error handling disconnect:', err);
       }

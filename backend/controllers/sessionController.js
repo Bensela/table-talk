@@ -463,6 +463,8 @@ const endSession = async (req, res) => {
     // However, to be extra safe against constraint errors if CASCADE isn't there:
     await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
     await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
+    // Delete dual_groups referencing this session before deleting the session itself
+    await db.query('DELETE FROM dual_groups WHERE active_session_id = $1', [session_id]);
     
     // 4. Delete the session itself
     const deleteResult = await db.query('DELETE FROM sessions WHERE session_id = $1 RETURNING session_id', [session_id]);
@@ -587,10 +589,13 @@ const resolveSession = async (req, res) => {
     if (device_token) {
       const participantTokenHash = crypto.createHash('sha256').update(device_token).digest('hex');
 
-      // First, let's proactively terminate any sessions for this user that have a stale fresh_intent (> 5 mins)
+      // First, let's proactively clear any stale fresh_intent (> 5 mins)
+      // so it doesn't linger forever. We don't terminate the session anymore to protect the active partner.
       const expiredResult = await db.query(`
         UPDATE sessions s
-        SET dual_status = 'ended', expires_at = NOW()
+        SET fresh_intent_a = FALSE,
+            fresh_intent_b = FALSE,
+            fresh_intent_at = NULL
         FROM session_participants sp
         WHERE s.session_id = sp.session_id
           AND sp.participant_token_hash = $1
@@ -599,17 +604,6 @@ const resolveSession = async (req, res) => {
           AND s.dual_status != 'ended'
         RETURNING s.session_id
       `, [participantTokenHash]);
-      
-      if (expiredResult.rows.length > 0) {
-          // Notify any remaining connected clients (like Phone B) that the session is dead
-          const io = require('../index').io;
-          if (io) {
-              expiredResult.rows.forEach(row => {
-                  io.to(row.session_id).emit('error', { message: 'Session expired' });
-                  io.to(row.session_id).disconnectSockets(true);
-              });
-          }
-      }
 
       // Now check if they have ANY active session anywhere
       const anyActiveSession = await db.query(`
@@ -1065,7 +1059,9 @@ const freshIntent = async (req, res) => {
     }
 
     // 3. Check Termination
-    if (fresh_intent_a && fresh_intent_b) {
+    const shouldTerminate = fresh_intent_a && fresh_intent_b;
+
+    if (shouldTerminate) {
         console.log(`[API] Both confirmed Fresh Intent. Terminating session ${session_id}`);
         
         await db.query(`
@@ -1092,15 +1088,10 @@ const freshIntent = async (req, res) => {
         
         if (io) {
             io.to(session_id).emit('dual_group_terminated');
-            // Clean up memory in index.js requires access to index.js internal state?
-            // We can't easily access the Maps in index.js from here unless exported.
-            // But emitting 'dual_group_terminated' allows clients to disconnect, which cleans up socket state.
-            // For server memory, it will eventually be cleaned or overwritten.
-            // Ideally we expose a cleanup function, but for MVP this is acceptable.
         }
     }
 
-    res.json({ success: true, terminated: fresh_intent_a && fresh_intent_b });
+    res.json({ success: true, terminated: shouldTerminate });
 
   } catch (err) {
     console.error('Error handling fresh intent:', err);

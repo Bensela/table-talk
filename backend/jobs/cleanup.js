@@ -31,31 +31,21 @@ async function cleanupSessions() {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
     }
 
-    // Rule 2: 5-minute timeout for unconfirmed Start Fresh intent
+    // Rule 2: Remove old unconfirmed fresh intents instead of terminating the session
+    // If a fresh intent has been pending for over 5 minutes and the session is still active,
+    // we just clear the intent so it doesn't linger forever.
     const expiredFreshIntents = await db.query(`
       UPDATE sessions
-      SET dual_status = 'ended',
-          expires_at = NOW()
+      SET fresh_intent_a = FALSE,
+          fresh_intent_b = FALSE,
+          fresh_intent_at = NULL
       WHERE (fresh_intent_a = TRUE OR fresh_intent_b = TRUE)
         AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
         AND dual_status != 'ended'
       RETURNING session_id
     `);
     if (expiredFreshIntents.rowCount > 0) {
-        console.log(`[CLEANUP] Terminated ${expiredFreshIntents.rowCount} sessions due to unconfirmed Start Fresh intent`);
-        
-        // Notify any remaining connected clients that the session is dead
-        try {
-            const io = require('../index').io;
-            if (io) {
-                expiredFreshIntents.rows.forEach(row => {
-                    io.to(row.session_id).emit('error', { message: 'Session expired' });
-                    io.to(row.session_id).disconnectSockets(true);
-                });
-            }
-        } catch (e) {
-            console.error('[CLEANUP] Failed to emit socket termination event:', e);
-        }
+        console.log(`[CLEANUP] Cleared unconfirmed Start Fresh intents for ${expiredFreshIntents.rowCount} active sessions`);
     }
 
     // Rule 3: Extend active sessions at midnight
@@ -72,6 +62,12 @@ async function cleanupSessions() {
     }
     
     // Rule 4: Hard delete sessions expired (midnight cleanup)
+    // First delete dependent dual_groups to avoid foreign key violations
+    await db.query(`
+      DELETE FROM dual_groups
+      WHERE active_session_id IN (SELECT session_id FROM sessions WHERE expires_at < NOW())
+    `);
+    
     const deletedSessions = await db.query(`
       DELETE FROM sessions
       WHERE expires_at < NOW()
