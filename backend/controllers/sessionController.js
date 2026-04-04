@@ -1126,7 +1126,7 @@ const upgradeToDual = async (req, res) => {
 
     // Verify session is single-phone
     const session = await db.query(`
-      SELECT mode, table_token, restaurant_id FROM sessions WHERE session_id = $1
+      SELECT mode, table_token, restaurant_id, dual_group_id, dual_status FROM sessions WHERE session_id = $1
     `, [session_id]);
 
     if (session.rows.length === 0) {
@@ -1134,65 +1134,80 @@ const upgradeToDual = async (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    if (session.rows[0].mode === 'dual-phone') {
+    const sessionData = session.rows[0];
+
+    if (sessionData.mode === 'dual-phone') {
       return res.json({ success: true, message: 'Already in dual mode' });
     }
 
-    // Create dual group
-    // Ensure we import crypto if not already done in the top scope
-    const crypto = require('crypto');
-    
-    // We use crypto.randomUUID() for generation. In environments where it's unavailable, 
-    // we use a simple hex generator fallback, since the `uuid` package is an ES Module and 
-    // causes require() errors in CommonJS backend.
-    let dual_group_id;
-    if (typeof crypto.randomUUID === 'function') {
-        dual_group_id = crypto.randomUUID();
-    } else {
-        dual_group_id = crypto.randomBytes(16).toString('hex');
-        // Add dashes to make it look like a UUID for Postgres UUID type:
-        dual_group_id = dual_group_id.slice(0, 8) + '-' + 
-                        dual_group_id.slice(8, 12) + '-' + 
-                        dual_group_id.slice(12, 16) + '-' + 
-                        dual_group_id.slice(16, 20) + '-' + 
-                        dual_group_id.slice(20);
-    }
-    
-    // We insert without active_session_id foreign key first to avoid circular dependency
-    // if active_session_id isn't strictly required or if there's a race condition
-    // Actually, sessions table already exists. The issue is likely that active_session_id 
-    // references sessions(session_id), which is fine, BUT we are getting a 500.
-    // Let's wrap in a try-catch to see the exact DB error.
-    try {
-        const nextMidnight = new Date();
-        nextMidnight.setUTCHours(24, 0, 0, 0);
+    let newDualStatus = sessionData.dual_status;
 
+    if (!sessionData.dual_group_id) {
+        // Create dual group
+        // Ensure we import crypto if not already done in the top scope
+        const crypto = require('crypto');
+        
+        // We use crypto.randomUUID() for generation. In environments where it's unavailable, 
+        // we use a simple hex generator fallback, since the `uuid` package is an ES Module and 
+        // causes require() errors in CommonJS backend.
+        let dual_group_id;
+        if (typeof crypto.randomUUID === 'function') {
+            dual_group_id = crypto.randomUUID();
+        } else {
+            dual_group_id = crypto.randomBytes(16).toString('hex');
+            // Add dashes to make it look like a UUID for Postgres UUID type:
+            dual_group_id = dual_group_id.slice(0, 8) + '-' + 
+                            dual_group_id.slice(8, 12) + '-' + 
+                            dual_group_id.slice(12, 16) + '-' + 
+                            dual_group_id.slice(16, 20) + '-' + 
+                            dual_group_id.slice(20);
+        }
+        
+        // We insert without active_session_id foreign key first to avoid circular dependency
+        // if active_session_id isn't strictly required or if there's a race condition
+        // Actually, sessions table already exists. The issue is likely that active_session_id 
+        // references sessions(session_id), which is fine, BUT we are getting a 500.
+        // Let's wrap in a try-catch to see the exact DB error.
+        try {
+            const nextMidnight = new Date();
+            nextMidnight.setUTCHours(24, 0, 0, 0);
+
+            await db.query(`
+              INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id, expires_at)
+              VALUES ($1, $2, $3, $4, $5)
+            `, [dual_group_id, sessionData.restaurant_id || 'default', sessionData.table_token, session_id, nextMidnight]);
+        } catch (dbErr) {
+            console.error("DB Error inserting dual_group:", dbErr);
+            throw dbErr; // Rethrow to be caught by outer block
+        }
+        
+        newDualStatus = 'waiting';
+
+        // Update session
         await db.query(`
-          INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id, expires_at)
-          VALUES ($1, $2, $3, $4, $5)
-        `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id, nextMidnight]);
-    } catch (dbErr) {
-        console.error("DB Error inserting dual_group:", dbErr);
-        throw dbErr; // Rethrow to be caught by outer block
+          UPDATE sessions 
+          SET mode = 'dual-phone', dual_status = $1, dual_group_id = $2
+          WHERE session_id = $3
+        `, [newDualStatus, dual_group_id, session_id]);
+    } else {
+        // It already has a dual_group_id (was previously upgraded to dual).
+        // Just flip the mode back. Keep the existing dual_status (e.g., 'paired' or 'waiting').
+        await db.query(`
+          UPDATE sessions 
+          SET mode = 'dual-phone'
+          WHERE session_id = $1
+        `, [session_id]);
     }
-    
-
-    // Update session
-    await db.query(`
-      UPDATE sessions 
-      SET mode = 'dual-phone', dual_status = 'waiting', dual_group_id = $1
-      WHERE session_id = $2
-    `, [dual_group_id, session_id]);
 
     // Notify via socket
     const io = require('../index').io;
     if (io) {
         // We emit 'session_updated' because SessionGame.jsx already listens to this
         // and calls fetchCurrentQuestion() which will pull the new mode and dual_status.
-        io.to(session_id).emit('session_updated', { mode: 'dual-phone', dual_status: 'waiting' });
+        io.to(session_id).emit('session_updated', { mode: 'dual-phone', dual_status: newDualStatus });
     }
 
-    res.json({ success: true, mode: 'dual-phone', dual_status: 'waiting' });
+    res.json({ success: true, mode: 'dual-phone', dual_status: newDualStatus });
   } catch (err) {
     console.error('Error upgrading session:', err);
     // Write error to file for debugging
