@@ -45,17 +45,11 @@ export default function SessionMenu({
            // We should await.
            try {
                const res = await api.post(`/sessions/${current.sessionId}/fresh_intent`, { participant_id: current.participantId });
-               if (res.data && res.data.terminated) {
-                   console.log("[Menu] Dual session fully terminated by fresh intent");
-                   clearStoredParticipant();
-                   clearDualSession(tableToken);
-               } else {
-                   // Only store dual session backup if NOT terminated
-                   console.log("[Menu] Storing dual session backup:", current);
-                   if (current.participantToken) {
-                       storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
-                   }
-               }
+               // ALWAYS clear local storage when explicitly starting fresh, 
+               // so this user is freed immediately and can scan new tables.
+               console.log("[Menu] Sent fresh intent. Clearing local storage to allow new scans.");
+               clearStoredParticipant();
+               clearDualSession(tableToken);
            } catch (e) {
                console.error("Failed to send fresh intent API", e);
            }
