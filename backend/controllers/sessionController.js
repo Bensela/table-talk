@@ -549,8 +549,10 @@ const resumeSessionByQr = async (req, res) => {
         AND s.restaurant_id = $2
         AND sp.participant_token_hash = $3
         AND s.expires_at > NOW()
-      ORDER BY s.created_at DESC
-      LIMIT 1
+      ORDER BY 
+          CASE WHEN s.mode = 'dual-phone' THEN 1 ELSE 2 END,
+          s.created_at DESC
+        LIMIT 1
     `, [table_token, restaurant_id || 'default', participantTokenHash]);
 
     if (result.rows.length === 0) {
@@ -611,7 +613,9 @@ const resolveSession = async (req, res) => {
         WHERE sp.participant_token_hash = $1
           AND s.expires_at > NOW()
           AND (s.dual_status IS NULL OR s.dual_status != 'ended')
-        ORDER BY s.created_at DESC
+        ORDER BY 
+          CASE WHEN s.mode = 'dual-phone' THEN 1 ELSE 2 END,
+          s.created_at DESC
         LIMIT 1
       `, [participantTokenHash]);
 

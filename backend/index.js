@@ -177,48 +177,37 @@ io.on('connection', (socket) => {
 
     try {
       // Verify participant belongs to session
-      const participant = await db.query(`
-        SELECT p.participant_id, p.role, s.mode, s.dual_status, s.session_group_id
+      const participantResult = await db.query(`
+        SELECT p.participant_id, p.role, p.disconnected_at, s.mode, s.dual_status, s.session_group_id, s.expires_at
         FROM session_participants p
         JOIN sessions s ON p.session_id = s.session_id
         WHERE p.participant_id = $1
           AND s.session_id = $2
-          AND s.expires_at > NOW()
-          AND p.disconnected_at IS NULL
       `, [participant_id, session_id]);
 
-      // If no active session found, try finding one where they were disconnected
-      if (participant.rows.length === 0) {
-         const disconnectedParticipant = await db.query(`
-           SELECT p.participant_id, p.role, s.mode, s.dual_status, s.session_group_id
-           FROM session_participants p
-           JOIN sessions s ON p.session_id = s.session_id
-           WHERE p.participant_id = $1
-             AND s.session_id = $2
-             AND p.disconnected_at IS NOT NULL
-         `, [participant_id, session_id]);
+      if (participantResult.rows.length === 0) {
+        console.warn(`Invalid join attempt: Session ${session_id}, Participant ${participant_id}`);
+        socket.emit('error', { message: 'Invalid participant or session' });
+        return;
+      }
 
-         if (disconnectedParticipant.rows.length > 0) {
-            // Check if session has been explicitly terminated
-            if (disconnectedParticipant.rows[0].dual_status === 'ended') {
-                socket.emit('error', { message: 'Session expired' });
-                return;
-            }
-            // Reconnection Allowed!
-            // Clear disconnected_at
-            await db.query(`
-              UPDATE session_participants
-              SET disconnected_at = NULL, last_seen_at = NOW()
-              WHERE participant_id = $1
-            `, [participant_id]);
-            
-            // Proceed with this participant
-            participant.rows = disconnectedParticipant.rows;
-         } else {
-            console.warn(`Invalid join attempt: Session ${session_id}, Participant ${participant_id}`);
-            socket.emit('error', { message: 'Invalid participant or session' });
-            return;
-         }
+      const participantRow = participantResult.rows[0];
+
+      // Check if session has explicitly ended or expired
+      const now = new Date();
+      if (participantRow.dual_status === 'ended' || new Date(participantRow.expires_at) <= now) {
+          socket.emit('error', { message: 'Session expired' });
+          return;
+      }
+
+      // Reconnection / Join Allowed!
+      if (participantRow.disconnected_at !== null) {
+          // Clear disconnected_at
+          await db.query(`
+            UPDATE session_participants
+            SET disconnected_at = NULL, last_seen_at = NOW()
+            WHERE participant_id = $1
+          `, [participant_id]);
       } else {
           // Valid active participant, just update last_seen
           await db.query(`
@@ -227,6 +216,9 @@ io.on('connection', (socket) => {
             WHERE participant_id = $1
           `, [participant_id]);
       }
+
+      // Proceed with this participant
+      const participant = { rows: [participantRow] };
 
       // Attach data to socket
       socket.join(session_id);
@@ -774,8 +766,9 @@ io.on('connection', (socket) => {
 
         if (sessionCheck.rows.length > 0) {
             const s = sessionCheck.rows[0];
-            if (s.active_count == 0 && (s.fresh_intent_a || s.fresh_intent_b)) {
-                console.log(`[Socket] No active phones and fresh_intent exists. Terminating session ${s.session_id}`);
+            // Only terminate if both users have explicitly clicked Start Fresh and no one is active.
+            if (s.active_count == 0 && s.fresh_intent_a && s.fresh_intent_b) {
+                console.log(`[Socket] No active phones and mutual fresh_intent exists. Terminating session ${s.session_id}`);
                 await db.query(`
                   UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1
                 `, [s.session_id]);
