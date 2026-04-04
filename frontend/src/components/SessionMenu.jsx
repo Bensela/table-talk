@@ -99,8 +99,8 @@ export default function SessionMenu({
     const current = getStoredParticipant();
     if (current.sessionId && current.participantId) {
         try {
-            await api.post(`/sessions/${current.sessionId}/upgrade`, { participant_id: current.participantId });
-            console.log("[Menu] Upgraded to Dual Mode");
+            const res = await api.post(`/sessions/${current.sessionId}/upgrade`, { participant_id: current.participantId });
+            console.log("[Menu] Upgraded to Dual Mode response:", res.data);
             
             // Ensure dual session backup is saved
             storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
@@ -111,6 +111,9 @@ export default function SessionMenu({
             window.location.reload();
         } catch (e) {
             console.error("Failed to upgrade session to Dual Mode", e);
+            if (e.response) {
+               console.error("Error data:", e.response.data);
+            }
         }
     }
     setLoading(false);

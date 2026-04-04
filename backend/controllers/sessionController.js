@@ -1120,6 +1120,7 @@ const upgradeToDual = async (req, res) => {
     `, [session_id, participant_id]);
 
     if (participant.rows.length === 0) {
+      console.warn(`[Upgrade] Participant ${participant_id} not found in session ${session_id}`);
       return res.status(404).json({ error: 'Participant not found' });
     }
 
@@ -1129,6 +1130,7 @@ const upgradeToDual = async (req, res) => {
     `, [session_id]);
 
     if (session.rows.length === 0) {
+      console.warn(`[Upgrade] Session ${session_id} not found`);
       return res.status(404).json({ error: 'Session not found' });
     }
 
@@ -1139,12 +1141,25 @@ const upgradeToDual = async (req, res) => {
     // Create dual group
     // Ensure we import crypto if not already done in the top scope
     const crypto = require('crypto');
-    const dual_group_id = crypto.randomUUID();
+    const { v4: uuidv4 } = require('uuid'); // Fallback to uuid package
     
-    const dualGroupResult = await db.query(`
-      INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id)
-      VALUES ($1, $2, $3, $4) RETURNING dual_group_id
-    `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+    // Some node versions/environments might have issues with crypto.randomUUID
+    const dual_group_id = (typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : uuidv4();
+    
+    // We insert without active_session_id foreign key first to avoid circular dependency
+    // if active_session_id isn't strictly required or if there's a race condition
+    // Actually, sessions table already exists. The issue is likely that active_session_id 
+    // references sessions(session_id), which is fine, BUT we are getting a 500.
+    // Let's wrap in a try-catch to see the exact DB error.
+    try {
+        await db.query(`
+          INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id)
+          VALUES ($1, $2, $3, $4)
+        `, [dual_group_id, session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+    } catch (dbErr) {
+        console.error("DB Error inserting dual_group:", dbErr);
+        throw dbErr; // Rethrow to be caught by outer block
+    }
     
 
     // Update session
@@ -1165,6 +1180,9 @@ const upgradeToDual = async (req, res) => {
     res.json({ success: true, mode: 'dual-phone', dual_status: 'waiting' });
   } catch (err) {
     console.error('Error upgrading session:', err);
+    // Write error to file for debugging
+    const fs = require('fs');
+    fs.appendFileSync('error.log', `${new Date().toISOString()} - Error upgrading session: ${err.message}\n${err.stack}\n\n`);
     res.status(500).json({ error: 'Server error' });
   }
 };
