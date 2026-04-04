@@ -44,7 +44,18 @@ export default function SessionMenu({
            // We use fire-and-forget style if we want speed, but for "instantly" ensuring DB update:
            // We should await.
            try {
-               await api.post(`/sessions/${current.sessionId}/fresh_intent`, { participant_id: current.participantId });
+               const res = await api.post(`/sessions/${current.sessionId}/fresh_intent`, { participant_id: current.participantId });
+               if (res.data && res.data.terminated) {
+                   console.log("[Menu] Dual session fully terminated by fresh intent");
+                   clearStoredParticipant();
+                   clearDualSession(tableToken);
+               } else {
+                   // Only store dual session backup if NOT terminated
+                   console.log("[Menu] Storing dual session backup:", current);
+                   if (current.participantToken) {
+                       storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
+                   }
+               }
            } catch (e) {
                console.error("Failed to send fresh intent API", e);
            }
@@ -54,13 +65,6 @@ export default function SessionMenu({
        if (socketRef?.current?.connected) {
            console.log("[Menu] Sending Fresh Intent via Socket");
            socketRef.current.emit('fresh_intent');
-       }
-
-       console.log("[Menu] Storing dual session backup:", current);
-       if (current.sessionId && current.participantToken) {
-           storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
-       } else {
-           console.warn("[Menu] Missing credentials, cannot store dual backup");
        }
     }
 
