@@ -101,6 +101,13 @@ export default function SessionGame() {
   const [participantId, setParticipantId] = useState(null);
   const [tableToken, setTableToken] = useState(null);
   const [hasClickedNext, setHasClickedNext] = useState(false);
+  const hasClickedNextRef = useRef(hasClickedNext);
+  
+  // Keep ref in sync with state for socket callbacks
+  useEffect(() => {
+      hasClickedNextRef.current = hasClickedNext;
+  }, [hasClickedNext]);
+
   const [partnerIsReady, setPartnerIsReady] = useState(false);
   const [conversationStarted, setConversationStarted] = useState(false);
   const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
@@ -448,7 +455,7 @@ export default function SessionGame() {
 
     const onPartnerWaitingToAdvance = () => {
         // Only show if we haven't clicked next ourselves
-        if (!hasClickedNext) {
+        if (!hasClickedNextRef.current) {
             setFeedbackMessage("Partner is waiting for you to click Next!");
         }
     };
@@ -498,7 +505,8 @@ export default function SessionGame() {
       socket.off('partner_requested_fresh', onPartnerRequestedFresh);
       socket.off('dual_group_terminated', onDualGroupTerminated);
     };
-  }, [sessionId, participantId, hasClickedNext, globalSocket]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, participantId, globalSocket]);
 
   // Handle Visibility Change (Background/Foreground)
   useEffect(() => {
