@@ -1057,10 +1057,28 @@ const freshIntent = async (req, res) => {
     }
 
     // 3. Check Termination
-    const shouldTerminate = fresh_intent_a && fresh_intent_b;
+    let activeCount = 1; // Fallback
+    try {
+        const io = require('../index').io;
+        if (io) {
+            const room = io.sockets.adapter.rooms.get(session_id);
+            activeCount = room ? room.size : 0;
+        }
+    } catch (e) {
+        console.warn("[API] Could not get socket room size, falling back to DB count");
+        const activeCountRes = await db.query(`
+            SELECT COUNT(*) as active_count
+            FROM session_participants
+            WHERE session_id = $1 AND disconnected_at IS NULL
+        `, [session_id]);
+        activeCount = parseInt(activeCountRes.rows[0].active_count, 10);
+    }
+
+    // Terminate if both agreed, or if this user is the only one currently connected to the session
+    const shouldTerminate = (fresh_intent_a && fresh_intent_b) || (activeCount <= 1);
 
     if (shouldTerminate) {
-        console.log(`[API] Both confirmed Fresh Intent. Terminating session ${session_id}`);
+        console.log(`[API] Terminating session ${session_id}. Mutual: ${fresh_intent_a && fresh_intent_b}, Active Count: ${activeCount}`);
         
         await db.query(`
           UPDATE sessions 
