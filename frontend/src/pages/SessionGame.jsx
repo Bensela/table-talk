@@ -232,15 +232,16 @@ export default function SessionGame() {
         fetchCurrentQuestion();
     };
     
-    const onDualGroupTerminated = () => {
-        console.log('[SessionGame] Dual session terminated by partner');
-        // Clear local storage so they don't try to auto-reconnect to a dead session
-        clearStoredParticipant();
-        if (tableToken) {
-            clearDualSession(tableToken);
-        }
-        window.location.href = '/'; // Redirect to scanner
-    };
+    // Remove duplicate declaration
+    // const onDualGroupTerminated = () => {
+    //    console.log('[SessionGame] Dual session terminated by partner');
+    //    // Clear local storage so they don't try to auto-reconnect to a dead session
+    //    clearStoredParticipant();
+    //    if (tableToken) {
+    //        clearDualSession(tableToken);
+    //    }
+    //    window.location.href = '/'; // Redirect to scanner
+    // };
 
     // Listen for session updates (Context/Mode changes)
     const onSessionUpdated = (data) => {
@@ -448,6 +449,9 @@ export default function SessionGame() {
         console.log('[SessionGame] Dual Group Terminated. Redirecting...');
         setLastResetAt();
         clearStoredParticipant();
+        if (tableToken) {
+            clearDualSession(tableToken);
+        }
         window.location.href = SCANNER_ROUTE;
     };
 
