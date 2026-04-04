@@ -133,10 +133,18 @@ export default function SessionMenu({
           // Restore credentials
           storeParticipant(dualData.participantId, dualData.sessionId, dualData.participantToken);
           
+          // Before navigating, we must also tell the backend to flip the mode back to dual
+          // because it might be set to single right now.
+          try {
+             // We can't safely rely on dynamic require in vite/react easily, so use the imported api
+             await api.post(`/sessions/${dualData.sessionId}/upgrade`, { participant_id: dualData.participantId });
+          } catch (e) {
+             console.error("Failed to upgrade back to dual on resume", e);
+          }
+
           // Update context if needed
           if (newContext !== currentContext) {
              try {
-                 const api = require('../api').default; 
                  await api.patch(`/sessions/${dualData.sessionId}`, { context: newContext });
              } catch (e) {
                  console.error("Failed to update context on resume", e);
@@ -179,7 +187,6 @@ export default function SessionMenu({
              const current = getStoredParticipant();
              if (current.sessionId) {
                   console.log("[Menu] Updating existing Dual Session context (Fallback):", newContext);
-                  const api = require('../api').default; 
                   await api.patch(`/sessions/${current.sessionId}`, { context: newContext });
                   window.location.reload();
                   return;
@@ -327,7 +334,13 @@ export default function SessionMenu({
                                key={m.id}
                                onClick={() => {
                                  if (m.id === 'dual-phone' && currentMode === 'single-phone') {
-                                   handleUpgradeToDual();
+                                   // Try to quick switch if dual mode data is present locally (resuming)
+                                   const dualData = getDualSession(tableToken);
+                                   if (dualData && dualData.sessionId) {
+                                      handleQuickSwitch({ mode: m.id });
+                                   } else {
+                                      handleUpgradeToDual();
+                                   }
                                  } else if (m.id === 'single-phone' && currentMode === 'dual-phone') {
                                    // Not fully supported to downgrade without dropping partner, 
                                    // but fallback to quick switch if they really want to.
