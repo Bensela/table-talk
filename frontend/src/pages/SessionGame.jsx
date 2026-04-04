@@ -257,7 +257,6 @@ export default function SessionGame() {
     socket.on('session_migrated', onMigrate);
     socket.on('session_updated', onSessionUpdated);
     socket.on('dual_partner_joined', onDualPartnerJoined);
-    socket.on('dual_group_terminated', onDualGroupTerminated);
     
     // Also run onConnect immediately if already connected
     if (socket.connected) {
