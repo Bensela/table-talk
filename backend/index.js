@@ -195,11 +195,15 @@ io.on('connection', (socket) => {
            JOIN sessions s ON p.session_id = s.session_id
            WHERE p.participant_id = $1
              AND s.session_id = $2
-             AND s.expires_at > NOW()
              AND p.disconnected_at IS NOT NULL
          `, [participant_id, session_id]);
 
          if (disconnectedParticipant.rows.length > 0) {
+            // Check if session has been explicitly terminated
+            if (disconnectedParticipant.rows[0].dual_status === 'ended') {
+                socket.emit('error', { message: 'Session expired' });
+                return;
+            }
             // Reconnection Allowed!
             // Clear disconnected_at
             await db.query(`
