@@ -232,6 +232,16 @@ export default function SessionGame() {
         fetchCurrentQuestion();
     };
     
+    const onDualGroupTerminated = () => {
+        console.log('[SessionGame] Dual session terminated by partner');
+        // Clear local storage so they don't try to auto-reconnect to a dead session
+        clearStoredParticipant();
+        if (tableToken) {
+            clearDualSession(tableToken);
+        }
+        window.location.href = '/'; // Redirect to scanner
+    };
+
     // Listen for session updates (Context/Mode changes)
     const onSessionUpdated = (data) => {
         console.log('[SessionGame] Session updated:', data);
@@ -257,6 +267,7 @@ export default function SessionGame() {
     socket.on('session_migrated', onMigrate);
     socket.on('session_updated', onSessionUpdated);
     socket.on('dual_partner_joined', onDualPartnerJoined);
+    socket.on('dual_group_terminated', onDualGroupTerminated);
     
     // Also run onConnect immediately if already connected
     if (socket.connected) {
@@ -472,6 +483,7 @@ export default function SessionGame() {
       socket.off('session_migrated', onMigrate);
       socket.off('session_updated', onSessionUpdated);
       socket.off('dual_partner_joined', onDualPartnerJoined);
+      socket.off('dual_group_terminated', onDualGroupTerminated);
       socket.off('connect_error', onConnectError);
       socket.off('disconnect', onDisconnect);
       socket.off('error', onError);
