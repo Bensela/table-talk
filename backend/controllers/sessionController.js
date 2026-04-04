@@ -1108,4 +1108,62 @@ const freshIntent = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent };
+const upgradeToDual = async (req, res) => {
+  const { session_id } = req.params;
+  const { participant_id } = req.body;
+
+  try {
+    // Verify participant
+    const participant = await db.query(`
+      SELECT role FROM session_participants 
+      WHERE session_id = $1 AND participant_id = $2
+    `, [session_id, participant_id]);
+
+    if (participant.rows.length === 0) {
+      return res.status(404).json({ error: 'Participant not found' });
+    }
+
+    // Verify session is single-phone
+    const session = await db.query(`
+      SELECT mode, table_token, restaurant_id FROM sessions WHERE session_id = $1
+    `, [session_id]);
+
+    if (session.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (session.rows[0].mode === 'dual-phone') {
+      return res.json({ success: true, message: 'Already in dual mode' });
+    }
+
+    // Create dual group
+    const dualGroupResult = await db.query(`
+      INSERT INTO dual_groups (restaurant_id, table_token, active_session_id)
+      VALUES ($1, $2, $3) RETURNING dual_group_id
+    `, [session.rows[0].restaurant_id || 'default', session.rows[0].table_token, session_id]);
+    
+    const dual_group_id = dualGroupResult.rows[0].dual_group_id;
+
+    // Update session
+    await db.query(`
+      UPDATE sessions 
+      SET mode = 'dual-phone', dual_status = 'waiting', dual_group_id = $1
+      WHERE session_id = $2
+    `, [dual_group_id, session_id]);
+
+    // Notify via socket
+    const io = require('../index').io;
+    if (io) {
+        // We emit 'session_updated' because SessionGame.jsx already listens to this
+        // and calls fetchCurrentQuestion() which will pull the new mode and dual_status.
+        io.to(session_id).emit('session_updated', { mode: 'dual-phone', dual_status: 'waiting' });
+    }
+
+    res.json({ success: true, mode: 'dual-phone', dual_status: 'waiting' });
+  } catch (err) {
+    console.error('Error upgrading session:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent, upgradeToDual };

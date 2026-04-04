@@ -92,6 +92,30 @@ export default function SessionMenu({
     }, 100);
   };
 
+  const handleUpgradeToDual = async () => {
+    if (!tableToken) return;
+    setLoading(true);
+    
+    const current = getStoredParticipant();
+    if (current.sessionId && current.participantId) {
+        try {
+            await api.post(`/sessions/${current.sessionId}/upgrade`, { participant_id: current.participantId });
+            console.log("[Menu] Upgraded to Dual Mode");
+            
+            // Ensure dual session backup is saved
+            storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
+            
+            setIsOpen(false);
+            // The backend emits 'session_updated' which triggers fetchCurrentQuestion
+            // But just in case, we can force a local update or reload
+            window.location.reload();
+        } catch (e) {
+            console.error("Failed to upgrade session to Dual Mode", e);
+        }
+    }
+    setLoading(false);
+  };
+
   const handleQuickSwitch = async (updates = {}) => {
     if (!tableToken) return;
     
@@ -298,7 +322,17 @@ export default function SessionMenu({
                            return (
                              <button
                                key={m.id}
-                               onClick={() => handleQuickSwitch({ mode: m.id })}
+                               onClick={() => {
+                                 if (m.id === 'dual-phone' && currentMode === 'single-phone') {
+                                   handleUpgradeToDual();
+                                 } else if (m.id === 'single-phone' && currentMode === 'dual-phone') {
+                                   // Not fully supported to downgrade without dropping partner, 
+                                   // but fallback to quick switch if they really want to.
+                                   handleQuickSwitch({ mode: m.id });
+                                 } else {
+                                   handleQuickSwitch({ mode: m.id });
+                                 }
+                               }}
                                className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
                                  isActive 
                                    ? 'bg-gray-900 border-gray-900 text-white shadow-md' 

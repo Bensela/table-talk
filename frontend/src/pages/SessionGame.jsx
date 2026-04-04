@@ -93,6 +93,7 @@ export default function SessionGame() {
   const [question, setQuestion] = useState(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
+  const [dualStatus, setDualStatus] = useState(null);
   const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
   const [context, setContext] = useState('Exploring');
@@ -140,6 +141,7 @@ export default function SessionGame() {
         setMode(sessionRes.data.mode);
         setContext(sessionRes.data.context);
         setTableToken(sessionRes.data.table_token);
+        setDualStatus(sessionRes.data.dual_status);
 
         // 2. Get Participant ID
         const stored = getStoredParticipant();
@@ -221,6 +223,15 @@ export default function SessionGame() {
       }
     };
     
+    const onDualPartnerJoined = (data) => {
+        console.log('[SessionGame] Partner joined dual session:', data);
+        setDualStatus('paired');
+        setFeedbackMessage("Partner joined the session!");
+        setTimeout(() => setFeedbackMessage(null), 3000);
+        // Fetch question to ensure we're synced
+        fetchCurrentQuestion();
+    };
+    
     // Listen for session updates (Context/Mode changes)
     const onSessionUpdated = (data) => {
         console.log('[SessionGame] Session updated:', data);
@@ -234,6 +245,9 @@ export default function SessionGame() {
         if (data.mode) {
             setMode(data.mode);
         }
+        if (data.dual_status) {
+            setDualStatus(data.dual_status);
+        }
         // ALWAYS fetch current question to ensure sync with server
         fetchCurrentQuestion();
     };
@@ -242,6 +256,7 @@ export default function SessionGame() {
     socket.on('connect', onConnect);
     socket.on('session_migrated', onMigrate);
     socket.on('session_updated', onSessionUpdated);
+    socket.on('dual_partner_joined', onDualPartnerJoined);
     
     // Also run onConnect immediately if already connected
     if (socket.connected) {
@@ -456,6 +471,7 @@ export default function SessionGame() {
       socket.off('connect', onConnect);
       socket.off('session_migrated', onMigrate);
       socket.off('session_updated', onSessionUpdated);
+      socket.off('dual_partner_joined', onDualPartnerJoined);
       socket.off('connect_error', onConnectError);
       socket.off('disconnect', onDisconnect);
       socket.off('error', onError);
@@ -532,6 +548,9 @@ export default function SessionGame() {
         if (res.data) {
             setMode(res.data.mode);
             setContext(res.data.context);
+            if (res.data.dual_status) {
+                setDualStatus(res.data.dual_status);
+            }
         }
       } catch (err) {
         console.error('Error syncing state:', err);
@@ -714,31 +733,44 @@ export default function SessionGame() {
         </div>
       </header>
 
-      <div className="relative z-10 flex-1 flex flex-col">
-        <QuestionCard 
-          question={question} 
-          isRevealed={isRevealed}
-          onReveal={handleReveal}
-          onNext={handleNext}
-          waitingForPartner={waitingForPartner}
-          mode={mode}
-          socket={socketRef.current}
-          sessionId={sessionId}
-          userId={participantId}
-          partnerSelectionsData={partnerSelections}
-          partnerIsReady={partnerIsReady}
-          feedbackMessage={feedbackMessage}
-          conversationStarted={conversationStarted}
-          onAdvanceTurn={() => {
-              if (socketRef.current?.connected) {
-                  socketRef.current.emit('advance_turn');
-                  // We need to mark that THIS client has clicked the advance button
-                  // so that they don't see the "Partner is waiting for you" message.
-                  setHasClickedNext(true); 
-              }
-          }}
-        />
-      </div>
+      {dualStatus === 'waiting' && mode === 'dual-phone' ? (
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-center">
+            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner relative">
+              <div className="absolute inset-0 border-4 border-blue-500 rounded-full border-t-transparent animate-spin opacity-50"></div>
+              <span className="text-3xl">📱</span>
+            </div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
+            <p className="text-gray-500 max-w-xs mx-auto text-base">
+              Ask them to scan the QR code on the table to sync their device.
+            </p>
+        </div>
+      ) : (
+        <div className="relative z-10 flex-1 flex flex-col">
+          <QuestionCard 
+            question={question} 
+            isRevealed={isRevealed}
+            onReveal={handleReveal}
+            onNext={handleNext}
+            waitingForPartner={waitingForPartner}
+            mode={mode}
+            socket={socketRef.current}
+            sessionId={sessionId}
+            userId={participantId}
+            partnerSelectionsData={partnerSelections}
+            partnerIsReady={partnerIsReady}
+            feedbackMessage={feedbackMessage}
+            conversationStarted={conversationStarted}
+            onAdvanceTurn={() => {
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('advance_turn');
+                    // We need to mark that THIS client has clicked the advance button
+                    // so that they don't see the "Partner is waiting for you" message.
+                    setHasClickedNext(true); 
+                }
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
