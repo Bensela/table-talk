@@ -230,10 +230,6 @@ export default function SessionGame() {
             if (prev !== 'paired') {
                 setFeedbackMessage("Partner joined the session!");
                 setTimeout(() => setFeedbackMessage(null), 3000);
-            } else {
-                // If they were already paired but re-joined (e.g. came back from Single Mode)
-                setFeedbackMessage("Partner returned to Dual Mode!");
-                setTimeout(() => setFeedbackMessage(null), 3000);
             }
             return 'paired';
         });
@@ -327,7 +323,14 @@ export default function SessionGame() {
        }
        setIsRevealed(true);
        setWaitingForPartner(false);
-       setFeedbackMessage(null); // Clear any waiting message
+       
+       setFeedbackMessage(prev => {
+           if (prev === "Partner returned to Dual Mode!" || prev === "Partner has switched to Single Mode.") {
+               return prev;
+           }
+           return null;
+       });
+       
        setPartnerIsReady(false); // Ensure "Partner is ready" is hidden
        // For Multiple Choice, revealing answers completes Phase 1 automatically.
        // Reset Phase 1 local state so Phase 2 ("Next Question") can track properly.
@@ -345,7 +348,16 @@ export default function SessionGame() {
       setHasClickedNext(false); // Reset for the new question
       setPartnerIsReady(false);
       setConversationStarted(false); // Reset Conversation Mode
-      setFeedbackMessage(null); // Clear any waiting message
+      
+      // Keep "Partner returned to Dual Mode!" or "Partner has switched to Single Mode." message visible,
+      // but clear other transient waiting messages.
+      setFeedbackMessage(prev => {
+          if (prev === "Partner returned to Dual Mode!" || prev === "Partner has switched to Single Mode.") {
+              return prev; // keep it, it has its own setTimeout
+          }
+          return null; // clear others
+      });
+      
       setModalState(prev => ({ ...prev, isOpen: false }));
     };
 
