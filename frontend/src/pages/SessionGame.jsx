@@ -785,7 +785,11 @@ export default function SessionGame() {
             </div>
             <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
             <p className="text-gray-500 max-w-xs mx-auto text-base">
-              Ask them to scan the QR code on the table to sync their device.
+              {tableToken && localStorage.getItem(`last_dual_data_${tableToken}`) ? (
+                  "Waiting for your partner to return to Dual Mode..."
+              ) : (
+                  "Ask them to scan the QR code on the table to sync their device."
+              )}
             </p>
         </div>
       ) : (
