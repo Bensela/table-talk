@@ -227,17 +227,22 @@ export default function SessionGame() {
     const onDualPartnerJoined = (data) => {
         console.log('[SessionGame] Partner joined dual session:', data);
         
+        if (data && data.participant_id === participantId) {
+            return; // Ignore our own join event
+        }
+        
         // Use a callback to get current dualStatus without putting it in dependency array
         setDualStatus(prev => {
-            if (prev !== 'paired') {
-                // Initial pair
-                setFeedbackMessage("Partner joined the session!");
+            const message = prev !== 'paired' 
+                ? "Partner joined the session!" 
+                : "Partner returned to Dual Mode!";
+            
+            // Safely trigger side effects outside of the state updater function
+            setTimeout(() => {
+                setFeedbackMessage(message);
                 setTimeout(() => setFeedbackMessage(null), 3000);
-            } else {
-                // Partner was already paired but re-joined (e.g. came back from Single Mode)
-                setFeedbackMessage("Partner returned to Dual Mode!");
-                setTimeout(() => setFeedbackMessage(null), 3000);
-            }
+            }, 0);
+            
             return 'paired';
         });
         
@@ -268,8 +273,10 @@ export default function SessionGame() {
     const onPartnerSwitchedMode = ({ newMode }) => {
         console.log("[SessionGame] Partner switched mode to:", newMode);
         if (newMode === 'single-phone') {
+            // Update dualStatus locally since partner is gone
+            setDualStatus('waiting');
             setFeedbackMessage("Partner has switched to Single Mode.");
-            // Optionally, we could keep it there, or clear it after some time
+            setTimeout(() => setFeedbackMessage(null), 5000);
         }
     };
 

@@ -250,6 +250,7 @@ io.on('connection', (socket) => {
       // Emit 'dual_partner_joined' to other participants so they know this role joined/returned
       socket.to(session_id).emit('dual_partner_joined', {
         session_id,
+        participant_id,
         joined_role: socket.role
       });
 
