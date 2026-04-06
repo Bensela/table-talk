@@ -226,13 +226,21 @@ export default function SessionGame() {
     
     const onDualPartnerJoined = (data) => {
         console.log('[SessionGame] Partner joined dual session:', data);
+        
+        // Use a callback to get current dualStatus without putting it in dependency array
         setDualStatus(prev => {
             if (prev !== 'paired') {
+                // Initial pair
                 setFeedbackMessage("Partner joined the session!");
+                setTimeout(() => setFeedbackMessage(null), 3000);
+            } else {
+                // Partner was already paired but re-joined (e.g. came back from Single Mode)
+                setFeedbackMessage("Partner returned to Dual Mode!");
                 setTimeout(() => setFeedbackMessage(null), 3000);
             }
             return 'paired';
         });
+        
         // Fetch question to ensure we're synced
         fetchCurrentQuestion();
     };
@@ -324,12 +332,7 @@ export default function SessionGame() {
        setIsRevealed(true);
        setWaitingForPartner(false);
        
-       setFeedbackMessage(prev => {
-           if (prev === "Partner returned to Dual Mode!" || prev === "Partner has switched to Single Mode.") {
-               return prev;
-           }
-           return null;
-       });
+       setFeedbackMessage(null); // Clear waiting message
        
        setPartnerIsReady(false); // Ensure "Partner is ready" is hidden
        // For Multiple Choice, revealing answers completes Phase 1 automatically.
@@ -349,14 +352,10 @@ export default function SessionGame() {
       setPartnerIsReady(false);
       setConversationStarted(false); // Reset Conversation Mode
       
-      // Keep "Partner returned to Dual Mode!" or "Partner has switched to Single Mode." message visible,
-      // but clear other transient waiting messages.
-      setFeedbackMessage(prev => {
-          if (prev === "Partner returned to Dual Mode!" || prev === "Partner has switched to Single Mode.") {
-              return prev; // keep it, it has its own setTimeout
-          }
-          return null; // clear others
-      });
+      // Clear any waiting message.
+      // We explicitly DO NOT preserve "Partner returned..." here anymore
+      // so it naturally clears itself and doesn't get stuck if a user rapidly clicks Next
+      setFeedbackMessage(null);
       
       setModalState(prev => ({ ...prev, isOpen: false }));
     };
