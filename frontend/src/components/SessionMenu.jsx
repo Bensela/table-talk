@@ -198,6 +198,11 @@ export default function SessionMenu({
          if (current.sessionId && current.participantToken) {
              storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
          }
+         if (socketRef?.current?.connected && newMode === 'single-phone') {
+             console.log('[Menu] Notifying partner of mode switch to single-phone');
+             socketRef.current.emit('partner_switched_mode', { newMode });
+             await new Promise(r => setTimeout(r, 100));
+         }
       }
 
       // 4. Standard Session Creation (New Session)

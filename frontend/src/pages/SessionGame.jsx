@@ -230,6 +230,10 @@ export default function SessionGame() {
             if (prev !== 'paired') {
                 setFeedbackMessage("Partner joined the session!");
                 setTimeout(() => setFeedbackMessage(null), 3000);
+            } else {
+                // If they were already paired but re-joined (e.g. came back from Single Mode)
+                setFeedbackMessage("Partner returned to Dual Mode!");
+                setTimeout(() => setFeedbackMessage(null), 3000);
             }
             return 'paired';
         });
@@ -257,11 +261,20 @@ export default function SessionGame() {
         fetchCurrentQuestion();
     };
 
+    const onPartnerSwitchedMode = ({ newMode }) => {
+        console.log("[SessionGame] Partner switched mode to:", newMode);
+        if (newMode === 'single-phone') {
+            setFeedbackMessage("Partner has switched to Single Mode.");
+            // Optionally, we could keep it there, or clear it after some time
+        }
+    };
+
     // Attach listeners
     socket.on('connect', onConnect);
     socket.on('session_migrated', onMigrate);
     socket.on('session_updated', onSessionUpdated);
     socket.on('dual_partner_joined', onDualPartnerJoined);
+    socket.on('partner_switched_mode', onPartnerSwitchedMode);
     
     // Also run onConnect immediately if already connected
     if (socket.connected) {
@@ -483,6 +496,7 @@ export default function SessionGame() {
       socket.off('session_migrated', onMigrate);
       socket.off('session_updated', onSessionUpdated);
       socket.off('dual_partner_joined', onDualPartnerJoined);
+      socket.off('partner_switched_mode', onPartnerSwitchedMode);
       socket.off('dual_group_terminated', onDualGroupTerminated);
       socket.off('connect_error', onConnectError);
       socket.off('disconnect', onDisconnect);

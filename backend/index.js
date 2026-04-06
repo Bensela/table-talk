@@ -247,13 +247,11 @@ io.on('connection', (socket) => {
       console.log(`[Socket] Cleared ${intentField} for session ${session_id}`);
 
       // Notify room
-      // Emit 'dual_partner_joined' specifically when Role B joins
-      if (socket.role === 'B') {
-         io.to(session_id).emit('dual_partner_joined', {
-           session_id,
-           joined_role: 'B'
-         });
-      }
+      // Emit 'dual_partner_joined' to other participants so they know this role joined/returned
+      socket.to(session_id).emit('dual_partner_joined', {
+        session_id,
+        joined_role: socket.role
+      });
 
       const updatedRoom = io.sockets.adapter.rooms.get(session_id);
       const size = updatedRoom ? updatedRoom.size : 0;
@@ -437,6 +435,11 @@ io.on('connection', (socket) => {
       newSessionId,
       initiator: socket.participantId 
     });
+  });
+
+  socket.on('partner_switched_mode', ({ newMode }) => {
+    console.log(`[Socket] ${socket.role} switched to ${newMode}. Notifying partner in ${socket.sessionId}`);
+    socket.to(socket.sessionId).emit('partner_switched_mode', { newMode });
   });
 
   // Handle Dual Mode Context Switch Intent
