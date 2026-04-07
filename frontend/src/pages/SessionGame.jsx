@@ -102,6 +102,7 @@ export default function SessionGame() {
   const [tableToken, setTableToken] = useState(null);
   const [hasClickedNext, setHasClickedNext] = useState(false);
   const [partnerIsReady, setPartnerIsReady] = useState(false);
+  const [hasPartnerJoined, setHasPartnerJoined] = useState(false);
   const [conversationStarted, setConversationStarted] = useState(false);
   const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState(null);
@@ -600,6 +601,9 @@ export default function SessionGame() {
             if (res.data.dual_status) {
                 setDualStatus(res.data.dual_status);
             }
+            if (res.data.has_partner_joined !== undefined) {
+                setHasPartnerJoined(res.data.has_partner_joined);
+            }
         }
       } catch (err) {
         console.error('Error syncing state:', err);
@@ -790,7 +794,7 @@ export default function SessionGame() {
             </div>
             <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
             <p className="text-gray-500 max-w-xs mx-auto text-base">
-              {tableToken && localStorage.getItem(`last_dual_data_${tableToken}`) ? (
+              {hasPartnerJoined ? (
                   "Your partner has switched to Single Mode. Waiting for them to return to Dual Mode..."
               ) : (
                   "Ask them to scan the QR code on the table to sync their device."

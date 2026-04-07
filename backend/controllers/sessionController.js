@@ -1001,6 +1001,10 @@ const getSessionState = async (req, res) => {
       context: session.context,
       session_group_id: session.session_group_id
     });
+    
+    // Check if partner ever joined
+    const participantsResult = await db.query('SELECT role FROM session_participants WHERE session_id = $1', [session_id]);
+    const hasPartnerJoined = participantsResult.rows.length > 1;
 
     res.json({
       session_id: session.session_id,
@@ -1008,7 +1012,8 @@ const getSessionState = async (req, res) => {
       context: session.context,
       dual_status: session.dual_status,
       position_index: position_index,
-      current_question: question // Will be null if deck empty
+      current_question: question, // Will be null if deck empty
+      has_partner_joined: hasPartnerJoined
     });
   } catch (err) {
     console.error('Error getting session state:', err);
