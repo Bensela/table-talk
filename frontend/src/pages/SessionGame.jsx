@@ -233,17 +233,22 @@ export default function SessionGame() {
         
         // Use a callback to get current dualStatus without putting it in dependency array
         setDualStatus(prev => {
-            const message = prev !== 'paired' 
-                ? "Partner joined the session!" 
-                : "Partner returned to Dual Mode!";
-            
-            // Safely trigger side effects outside of the state updater function
-            setTimeout(() => {
-                setFeedbackMessage(message);
-                setTimeout(() => setFeedbackMessage(null), 3000);
-            }, 0);
-            
-            return 'paired';
+             // Only show notification if we are explicitly waiting or transitioning states
+             // This prevents the notification from firing on every reconnect/fetch
+             if (prev === 'waiting') {
+                  const message = "Partner returned to Dual Mode!";
+                  setTimeout(() => {
+                      setFeedbackMessage(message);
+                      setTimeout(() => setFeedbackMessage(null), 3000);
+                  }, 0);
+             } else if (prev !== 'paired') {
+                  const message = "Partner joined the session!";
+                  setTimeout(() => {
+                      setFeedbackMessage(message);
+                      setTimeout(() => setFeedbackMessage(null), 3000);
+                  }, 0);
+             }
+             return 'paired';
         });
         
         // Fetch question to ensure we're synced
