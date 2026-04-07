@@ -103,6 +103,11 @@ export default function SessionGame() {
   const [hasClickedNext, setHasClickedNext] = useState(false);
   const [partnerIsReady, setPartnerIsReady] = useState(false);
   const [hasPartnerJoined, setHasPartnerJoined] = useState(false);
+  const hasPartnerJoinedRef = useRef(false);
+  useEffect(() => {
+      hasPartnerJoinedRef.current = hasPartnerJoined;
+  }, [hasPartnerJoined]);
+  
   const [conversationStarted, setConversationStarted] = useState(false);
   const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState(null);
@@ -237,7 +242,9 @@ export default function SessionGame() {
              // Only show notification if we are explicitly waiting or transitioning states
              // This prevents the notification from firing on every reconnect/fetch
              if (prev === 'waiting') {
-                  const message = "Partner returned to Dual Mode!";
+                  const message = hasPartnerJoinedRef.current 
+                      ? "Partner returned to Dual Mode!" 
+                      : "Partner joined the session!";
                   setTimeout(() => {
                       setFeedbackMessage(message);
                       setTimeout(() => setFeedbackMessage(null), 3000);
@@ -251,6 +258,8 @@ export default function SessionGame() {
              }
              return 'paired';
         });
+        
+        setHasPartnerJoined(true);
         
         // Fetch question to ensure we're synced
         fetchCurrentQuestion();
