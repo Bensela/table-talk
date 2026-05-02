@@ -13,11 +13,16 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
+// Use URL API to safely strip sslmode without touching the password
+const url = new URL(DATABASE_URL);
+url.searchParams.delete('sslmode');
+const cleanUrl = url.toString();
+
 const init = async () => {
   console.log('🔄 Starting database migration...');
 
   const dbClient = new Client({
-    connectionString: DATABASE_URL,
+    connectionString: cleanUrl,
     ssl: { rejectUnauthorized: false },
   });
 
@@ -35,17 +40,17 @@ const init = async () => {
     const upgradeSql = fs.readFileSync(path.join(__dirname, '../database/migrations/001_phase1_upgrade.sql'), 'utf8');
     await dbClient.query(upgradeSql);
 
-    // 3. Run Phase 1.2 Restrictions (Restrict Contexts)
+    // 3. Run Phase 1.2 Restrictions
     console.log('📜 Running 002_restrict_contexts.sql...');
     const restrictSql = fs.readFileSync(path.join(__dirname, '../database/migrations/002_restrict_contexts.sql'), 'utf8');
     await dbClient.query(restrictSql);
 
-    // 4. Run Phase 2 Expansion (Enable Mature)
+    // 4. Run Phase 2 Expansion
     console.log('📜 Running 003_enable_mature_context.sql...');
     const enableMatureSql = fs.readFileSync(path.join(__dirname, '../database/migrations/003_enable_mature_context.sql'), 'utf8');
     await dbClient.query(enableMatureSql);
 
-    // 5. Run Phase 1.2 Upgrade (Session Groups & Participants)
+    // 5. Run Phase 1.2 Upgrade
     console.log('📜 Running 004_v1_2_upgrade.sql...');
     const v12Sql = fs.readFileSync(path.join(__dirname, '../database/migrations/004_v1_2_upgrade.sql'), 'utf8');
     await dbClient.query(v12Sql);
