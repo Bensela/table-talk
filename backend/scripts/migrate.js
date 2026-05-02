@@ -3,33 +3,39 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+// Debug env vars
+console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
+console.log('🔍 DB_SSL:', process.env.DB_SSL);
+console.log('🔍 DATABASE_URL defined:', !!process.env.DATABASE_URL);
+
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
-  console.error('❌ DATABASE_URL is not defined in .env');
+  console.error('❌ DATABASE_URL is not defined');
   process.exit(1);
 }
 
 const init = async () => {
   console.log('🔄 Starting database migration...');
 
-  const dbClient = new Client({ 
+  const dbClient = new Client({
     connectionString: DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    ssl: { rejectUnauthorized: false }, // Always use SSL - DO managed DB requires it
   });
 
   try {
     await dbClient.connect();
-    
+    console.log('✅ Connected to database.');
+
     // 1. Run Base Init (Idempotent)
     console.log('📜 Running init.sql...');
     const initSql = fs.readFileSync(path.join(__dirname, '../database/init.sql'), 'utf8');
     await dbClient.query(initSql);
-    
+
     // 2. Run Phase 1 Upgrade
     console.log('📜 Running 001_phase1_upgrade.sql...');
     const upgradeSql = fs.readFileSync(path.join(__dirname, '../database/migrations/001_phase1_upgrade.sql'), 'utf8');
     await dbClient.query(upgradeSql);
-    
+
     // 3. Run Phase 1.2 Restrictions (Restrict Contexts)
     console.log('📜 Running 002_restrict_contexts.sql...');
     const restrictSql = fs.readFileSync(path.join(__dirname, '../database/migrations/002_restrict_contexts.sql'), 'utf8');
@@ -62,15 +68,15 @@ const init = async () => {
 
     console.log('✅ Schema upgraded.');
 
-    // 3. Seed Questions (Idempotent-ish)
+    // 9. Seed Questions (Idempotent)
     console.log('🌱 Checking seed data...');
     const checkQuestions = await dbClient.query('SELECT COUNT(*) FROM questions');
     if (parseInt(checkQuestions.rows[0].count) === 0) {
-       const seedSql = fs.readFileSync(path.join(__dirname, '../database/seeds/questions.sql'), 'utf8');
-       await dbClient.query(seedSql);
-       console.log('✅ Seed data inserted.');
+      const seedSql = fs.readFileSync(path.join(__dirname, '../database/seeds/questions.sql'), 'utf8');
+      await dbClient.query(seedSql);
+      console.log('✅ Seed data inserted.');
     } else {
-       console.log('ℹ️ Questions table already populated.');
+      console.log('ℹ️ Questions table already populated.');
     }
 
   } catch (err) {
