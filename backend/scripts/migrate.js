@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-// Debug env vars
 console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
 console.log('🔍 DB_SSL:', process.env.DB_SSL);
 console.log('🔍 DATABASE_URL defined:', !!process.env.DATABASE_URL);
@@ -14,12 +13,15 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
+// Strip sslmode from URL so our ssl config object takes full effect
+const cleanUrl = DATABASE_URL.replace(/[?&]sslmode=[^&]*/g, '').replace(/[?&]ssl=[^&]*/g, '');
+
 const init = async () => {
   console.log('🔄 Starting database migration...');
 
   const dbClient = new Client({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false }, // Always use SSL - DO managed DB requires it
+    connectionString: cleanUrl,
+    ssl: { rejectUnauthorized: false },
   });
 
   try {
