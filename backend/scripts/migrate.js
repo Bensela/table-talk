@@ -13,18 +13,22 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-// Use URL API to safely strip sslmode without touching the password
-const url = new URL(DATABASE_URL);
-url.searchParams.delete('sslmode');
-const cleanUrl = url.toString();
+// Parse individual connection params to avoid URL string manipulation issues
+const parsed = new URL(DATABASE_URL);
+const clientConfig = {
+  host: parsed.hostname,
+  port: parseInt(parsed.port) || 5432,
+  user: parsed.username,
+  password: decodeURIComponent(parsed.password),
+  database: parsed.pathname.replace('/', ''),
+  ssl: { rejectUnauthorized: false },
+};
 
 const init = async () => {
   console.log('🔄 Starting database migration...');
+  console.log('🔌 Connecting to host:', clientConfig.host);
 
-  const dbClient = new Client({
-    connectionString: cleanUrl,
-    ssl: { rejectUnauthorized: false },
-  });
+  const dbClient = new Client(clientConfig);
 
   try {
     await dbClient.connect();
