@@ -5,18 +5,30 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 const connectionString = process.env.DATABASE_URL;
 
-// Use URL API to safely strip sslmode without touching the password
-const url = new URL(connectionString);
-url.searchParams.delete('sslmode');
-const cleanUrl = url.toString();
+const isLocal = connectionString && (
+  connectionString.includes('localhost') ||
+  connectionString.includes('127.0.0.1')
+);
 
-const isLocal = cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1');
 const useSSL = process.env.DB_SSL === 'true' || (!isLocal && process.env.NODE_ENV === 'production');
 
-const pool = new Pool({
-  connectionString: cleanUrl,
-  ssl: useSSL ? { rejectUnauthorized: false } : false,
-});
+// Parse individual params to avoid URL string manipulation issues
+let poolConfig;
+if (isLocal) {
+  poolConfig = { connectionString, ssl: false };
+} else {
+  const parsed = new URL(connectionString);
+  poolConfig = {
+    host: parsed.hostname,
+    port: parseInt(parsed.port) || 5432,
+    user: parsed.username,
+    password: decodeURIComponent(parsed.password),
+    database: parsed.pathname.replace('/', ''),
+    ssl: useSSL ? { rejectUnauthorized: false } : false,
+  };
+}
+
+const pool = new Pool(poolConfig);
 
 console.log(`🔌 DB Connection: ${useSSL ? 'Remote (SSL)' : 'Local (No SSL)'}`);
 
