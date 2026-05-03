@@ -41,7 +41,7 @@ services:
     source_dir: backend
     
     # Build and run configuration
-    build_command: npm ci
+    build_command: npm install
     run_command: npm start
     
     # HTTP configuration
