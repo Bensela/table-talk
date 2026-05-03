@@ -6,8 +6,16 @@ ALTER TABLE session_participants
 
 -- 2. Add Unique Constraint to prevent 3rd participant
 -- Only one 'A' and one 'B' allowed per session
-ALTER TABLE session_participants
-  ADD CONSTRAINT session_participants_role_unique UNIQUE (session_id, role);
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'session_participants_role_unique'
+  ) THEN
+    ALTER TABLE session_participants
+      ADD CONSTRAINT session_participants_role_unique UNIQUE (session_id, role);
+  END IF;
+END $$;
 
 -- 3. Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_participant_token ON session_participants (participant_token_hash);
