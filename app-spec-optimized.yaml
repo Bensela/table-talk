@@ -134,20 +134,20 @@ databases:
 
 # PRE_DEPLOY Job (Optional: Automated migrations)
 # Uncomment to run migrations automatically before each deployment
-# jobs:
-#   - name: db-migrate
-#     kind: PRE_DEPLOY
-#     github:
-#       repo: Bensela/table-talk  # UPDATE THIS to your fork
-#       branch: main
-#       deploy_on_push: true
-#     source_dir: backend
-#     run_command: node scripts/migrate.js
-#     envs:
-#       - key: DATABASE_URL
-#         value: ${db.DATABASE_URL}
-#         scope: RUN_TIME
-#         type: SECRET
+jobs:
+  - name: db-migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: Bensela/table-talk  # UPDATE THIS to your fork
+      branch: main
+      deploy_on_push: true
+    source_dir: backend
+    run_command: node scripts/migrate.js
+    envs:
+      - key: DATABASE_URL
+        value: ${db.DATABASE_URL}
+        scope: RUN_TIME
+        type: SECRET
 
 # Custom domains (Optional)
 # Uncomment and update with your domain after initial deployment
