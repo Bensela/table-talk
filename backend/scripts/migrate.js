@@ -13,9 +13,30 @@ if (!DATABASE_URL) {
 const init = async () => {
   console.log('🔄 Starting database migration...');
 
-  const dbClient = new Client({ 
+  const caCert = process.env.DB_CA_CERT
+    ? process.env.DB_CA_CERT.replace(/\\n/g, '\n')
+    : null;
+
+  const isLocal =
+    DATABASE_URL.includes('localhost') ||
+    DATABASE_URL.includes('127.0.0.1');
+
+  const useSSL =
+    process.env.DB_SSL === 'true' ||
+    (!isLocal && process.env.NODE_ENV === 'production');
+
+  const dbClient = new Client({
     connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: useSSL
+      ? caCert
+        ? {
+            ca: caCert,
+            rejectUnauthorized: true
+          }
+        : {
+            rejectUnauthorized: false
+          }
+      : false
   });
 
   try {
