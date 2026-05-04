@@ -1,27 +1,20 @@
 const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+require('dotenv').config();
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
-  console.error('❌ DATABASE_URL is not defined');
+  console.error('❌ DATABASE_URL is not defined in .env');
   process.exit(1);
 }
-
-const isLocal = DATABASE_URL && (
-  DATABASE_URL.includes('localhost') || 
-  DATABASE_URL.includes('127.0.0.1')
-);
-
-const useSSL = process.env.DB_SSL === 'true' || (!isLocal && process.env.NODE_ENV === 'production');
 
 const init = async () => {
   console.log('🔄 Starting database migration...');
 
   const dbClient = new Client({ 
     connectionString: DATABASE_URL,
-    ssl: useSSL ? { rejectUnauthorized: false } : false
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
   });
 
   try {
