@@ -31,8 +31,15 @@ const init = async () => {
 
   const strictSSL = process.env.DB_SSL_STRICT === 'true';
 
+  const sanitizedDatabaseUrl = useSSL
+    ? DATABASE_URL
+        .replace(/([?&])sslmode=[^&]+(&?)/i, '$1')
+        .replace(/[?&]$/, '')
+        .replace(/\?&/, '?')
+    : DATABASE_URL;
+
   const dbClient = new Client({
-    connectionString: DATABASE_URL,
+    connectionString: sanitizedDatabaseUrl,
     ssl: useSSL
       ? caCert
         ? strictSSL

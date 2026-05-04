@@ -21,8 +21,15 @@ const sslConfig = useSSL
   ? { rejectUnauthorized: false }
   : false;
 
+const sanitizedConnectionString = useSSL
+  ? connectionString
+      .replace(/([?&])sslmode=[^&]+(&?)/i, '$1')
+      .replace(/[?&]$/, '')
+      .replace(/\?&/, '?')
+  : connectionString;
+
 const pool = new Pool({
-  connectionString,
+  connectionString: sanitizedConnectionString,
   ssl: sslConfig
 });
 
