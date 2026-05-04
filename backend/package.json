@@ -5,16 +5,21 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "build": "echo 'No build step needed for backend'",
     "setup:db": "node scripts/setupDb.js",
     "migrate": "node scripts/migrate.js",
     "db:migrate": "node scripts/migrate.js",
     "db:seed": "node scripts/seed.js",
     "test": "cross-env NODE_ENV=test jest"
   },
-  "keywords": [],
+  "keywords": [
+    "express",
+    "socket.io",
+    "postgresql"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Table-Talk Backend Server",
   "dependencies": {
     "axios": "^1.13.5",
     "cors": "^2.8.5",
@@ -38,6 +43,6 @@
     "verbose": true
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20.0.0"
   }
 }
