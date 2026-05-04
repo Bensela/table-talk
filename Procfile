@@ -1,1 +1,1 @@
-web: cd backend && npm run migrate && npm start
+web: npm run migrate && node index.js
