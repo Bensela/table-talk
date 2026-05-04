@@ -1,1 +1,0 @@
-web: npm run migrate && NODE_PATH=. node index.js
