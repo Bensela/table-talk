@@ -19,6 +19,15 @@ const { cleanupSessions } = require('./jobs/cleanup');
 const app = express();
 const server = http.createServer(app);
 
+function normalizePrefix(prefix) {
+  if (!prefix) return '';
+  const withLeadingSlash = prefix.startsWith('/') ? prefix : `/${prefix}`;
+  return withLeadingSlash.replace(/\/$/, '');
+}
+
+const API_PREFIX = normalizePrefix(process.env.API_PREFIX);
+const SOCKET_IO_PATH = `${API_PREFIX}/socket.io/`.replace(/^\/\//, '/');
+
 // --- CORS Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
@@ -27,7 +36,8 @@ const allowedOrigins = [
   "https://september-internation-overelliptically.ngrok-free.dev",
   "https://sea-lion-app-6mjje.ondigitalocean.app",
   "https://orca-app-be8he.ondigitalocean.app",
-  "https://octopus-app-ibal3.ondigitalocean.app"
+  "https://octopus-app-ibal3.ondigitalocean.app",
+  "https://stingray-app-hauxl.ondigitalocean.app"
 ];
 
 if (process.env.FRONTEND_URL) {
@@ -54,7 +64,7 @@ const corsOptions = {
 
 // --- Socket.io Setup ---
 const io = new Server(server, {
-  path: "/socket.io/",
+  path: SOCKET_IO_PATH,
   cors: corsOptions,
   transports: ["websocket", "polling"], // Allow polling fallback for stability
   pingTimeout: 30000,
@@ -78,11 +88,19 @@ app.use((req, res, next) => {
 
 // --- API & Static Routes ---
 app.use('/sessions', sessionRoutes);
+if (API_PREFIX) {
+  app.use(`${API_PREFIX}/sessions`, sessionRoutes);
+}
 
 // Health Check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
+if (API_PREFIX) {
+  app.get(`${API_PREFIX}/health`, (req, res) => {
+    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+  });
+}
 
 // Serve Static Frontend
 const frontendPath = path.join(__dirname, '../frontend/dist');

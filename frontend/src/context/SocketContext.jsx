@@ -4,6 +4,29 @@ import { getStoredParticipant } from '../utils/sessionStorage';
 
 const SocketContext = createContext(null);
 
+function buildSocketConfig() {
+  const isDev = import.meta.env.DEV;
+  const apiUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api');
+
+  let socketOrigin = isDev ? 'http://localhost:5000' : window.location.origin;
+  let socketPath = '/socket.io/';
+
+  if (typeof apiUrl === 'string' && apiUrl.length > 0) {
+    if (apiUrl.startsWith('http')) {
+      const u = new URL(apiUrl);
+      socketOrigin = `${u.protocol}//${u.host}`;
+      const basePath = (u.pathname || '').replace(/\/$/, '');
+      if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+    } else if (apiUrl.startsWith('/')) {
+      socketOrigin = window.location.origin;
+      const basePath = apiUrl.replace(/\/$/, '');
+      if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+    }
+  }
+
+  return { isDev, socketOrigin, socketPath };
+}
+
 export function SocketProvider({ children }) {
   // Initialize Socket once
   const socketRef = useRef(null);
@@ -16,12 +39,11 @@ export function SocketProvider({ children }) {
     // Only init once
     if (socketRef.current) return;
 
-    const isDev = import.meta.env.DEV;
-    const socketUrl = isDev ? 'http://localhost:5000' : window.location.origin;
+    const { isDev, socketOrigin, socketPath } = buildSocketConfig();
 
     console.log('[SocketProvider] Initializing socket...');
-    const socket = io(socketUrl, {
-      path: '/socket.io/',
+    const socket = io(socketOrigin, {
+      path: socketPath,
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,

@@ -69,6 +69,10 @@ services:
       - key: FRONTEND_URL
         value: ${APP_URL}
         scope: RUN_TIME
+
+      - key: API_PREFIX
+        value: /api
+        scope: RUN_TIME
       
       # Database connection (references attached database component)
       - key: DATABASE_URL
