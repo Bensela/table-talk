@@ -56,8 +56,19 @@ const init = async () => {
         console.log(`✅ ${fileName} applied successfully.`);
       } catch (err) {
         await dbClient.query('ROLLBACK');
+        
+        // Handle the "already exists" case gracefully
+        if (err.message.includes('already exists')) {
+          console.log(`⚠️  Relation in ${fileName} already exists. Marking as completed in tracking table.`);
+          await dbClient.query(
+            'INSERT INTO schema_migrations (migration_name) VALUES ($1)',
+            [fileName]
+          );
+          return; // Move to the next migration instead of crashing
+        }
+
         console.error(`❌ Error in ${fileName}:`, err.message);
-        throw err; // Re-throw to stop the migration chain
+        throw err; // Re-throw for any other type of error (syntax, connection, etc.)
       }
     };
 
