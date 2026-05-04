@@ -4,8 +4,9 @@ const path = require('path');
 require('dotenv').config();
 
 const DATABASE_URL = process.env.DATABASE_URL;
+
 if (!DATABASE_URL) {
-  console.error('❌ DATABASE_URL is not defined in .env');
+  console.error('❌ DATABASE_URL is not defined in environment variables');
   process.exit(1);
 }
 
@@ -14,11 +15,19 @@ const init = async () => {
 
   const dbClient = new Client({ 
     connectionString: DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    /* 
+       CRITICAL FIX: DigitalOcean Managed Databases require SSL.
+       We force 'rejectUnauthorized: false' to allow the connection 
+       using DigitalOcean's self-signed certificates.
+    */
+    ssl: {
+      rejectUnauthorized: false
+    }
   });
 
   try {
     await dbClient.connect();
+    console.log('📡 Connected to database successfully.');
     
     // 1. Run Base Init (Idempotent)
     console.log('📜 Running init.sql...');
@@ -30,12 +39,12 @@ const init = async () => {
     const upgradeSql = fs.readFileSync(path.join(__dirname, '../database/migrations/001_phase1_upgrade.sql'), 'utf8');
     await dbClient.query(upgradeSql);
     
-    // 3. Run Phase 1.2 Restrictions (Restrict Contexts)
+    // 3. Run Phase 1.2 Restrictions
     console.log('📜 Running 002_restrict_contexts.sql...');
     const restrictSql = fs.readFileSync(path.join(__dirname, '../database/migrations/002_restrict_contexts.sql'), 'utf8');
     await dbClient.query(restrictSql);
 
-    // 4. Run Phase 2 Expansion (Enable Mature)
+    // 4. Run Phase 2 Expansion
     console.log('📜 Running 003_enable_mature_context.sql...');
     const enableMatureSql = fs.readFileSync(path.join(__dirname, '../database/migrations/003_enable_mature_context.sql'), 'utf8');
     await dbClient.query(enableMatureSql);
@@ -62,7 +71,7 @@ const init = async () => {
 
     console.log('✅ Schema upgraded.');
 
-    // 3. Seed Questions (Idempotent-ish)
+    // 9. Seed Questions
     console.log('🌱 Checking seed data...');
     const checkQuestions = await dbClient.query('SELECT COUNT(*) FROM questions');
     if (parseInt(checkQuestions.rows[0].count) === 0) {
