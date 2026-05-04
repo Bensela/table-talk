@@ -116,14 +116,11 @@ export default function ModeSelection() {
   useEffect(() => {
     if (view !== 'show-code' || !createdSessionId) return;
 
-    const socketUrl = isDev 
-      ? 'http://localhost:5000' 
-      : 'https://octopus-app-ibal3.ondigitalocean.app';
+    const socketUrl = isDev ? 'http://localhost:5000' : window.location.origin;
 
     const socket = io(socketUrl, {
-      path: isDev ? '/socket.io/' : '/api/socket.io/',
-      transports: ['websocket'],
-      upgrade: false
+      path: '/socket.io/',
+      transports: ['websocket', 'polling']
     });
 
     const stored = getStoredParticipant();

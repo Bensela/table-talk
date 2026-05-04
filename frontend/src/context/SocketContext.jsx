@@ -17,15 +17,12 @@ export function SocketProvider({ children }) {
     if (socketRef.current) return;
 
     const isDev = import.meta.env.DEV;
-    const socketUrl = isDev 
-      ? 'http://localhost:5000' 
-      : 'https://octopus-app-ibal3.ondigitalocean.app';
+    const socketUrl = isDev ? 'http://localhost:5000' : window.location.origin;
 
     console.log('[SocketProvider] Initializing socket...');
     const socket = io(socketUrl, {
-      path: isDev ? '/socket.io/' : '/api/socket.io/',
-      transports: ['websocket'],
-      upgrade: false,
+      path: '/socket.io/',
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
