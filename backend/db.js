@@ -14,19 +14,30 @@ const isLocal =
   connectionString.includes('127.0.0.1');
 
 const caCert = process.env.DB_CA_CERT
-  ? process.env.DB_CA_CERT.replace(/\\n/g, '\n')
+  ? process.env.DB_CA_CERT
+      .replace(/\\n/g, '\n')
+      .replace(/\r/g, '')
+      .trim()
+      .replace(/^"+|"+$/g, '')
   : null;
 
 const useSSL =
   process.env.DB_SSL === 'true' ||
   (!isLocal && process.env.NODE_ENV === 'production');
 
+const strictSSL = process.env.DB_SSL_STRICT === 'true';
+
 const sslConfig = useSSL
   ? caCert
-    ? {
-        ca: caCert,
-        rejectUnauthorized: true
-      }
+    ? strictSSL
+      ? {
+          ca: caCert,
+          rejectUnauthorized: true
+        }
+      : {
+          ca: caCert,
+          rejectUnauthorized: false
+        }
     : {
         rejectUnauthorized: false
       }
