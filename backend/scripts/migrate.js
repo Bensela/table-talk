@@ -15,63 +15,75 @@ const init = async () => {
 
   const dbClient = new Client({ 
     connectionString: DATABASE_URL,
-    /* 
-       CRITICAL FIX: DigitalOcean Managed Databases require SSL.
-       We force 'rejectUnauthorized: false' to allow the connection 
-       using DigitalOcean's self-signed certificates.
-    */
-    ssl: {
-      rejectUnauthorized: false
-    }
+    ssl: { rejectUnauthorized: false }
   });
 
   try {
     await dbClient.connect();
     console.log('📡 Connected to database successfully.');
-    
-    // 1. Run Base Init (Idempotent)
-    console.log('📜 Running init.sql...');
-    const initSql = fs.readFileSync(path.join(__dirname, '../database/init.sql'), 'utf8');
-    await dbClient.query(initSql);
-    
-    // 2. Run Phase 1 Upgrade
-    console.log('📜 Running 001_phase1_upgrade.sql...');
-    const upgradeSql = fs.readFileSync(path.join(__dirname, '../database/migrations/001_phase1_upgrade.sql'), 'utf8');
-    await dbClient.query(upgradeSql);
-    
-    // 3. Run Phase 1.2 Restrictions
-    console.log('📜 Running 002_restrict_contexts.sql...');
-    const restrictSql = fs.readFileSync(path.join(__dirname, '../database/migrations/002_restrict_contexts.sql'), 'utf8');
-    await dbClient.query(restrictSql);
 
-    // 4. Run Phase 2 Expansion
-    console.log('📜 Running 003_enable_mature_context.sql...');
-    const enableMatureSql = fs.readFileSync(path.join(__dirname, '../database/migrations/003_enable_mature_context.sql'), 'utf8');
-    await dbClient.query(enableMatureSql);
+    // Create a tracking table if it doesn't exist
+    await dbClient.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        migration_name TEXT PRIMARY KEY,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-    // 5. Run Phase 1.2 Upgrade (Session Groups & Participants)
-    console.log('📜 Running 004_v1_2_upgrade.sql...');
-    const v12Sql = fs.readFileSync(path.join(__dirname, '../database/migrations/004_v1_2_upgrade.sql'), 'utf8');
-    await dbClient.query(v12Sql);
+    const runMigration = async (fileName, filePath) => {
+      // Check if this specific migration has already been run
+      const result = await dbClient.query(
+        'SELECT 1 FROM schema_migrations WHERE migration_name = $1',
+        [fileName]
+      );
 
-    // 6. Run Dual Security Upgrade
-    console.log('📜 Running 005_v1_3_dual_security.sql...');
-    const dualSecSql = fs.readFileSync(path.join(__dirname, '../database/migrations/005_v1_3_dual_security.sql'), 'utf8');
-    await dbClient.query(dualSecSql);
+      if (result.rowCount > 0) {
+        console.log(`ℹ️ Skipping ${fileName} (already applied).`);
+        return;
+      }
 
-    // 7. Run Missing Hints Fix
-    console.log('📜 Running 006_fix_missing_hints.sql...');
-    const hintsSql = fs.readFileSync(path.join(__dirname, '../database/migrations/006_fix_missing_hints.sql'), 'utf8');
-    await dbClient.query(hintsSql);
+      console.log(`📜 Running ${fileName}...`);
+      const sql = fs.readFileSync(filePath, 'utf8');
+      
+      try {
+        await dbClient.query('BEGIN'); // Run in a transaction
+        await dbClient.query(sql);
+        await dbClient.query(
+          'INSERT INTO schema_migrations (migration_name) VALUES ($1)',
+          [fileName]
+        );
+        await dbClient.query('COMMIT');
+        console.log(`✅ ${fileName} applied successfully.`);
+      } catch (err) {
+        await dbClient.query('ROLLBACK');
+        console.error(`❌ Error in ${fileName}:`, err.message);
+        throw err; // Re-throw to stop the migration chain
+      }
+    };
 
-    // 8. Run Session Lifecycle Fields
-    console.log('📜 Running 007_add_session_lifecycle_fields.sql...');
-    const lifecycleSql = fs.readFileSync(path.join(__dirname, '../database/migrations/007_add_session_lifecycle_fields.sql'), 'utf8');
-    await dbClient.query(lifecycleSql);
+    // 1. Run Base Init
+    await runMigration('init.sql', path.join(__dirname, '../database/init.sql'));
 
-    console.log('✅ Schema upgraded.');
+    // 2. Define Migration Folder
+    const migrationsDir = path.join(__dirname, '../database/migrations');
+    const migrationFiles = [
+      '001_phase1_upgrade.sql',
+      '002_restrict_contexts.sql',
+      '003_enable_mature_context.sql',
+      '004_v1_2_upgrade.sql',
+      '005_v1_3_dual_security.sql',
+      '006_fix_missing_hints.sql',
+      '007_add_session_lifecycle_fields.sql'
+    ];
 
-    // 9. Seed Questions
+    // 3. Execute Migration Files
+    for (const file of migrationFiles) {
+      await runMigration(file, path.join(migrationsDir, file));
+    }
+
+    console.log('✅ All schema upgrades complete.');
+
+    // 4. Seed Questions (Already has its own check)
     console.log('🌱 Checking seed data...');
     const checkQuestions = await dbClient.query('SELECT COUNT(*) FROM questions');
     if (parseInt(checkQuestions.rows[0].count) === 0) {
@@ -83,7 +95,7 @@ const init = async () => {
     }
 
   } catch (err) {
-    console.error('❌ Error initializing database:', err.message);
+    console.error('❌ Migration failed:', err.message);
     process.exit(1);
   } finally {
     await dbClient.end();
