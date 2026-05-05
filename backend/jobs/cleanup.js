@@ -16,14 +16,15 @@ async function cleanupSessions() {
   console.log('[CLEANUP] Starting session cleanup job...');
 
   try {
-    // Rule 1: Expire waiting dual sessions after 10 minutes
+    // Rule 1: Expire waiting dual sessions after 30 minutes
     const expiredWaiting = await db.query(`
       UPDATE sessions
       SET dual_status = 'ended',
           expires_at = NOW(),
           pairing_code_hash = NULL
       WHERE dual_status = 'waiting'
-        AND pairing_expires_at < NOW()
+        AND mode = 'dual-phone'
+        AND created_at <= NOW() - INTERVAL '30 minutes'
         AND expires_at > NOW()
       RETURNING session_id
     `);
@@ -31,30 +32,37 @@ async function cleanupSessions() {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
     }
 
-    // Rule 2: Remove old unconfirmed fresh intents instead of terminating the session
-    // If a fresh intent has been pending for over 5 minutes and the session is still active,
-    // we just clear the intent so it doesn't linger forever.
+    // Rule 2: Terminate sessions if Start Fresh is not mutually confirmed within 5 minutes
     const expiredFreshIntents = await db.query(`
       UPDATE sessions
-      SET fresh_intent_a = FALSE,
+      SET dual_status = 'ended',
+          expires_at = NOW(),
+          fresh_intent_a = FALSE,
           fresh_intent_b = FALSE,
           fresh_intent_at = NULL
-      WHERE (fresh_intent_a = TRUE OR fresh_intent_b = TRUE)
+      WHERE (
+          (fresh_intent_a = TRUE AND COALESCE(fresh_intent_b, FALSE) = FALSE)
+          OR (COALESCE(fresh_intent_a, FALSE) = FALSE AND fresh_intent_b = TRUE)
+        )
         AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
         AND dual_status != 'ended'
       RETURNING session_id
     `);
     if (expiredFreshIntents.rowCount > 0) {
-        console.log(`[CLEANUP] Cleared unconfirmed Start Fresh intents for ${expiredFreshIntents.rowCount} active sessions`);
+        console.log(`[CLEANUP] Terminated ${expiredFreshIntents.rowCount} sessions due to unconfirmed Start Fresh`);
     }
 
-    // Rule 3: Extend active sessions at midnight
-    // If a session expires (hits 00:00) but has recent activity, extend it by 24h
+    // Rule 3: Extend sessions at midnight only if an active phone is present
     const extendedSessions = await db.query(`
       UPDATE sessions
       SET expires_at = expires_at + INTERVAL '24 hours'
       WHERE expires_at <= NOW() 
-        AND last_activity_at >= NOW() - INTERVAL '15 minutes'
+        AND EXISTS (
+          SELECT 1 FROM session_participants sp
+          WHERE sp.session_id = sessions.session_id
+            AND sp.disconnected_at IS NULL
+            AND sp.last_seen_at >= NOW() - INTERVAL '2 minutes'
+        )
       RETURNING session_id
     `);
     if (extendedSessions.rowCount > 0) {

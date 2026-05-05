@@ -46,8 +46,13 @@ const createSession = async (req, res) => {
     const sessionGroupId = crypto.randomUUID();
     const isNewGroup = true;
 
-    // 2. Prepare Session Data (Expire 24 hours from now to prevent timezone bugs)
-    const expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const expires_at = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0, 0, 0, 0
+    ));
     
     // Remove pairing code generation entirely per new requirements
     const pairingCode = null;
@@ -118,9 +123,9 @@ const createSession = async (req, res) => {
     const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
 
     await db.query(
-      `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash)
-       VALUES ($1, $2, $3, $4)`,
-      [participantId, sessionId, 'A', participantTokenHash] // First user is Role A
+      `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash, last_seen_at, disconnected_at)
+       VALUES ($1, $2, $3, $4, NOW(), NULL)`,
+      [participantId, sessionId, 'A', participantTokenHash]
     );
 
     // 7. Log analytics
@@ -242,8 +247,8 @@ const joinDualPhoneSession = async (req, res) => {
 
     try {
       await db.query(
-        `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash, last_seen_at, disconnected_at)
+         VALUES ($1, $2, $3, $4, NOW(), NULL)`,
         [participantId, validSession.session_id, assignedRole, participantTokenHash]
       );
     } catch (err) {
@@ -589,17 +594,17 @@ const resolveSession = async (req, res) => {
     if (device_token) {
       const participantTokenHash = crypto.createHash('sha256').update(device_token).digest('hex');
 
-      // First, let's proactively clear any stale fresh_intent (> 5 mins)
-      // so it doesn't linger forever. We don't terminate the session anymore to protect the active partner.
       const expiredResult = await db.query(`
         UPDATE sessions s
-        SET fresh_intent_a = FALSE,
-            fresh_intent_b = FALSE,
-            fresh_intent_at = NULL
+        SET dual_status = 'ended',
+            expires_at = NOW()
         FROM session_participants sp
         WHERE s.session_id = sp.session_id
           AND sp.participant_token_hash = $1
-          AND (s.fresh_intent_a = TRUE OR s.fresh_intent_b = TRUE)
+          AND (
+            (s.fresh_intent_a = TRUE AND COALESCE(s.fresh_intent_b, FALSE) = FALSE)
+            OR (COALESCE(s.fresh_intent_a, FALSE) = FALSE AND s.fresh_intent_b = TRUE)
+          )
           AND s.fresh_intent_at <= NOW() - INTERVAL '5 minutes'
           AND s.dual_status != 'ended'
         RETURNING s.session_id
@@ -978,6 +983,21 @@ const getSessionState = async (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
     const session = sessionResult.rows[0];
+    const participantId = req.query.participant_id;
+
+    if (participantId && session.mode === 'dual-phone' && session.dual_status !== 'ended') {
+      const p = await db.query(
+        `SELECT last_seen_at FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
+        [session_id, participantId]
+      );
+      if (p.rows.length === 0) {
+        return res.status(403).json({ error: 'Invalid participant' });
+      }
+      const lastSeen = p.rows[0].last_seen_at ? new Date(p.rows[0].last_seen_at) : null;
+      if (!lastSeen || Date.now() - lastSeen.getTime() > 15 * 60 * 1000) {
+        return res.status(403).json({ error: 'INACTIVE' });
+      }
+    }
 
     // Get current question (position_index)
     let position_index = 0;
@@ -1065,29 +1085,10 @@ const freshIntent = async (req, res) => {
        io.to(session_id).emit('partner_requested_fresh', { role });
     }
 
-    // 3. Check Termination
-    let activeCount = 1; // Fallback
-    try {
-        const io = require('../index').io;
-        if (io) {
-            const room = io.sockets.adapter.rooms.get(session_id);
-            activeCount = room ? room.size : 0;
-        }
-    } catch (e) {
-        console.warn("[API] Could not get socket room size, falling back to DB count");
-        const activeCountRes = await db.query(`
-            SELECT COUNT(*) as active_count
-            FROM session_participants
-            WHERE session_id = $1 AND disconnected_at IS NULL
-        `, [session_id]);
-        activeCount = parseInt(activeCountRes.rows[0].active_count, 10);
-    }
-
-    // Terminate if both agreed, or if this user is the only one currently connected to the session
-    const shouldTerminate = (fresh_intent_a && fresh_intent_b) || (activeCount <= 1);
+    const shouldTerminate = (fresh_intent_a && fresh_intent_b);
 
     if (shouldTerminate) {
-        console.log(`[API] Terminating session ${session_id}. Mutual: ${fresh_intent_a && fresh_intent_b}, Active Count: ${activeCount}`);
+        console.log(`[API] Terminating session ${session_id}. Mutual: ${fresh_intent_a && fresh_intent_b}`);
         
         await db.query(`
           UPDATE sessions 

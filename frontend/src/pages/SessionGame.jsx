@@ -156,6 +156,7 @@ export default function SessionGame() {
 
         // 2. Get Participant ID
         const stored = getStoredParticipant();
+        const storedPid = (stored.sessionId === sessionId && stored.participantId) ? stored.participantId : null;
         if (stored.sessionId === sessionId && stored.participantId) {
           setParticipantId(stored.participantId);
         } else if (sessionRes.data.mode === 'dual-phone') {
@@ -169,7 +170,8 @@ export default function SessionGame() {
 
         // 3. Get Initial State
         // Only fetch if not already loaded (though useEffect dep is sessionId, so it runs once per session load)
-        const stateRes = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}`);
+        const pidParam = storedPid ? `&participant_id=${encodeURIComponent(storedPid)}` : '';
+        const stateRes = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}${pidParam}`);
         console.log('[SessionGame] Initial State Response:', stateRes.data);
         if (stateRes.data && stateRes.data.current_question) {
           // Check if we have a stale question locally (unlikely on fresh load, but good practice)
@@ -185,8 +187,12 @@ export default function SessionGame() {
         // Only treat as error if 404/403 (expired/invalid)
         // If 500 or network error, maybe retry?
         if (err.response && (err.response.status === 404 || err.response.status === 403)) {
-           clearStoredParticipant();
-           setError('Session expired or not found. Please start a new one.');
+           if (err.response.status === 403 && err.response.data?.error === 'INACTIVE') {
+             setError('Logged out due to inactivity. Scan the same table QR code to rejoin.');
+           } else {
+             clearStoredParticipant();
+             setError('Session expired or not found. Please start a new one.');
+           }
         } else {
            setError('Connection error. Please refresh.');
         }
@@ -596,7 +602,8 @@ export default function SessionGame() {
 
   const fetchCurrentQuestion = async () => {
       try {
-        const res = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}`);
+        const pidParam = participantId ? `&participant_id=${encodeURIComponent(participantId)}` : '';
+        const res = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}${pidParam}`);
         console.log('[SessionGame] State Response (Raw):', res);
         console.log('[SessionGame] State Data:', res.data);
         
@@ -621,6 +628,9 @@ export default function SessionGame() {
         }
       } catch (err) {
         console.error('Error syncing state:', err);
+        if (err.response?.status === 403 && err.response.data?.error === 'INACTIVE') {
+          setError('Logged out due to inactivity. Scan the same table QR code to rejoin.');
+        }
       }
     };
 
