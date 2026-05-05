@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const sessionRoutes = require('./routes/sessionRoutes');
 const db = require('./db');
@@ -27,6 +28,19 @@ function normalizePrefix(prefix) {
 
 const API_PREFIX = normalizePrefix(process.env.API_PREFIX);
 const SOCKET_IO_PATH = `${API_PREFIX}/socket.io/`.replace(/^\/\//, '/');
+
+const SETUP_LOCK_TTL_MS = 2 * 60 * 1000;
+
+function isSetupLockExpired(lock) {
+  if (!lock) return true;
+  return Date.now() - lock.claimedAt > SETUP_LOCK_TTL_MS;
+}
+
+function clearSetupLockForTable(tableToken) {
+  if (!tableToken) return;
+  setupLocks.delete(tableToken);
+  io.to(`setup_${tableToken}`).emit('setup_released');
+}
 
 // --- CORS Configuration ---
 const allowedOrigins = [
@@ -235,16 +249,42 @@ io.on('connection', (socket) => {
   });
 
   // Termination Logic
-  socket.on('fresh_intent', async () => {
-    const role = socket.role;
-    const field = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
-    const result = await db.query(`UPDATE sessions SET ${field} = TRUE, fresh_intent_at = NOW() WHERE session_id = $1 RETURNING *`, [socket.sessionId]);
-    
-    socket.to(socket.sessionId).emit('partner_requested_fresh', { role });
+  socket.on('fresh_intent', async (payload = {}) => {
+    const sessionId = payload.session_id || socket.sessionId;
+    const participantId = payload.participant_id || socket.participantId;
+    if (!sessionId) return;
 
-    if (result.rows[0]?.fresh_intent_a && result.rows[0]?.fresh_intent_b) {
-      await db.query(`UPDATE sessions SET dual_status = 'ended' WHERE session_id = $1`, [socket.sessionId]);
-      io.to(socket.sessionId).emit('dual_group_terminated');
+    let role = socket.role;
+    if (!role && participantId) {
+      const r = await db.query(
+        `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
+        [sessionId, participantId]
+      );
+      role = r.rows[0]?.role;
+      if (role) socket.role = role;
+    }
+    if (!role) return;
+
+    const field = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+    const result = await db.query(
+      `UPDATE sessions 
+       SET ${field} = TRUE, fresh_intent_at = COALESCE(fresh_intent_at, NOW())
+       WHERE session_id = $1
+       RETURNING fresh_intent_a, fresh_intent_b, table_token, dual_group_id`,
+      [sessionId]
+    );
+
+    socket.to(sessionId).emit('partner_requested_fresh', { role });
+
+    const row = result.rows[0];
+    if (row?.fresh_intent_a && row?.fresh_intent_b) {
+      await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [sessionId]);
+      if (row.dual_group_id) {
+        await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
+        await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
+      }
+      if (row.table_token) clearSetupLockForTable(row.table_token);
+      io.to(sessionId).emit('dual_group_terminated');
     }
   });
 
@@ -253,6 +293,119 @@ io.on('connection', (socket) => {
       await db.query(`UPDATE session_participants SET disconnected_at = NOW() WHERE participant_id = $1`, [socket.participantId]);
       io.to(socket.sessionId).emit('partner_disconnected', { role: socket.role });
     }
+  });
+
+  socket.on('join_table_setup', ({ tableToken, lockToken } = {}) => {
+    if (!tableToken) return;
+    socket.join(`setup_${tableToken}`);
+
+    const current = setupLocks.get(tableToken);
+    if (!current || isSetupLockExpired(current)) {
+      setupLocks.delete(tableToken);
+      socket.emit('setup_status', { status: 'available' });
+      return;
+    }
+
+    if (lockToken && current.lockToken === lockToken) {
+      socket.emit('setup_status', { status: 'granted' });
+      return;
+    }
+
+    socket.emit('setup_status', { status: 'busy' });
+  });
+
+  socket.on('claim_setup', ({ tableToken, lockToken } = {}, callback) => {
+    if (!tableToken) return;
+    const cb = typeof callback === 'function' ? callback : () => {};
+
+    const current = setupLocks.get(tableToken);
+    if (!current || isSetupLockExpired(current)) {
+      const newToken = crypto.randomBytes(16).toString('hex');
+      setupLocks.set(tableToken, { lockToken: newToken, claimedAt: Date.now() });
+      io.to(`setup_${tableToken}`).emit('setup_claimed', { tableToken, lockToken: newToken });
+      cb({ status: 'granted', lockToken: newToken });
+      return;
+    }
+
+    if (lockToken && current.lockToken === lockToken) {
+      cb({ status: 'granted', lockToken: current.lockToken });
+      return;
+    }
+
+    cb({ status: 'busy' });
+  });
+
+  socket.on('release_setup', ({ tableToken, lockToken } = {}, callback) => {
+    if (!tableToken) return;
+    const cb = typeof callback === 'function' ? callback : () => {};
+    const current = setupLocks.get(tableToken);
+    if (current && lockToken && current.lockToken === lockToken) {
+      setupLocks.delete(tableToken);
+      io.to(`setup_${tableToken}`).emit('setup_released');
+      cb({ status: 'released' });
+      return;
+    }
+    cb({ status: 'ignored' });
+  });
+
+  socket.on('setup_completed', ({ tableToken, mode, sessionId } = {}) => {
+    if (!tableToken) return;
+    clearSetupLockForTable(tableToken);
+    io.to(`setup_${tableToken}`).emit('setup_completed', { tableToken, mode, sessionId });
+  });
+
+  socket.on('context_switch_intent', async ({ context } = {}) => {
+    const sessionId = socket.sessionId;
+    if (!sessionId || !context) return;
+
+    let role = socket.role;
+    if (!role && socket.participantId) {
+      const r = await db.query(
+        `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
+        [sessionId, socket.participantId]
+      );
+      role = r.rows[0]?.role;
+      if (role) socket.role = role;
+    }
+    if (!role) return;
+
+    const prev = pendingContexts.get(sessionId) || { A: null, B: null };
+    const next = { ...prev, [role]: context };
+    pendingContexts.set(sessionId, next);
+
+    socket.to(sessionId).emit('partner_context_intent', { context });
+
+    if (next.A && next.B && next.A === next.B) {
+      pendingContexts.delete(sessionId);
+      const updated = await db.query(
+        `UPDATE sessions SET context = $1 WHERE session_id = $2 RETURNING restaurant_id, table_token, session_group_id, mode, dual_status`,
+        [context, sessionId]
+      );
+
+      const s = updated.rows[0];
+      if (s) {
+        await deckService.getDeckSession(s.restaurant_id || 'default', s.table_token, context, s.session_group_id);
+      }
+
+      clearSessionState(sessionId);
+      io.to(sessionId).emit('session_updated', { context });
+    }
+  });
+
+  socket.on('cancel_context_switch', () => {
+    const sessionId = socket.sessionId;
+    const role = socket.role;
+    if (!sessionId || !role) return;
+
+    const prev = pendingContexts.get(sessionId);
+    if (!prev) return;
+    const next = { ...prev, [role]: null };
+    if (!next.A && !next.B) {
+      pendingContexts.delete(sessionId);
+    } else {
+      pendingContexts.set(sessionId, next);
+    }
+    socket.to(sessionId).emit('context_switch_cancelled');
   });
 });
 
@@ -264,4 +417,4 @@ server.listen(PORT, '0.0.0.0', () => {
   `);
 });
 
-module.exports = { app, io, server };
+module.exports = { app, io, server, clearSetupLockForTable };

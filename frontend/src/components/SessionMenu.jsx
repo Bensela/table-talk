@@ -58,7 +58,7 @@ export default function SessionMenu({
        // Also emit socket for realtime UI update (if connected)
        if (socketRef?.current?.connected) {
            console.log("[Menu] Sending Fresh Intent via Socket");
-           socketRef.current.emit('fresh_intent');
+           socketRef.current.emit('fresh_intent', { session_id: current.sessionId, participant_id: current.participantId });
        }
     }
 

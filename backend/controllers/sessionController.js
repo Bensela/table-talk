@@ -1049,7 +1049,7 @@ const freshIntent = async (req, res) => {
          SET ${intentField} = TRUE, 
              fresh_intent_at = COALESCE(fresh_intent_at, NOW())
          WHERE session_id = $1 
-         RETURNING fresh_intent_a, fresh_intent_b, dual_group_id`,
+         RETURNING fresh_intent_a, fresh_intent_b, dual_group_id, table_token`,
         [session_id]
     );
     
@@ -1057,7 +1057,7 @@ const freshIntent = async (req, res) => {
        return res.status(404).json({ error: 'Session not found' });
     }
     
-    const { fresh_intent_a, fresh_intent_b, dual_group_id } = updateResult.rows[0];
+    const { fresh_intent_a, fresh_intent_b, dual_group_id, table_token } = updateResult.rows[0];
 
     // Notify partner via socket if possible
     const io = require('../index').io;
@@ -1113,6 +1113,19 @@ const freshIntent = async (req, res) => {
         
         if (io) {
             io.to(session_id).emit('dual_group_terminated');
+        }
+
+        try {
+          const server = require('../index');
+          if (server?.clearSetupLockForTable && table_token) {
+            server.clearSetupLockForTable(table_token);
+          } else if (io && table_token) {
+            io.to(`setup_${table_token}`).emit('setup_released');
+          }
+        } catch (e) {
+          if (io && table_token) {
+            io.to(`setup_${table_token}`).emit('setup_released');
+          }
         }
     }
 
