@@ -182,6 +182,9 @@ export default function SessionGame() {
            console.warn('[SessionGame] current_question is null in initial state:', stateRes.data);
            setQuestion(null);
         }
+        if (stateRes.data?.dual_status === 'waiting' && stateRes.data?.waiting_reason) {
+          setWaitingCause(stateRes.data.waiting_reason);
+        }
         setLoading(false);
       } catch (err) {
         console.error(err);
@@ -298,6 +301,8 @@ export default function SessionGame() {
               setWaitingCause('partner_fresh');
             } else if (data.dual_status === 'waiting' && data.waiting_reason === 'partner_single') {
               setWaitingCause('partner_single');
+            } else if (data.dual_status === 'waiting' && data.waiting_reason) {
+              setWaitingCause(data.waiting_reason);
             }
         }
         // ALWAYS fetch current question to ensure sync with server
@@ -633,6 +638,9 @@ export default function SessionGame() {
             }
             if (res.data.has_partner_joined !== undefined) {
                 setHasPartnerJoined(res.data.has_partner_joined);
+            }
+            if (res.data.dual_status === 'waiting' && res.data.waiting_reason) {
+                setWaitingCause(res.data.waiting_reason);
             }
         }
       } catch (err) {

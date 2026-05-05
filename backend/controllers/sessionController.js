@@ -1026,6 +1026,14 @@ const getSessionState = async (req, res) => {
     // Check if partner ever joined
     const participantsResult = await db.query('SELECT role FROM session_participants WHERE session_id = $1', [session_id]);
     const hasPartnerJoined = participantsResult.rows.length > 1;
+    const waitingReason =
+      session.dual_status === 'waiting'
+        ? (session.fresh_intent_a || session.fresh_intent_b)
+          ? 'partner_fresh'
+          : hasPartnerJoined
+            ? 'partner_single'
+            : 'initial'
+        : null;
 
     res.json({
       session_id: session.session_id,
@@ -1034,7 +1042,8 @@ const getSessionState = async (req, res) => {
       dual_status: session.dual_status,
       position_index: position_index,
       current_question: question, // Will be null if deck empty
-      has_partner_joined: hasPartnerJoined
+      has_partner_joined: hasPartnerJoined,
+      waiting_reason: waitingReason
     });
   } catch (err) {
     console.error('Error getting session state:', err);
