@@ -160,6 +160,9 @@ io.on('connection', (socket) => {
     if (!session_id || !participant_id) return;
 
     try {
+      const roomBefore = io.sockets.adapter.rooms.get(session_id);
+      const sizeBefore = roomBefore ? roomBefore.size : 0;
+
       const participantResult = await db.query(`
         SELECT p.participant_id, p.role, s.mode, s.dual_status, s.expires_at
         FROM session_participants p
@@ -187,6 +190,16 @@ io.on('connection', (socket) => {
       io.to(session_id).emit('partner_status', { 
         status: (room?.size || 0) >= 2 ? 'connected' : 'waiting' 
       });
+
+      if (pData.mode === 'dual-phone') {
+        const sizeAfter = room ? room.size : 0;
+        if (sizeBefore < 2 && sizeAfter >= 2) {
+          io.to(session_id).emit('dual_partner_joined', {
+            participant_id,
+            joined_role: socket.role
+          });
+        }
+      }
 
     } catch (err) {
       console.error('Join Error:', err);
@@ -223,6 +236,17 @@ io.on('connection', (socket) => {
     } else {
       socket.to(socket.sessionId).emit('partner_answered', { role: socket.role });
     }
+  });
+
+  socket.on('reveal_answer', ({ sessionId, question_id } = {}) => {
+    const sid = sessionId || socket.sessionId;
+    if (!sid) return;
+    socket.to(sid).emit('answer_revealed', { question_id, role: socket.role });
+  });
+
+  socket.on('partner_switched_mode', ({ newMode } = {}) => {
+    if (!socket.sessionId) return;
+    socket.to(socket.sessionId).emit('partner_switched_mode', { newMode });
   });
 
   // Turn Advancement

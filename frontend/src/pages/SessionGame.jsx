@@ -91,6 +91,10 @@ export default function SessionGame() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [question, setQuestion] = useState(null);
+  const questionIdRef = useRef(null);
+  useEffect(() => {
+    questionIdRef.current = question?.question_id || null;
+  }, [question]);
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [dualStatus, setDualStatus] = useState(null);
@@ -336,7 +340,8 @@ export default function SessionGame() {
       console.log('Partner status:', data);
     };
 
-    const onAnswerRevealed = () => {
+    const onAnswerRevealed = (data) => {
+      if (data?.question_id && questionIdRef.current && data.question_id !== questionIdRef.current) return;
       setIsRevealed(true);
     };
 
@@ -623,7 +628,7 @@ export default function SessionGame() {
     // If dual mode, emit socket event first for sync
     if (mode === 'dual-phone') {
         if (socketRef.current && isConnected) {
-            socketRef.current.emit('reveal_answer', { sessionId });
+            socketRef.current.emit('reveal_answer', { sessionId, question_id: question?.question_id });
         }
     }
     
