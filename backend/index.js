@@ -193,6 +193,15 @@ io.on('connection', (socket) => {
 
       if (pData.mode === 'dual-phone') {
         const sizeAfter = room ? room.size : 0;
+        if (pData.dual_status === 'waiting' && sizeAfter >= 2) {
+          const upd = await db.query(
+            `UPDATE sessions SET dual_status = 'paired' WHERE session_id = $1 AND dual_status = 'waiting' RETURNING dual_status`,
+            [session_id]
+          );
+          if (upd.rowCount > 0) {
+            io.to(session_id).emit('session_updated', { dual_status: 'paired' });
+          }
+        }
         if (sizeBefore < 2 && sizeAfter >= 2) {
           io.to(session_id).emit('dual_partner_joined', {
             participant_id,
@@ -312,7 +321,7 @@ io.on('connection', (socket) => {
     } else {
       if (row?.mode === 'dual-phone' && row?.dual_status === 'paired') {
         await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [sessionId]);
-        io.to(sessionId).emit('session_updated', { dual_status: 'waiting' });
+        io.to(sessionId).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh' });
       }
     }
   });

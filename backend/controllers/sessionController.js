@@ -1135,7 +1135,7 @@ const freshIntent = async (req, res) => {
           if (s.rows[0]?.mode === 'dual-phone' && s.rows[0]?.dual_status === 'paired') {
             await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [session_id]);
             if (io) {
-              io.to(session_id).emit('session_updated', { dual_status: 'waiting' });
+              io.to(session_id).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh' });
             }
           }
         } catch (e) {}

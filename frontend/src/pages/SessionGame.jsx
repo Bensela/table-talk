@@ -294,6 +294,10 @@ export default function SessionGame() {
             setDualStatus(data.dual_status);
             if (data.dual_status === 'paired') {
               setWaitingCause('initial');
+            } else if (data.dual_status === 'waiting' && data.waiting_reason === 'partner_fresh') {
+              setWaitingCause('partner_fresh');
+            } else if (data.dual_status === 'waiting' && data.waiting_reason === 'partner_single') {
+              setWaitingCause('partner_single');
             }
         }
         // ALWAYS fetch current question to ensure sync with server
@@ -824,7 +828,7 @@ export default function SessionGame() {
             <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
             <p className="text-gray-500 max-w-xs mx-auto text-base">
               {waitingCause === 'partner_fresh'
-                ? "Your partner started fresh. Wait here or switch to Single Mode..."
+                ? "Your partner requested Start Fresh. Wait here or switch to Single Mode..."
                 : waitingCause === 'partner_single'
                   ? "Your partner has switched to Single Mode. Wait or switch to Single Mode..."
                   : "Ask them to scan the QR code on the table to sync their device."}
