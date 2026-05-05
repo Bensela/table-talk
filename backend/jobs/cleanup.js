@@ -12,6 +12,26 @@ async function logAnalyticsEvent(event_type, event_data) {
   }
 }
 
+function notifySessionTermination(sessionRows) {
+  if (!sessionRows || sessionRows.length === 0) return;
+
+  try {
+    const { io, clearSetupLockForTable } = require('../index');
+    if (!io) return;
+
+    sessionRows.forEach((row) => {
+      if (row.session_id) {
+        io.to(row.session_id).emit('dual_group_terminated');
+      }
+      if (row.table_token && clearSetupLockForTable) {
+        clearSetupLockForTable(row.table_token);
+      }
+    });
+  } catch (err) {
+    console.warn('[CLEANUP] Could not notify terminated sessions:', err.message);
+  }
+}
+
 async function cleanupSessions() {
   console.log('[CLEANUP] Starting session cleanup job...');
 
@@ -26,18 +46,17 @@ async function cleanupSessions() {
         AND mode = 'dual-phone'
         AND created_at <= NOW() - INTERVAL '30 minutes'
         AND expires_at > NOW()
-      RETURNING session_id
+      RETURNING session_id, table_token
     `);
     if (expiredWaiting.rowCount > 0) {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
+        notifySessionTermination(expiredWaiting.rows);
     }
 
-    // Rule 2: Terminate sessions if Start Fresh is not mutually confirmed within 5 minutes
+    // Rule 2: Clear unconfirmed Start Fresh intents after 5 minutes
     const expiredFreshIntents = await db.query(`
       UPDATE sessions
-      SET dual_status = 'ended',
-          expires_at = NOW(),
-          fresh_intent_a = FALSE,
+      SET fresh_intent_a = FALSE,
           fresh_intent_b = FALSE,
           fresh_intent_at = NULL
       WHERE (
@@ -46,10 +65,10 @@ async function cleanupSessions() {
         )
         AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
         AND dual_status != 'ended'
-      RETURNING session_id
+      RETURNING session_id, table_token
     `);
     if (expiredFreshIntents.rowCount > 0) {
-        console.log(`[CLEANUP] Terminated ${expiredFreshIntents.rowCount} sessions due to unconfirmed Start Fresh`);
+        console.log(`[CLEANUP] Cleared unconfirmed Start Fresh intents for ${expiredFreshIntents.rowCount} sessions`);
     }
 
     // Rule 3: Extend sessions at midnight only if an active phone is present
@@ -101,7 +120,7 @@ async function cleanupSessions() {
   }
 }
 
-// Schedule: every 5 minutes
-cron.schedule('*/5 * * * *', cleanupSessions);
+// Schedule: every minute so 5-minute rules do not drift by another full cron interval
+cron.schedule('* * * * *', cleanupSessions);
 
 module.exports = { cleanupSessions };

@@ -596,8 +596,9 @@ const resolveSession = async (req, res) => {
 
       const expiredResult = await db.query(`
         UPDATE sessions s
-        SET dual_status = 'ended',
-            expires_at = NOW()
+        SET fresh_intent_a = FALSE,
+            fresh_intent_b = FALSE,
+            fresh_intent_at = NULL
         FROM session_participants sp
         WHERE s.session_id = sp.session_id
           AND sp.participant_token_hash = $1
@@ -1128,6 +1129,16 @@ const freshIntent = async (req, res) => {
             io.to(`setup_${table_token}`).emit('setup_released');
           }
         }
+    } else {
+        try {
+          const s = await db.query(`SELECT mode, dual_status FROM sessions WHERE session_id = $1`, [session_id]);
+          if (s.rows[0]?.mode === 'dual-phone' && s.rows[0]?.dual_status === 'paired') {
+            await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [session_id]);
+            if (io) {
+              io.to(session_id).emit('session_updated', { dual_status: 'waiting' });
+            }
+          }
+        } catch (e) {}
     }
 
     res.json({ success: true, terminated: shouldTerminate });

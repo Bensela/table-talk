@@ -294,7 +294,7 @@ io.on('connection', (socket) => {
       `UPDATE sessions 
        SET ${field} = TRUE, fresh_intent_at = COALESCE(fresh_intent_at, NOW())
        WHERE session_id = $1
-       RETURNING fresh_intent_a, fresh_intent_b, table_token, dual_group_id`,
+       RETURNING fresh_intent_a, fresh_intent_b, table_token, dual_group_id, mode, dual_status`,
       [sessionId]
     );
 
@@ -309,6 +309,11 @@ io.on('connection', (socket) => {
       }
       if (row.table_token) clearSetupLockForTable(row.table_token);
       io.to(sessionId).emit('dual_group_terminated');
+    } else {
+      if (row?.mode === 'dual-phone' && row?.dual_status === 'paired') {
+        await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [sessionId]);
+        io.to(sessionId).emit('session_updated', { dual_status: 'waiting' });
+      }
     }
   });
 

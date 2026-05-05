@@ -98,6 +98,7 @@ export default function SessionGame() {
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [dualStatus, setDualStatus] = useState(null);
+  const [waitingCause, setWaitingCause] = useState('initial');
   const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
   const [context, setContext] = useState('Exploring');
@@ -269,6 +270,7 @@ export default function SessionGame() {
              return 'paired';
         });
         
+        setWaitingCause('initial');
         setHasPartnerJoined(true);
         
         // Fetch question to ensure we're synced
@@ -290,6 +292,9 @@ export default function SessionGame() {
         }
         if (data.dual_status) {
             setDualStatus(data.dual_status);
+            if (data.dual_status === 'paired') {
+              setWaitingCause('initial');
+            }
         }
         // ALWAYS fetch current question to ensure sync with server
         fetchCurrentQuestion();
@@ -300,6 +305,7 @@ export default function SessionGame() {
         if (newMode === 'single-phone') {
             // Update dualStatus locally since partner is gone
             setDualStatus('waiting');
+            setWaitingCause('partner_single');
             setFeedbackMessage("Partner has switched to Single Mode.");
             setTimeout(() => setFeedbackMessage(null), 5000);
         }
@@ -489,11 +495,10 @@ export default function SessionGame() {
 
     // Listen for partner fresh intent
     const onPartnerRequestedFresh = () => {
-        // Just show a toast/modal?
-        // "Partner has requested to Start Fresh. If you also Start Fresh, the session will end permanently."
-        // We don't force them out.
-        // We can just log it or show subtle indicator.
-        console.log('[SessionGame] Partner requested fresh intent.');
+        setWaitingCause('partner_fresh');
+        setDualStatus('waiting');
+        setFeedbackMessage("Partner started fresh. Waiting for them...");
+        setTimeout(() => setFeedbackMessage(null), 5000);
     };
     
     const onDualGroupTerminated = () => {
@@ -818,11 +823,11 @@ export default function SessionGame() {
             </div>
             <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
             <p className="text-gray-500 max-w-xs mx-auto text-base">
-              {hasPartnerJoined ? (
-                  "Your partner has switched to Single Mode. Wait or switch to Single Mode..."
-              ) : (
-                  "Ask them to scan the QR code on the table to sync their device."
-              )}
+              {waitingCause === 'partner_fresh'
+                ? "Your partner started fresh. Wait here or switch to Single Mode..."
+                : waitingCause === 'partner_single'
+                  ? "Your partner has switched to Single Mode. Wait or switch to Single Mode..."
+                  : "Ask them to scan the QR code on the table to sync their device."}
             </p>
         </div>
       ) : (
