@@ -285,6 +285,13 @@ export default function SessionGame() {
         console.log('[SessionGame] Session updated:', data);
         if (data.context) {
             setContext(data.context);
+            setConversationStarted(false);
+            setIsRevealed(false);
+            setWaitingForPartner(false);
+            setPartnerSelections({});
+            setHasClickedNext(false);
+            setPartnerIsReady(false);
+            setFeedbackMessage(null);
             // Clear pending switch context since it's now applied
             setPendingSwitchContext(null);
             // Close any open modals (e.g. Context Switch Request)
