@@ -20,4 +20,4 @@ const joinRateLimiter = (req, res, next) => {
   next();
 };
 
-module.exports = { joinRateLimiter };
+module.exports = { joinRateLimiter, joinAttempts };

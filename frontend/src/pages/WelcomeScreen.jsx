@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../components/ui/Button';
 import { resolveSession, joinDualSession, createSession } from '../api';
@@ -7,8 +7,13 @@ import { storeParticipant, getStoredParticipant, getDualSession, storeDualSessio
 import { useSocket } from '../context/SocketContext';
 
 export default function WelcomeScreen() {
-  const { tableToken } = useParams();
+  const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const queryParams = new URLSearchParams(location.search);
+  const restaurantQueryParam = queryParams.get('restaurant');
+  const activeRestaurantSlug = restaurantSlug || restaurantQueryParam || 'default';
+
   const { socket, isConnected, ensureConnection } = useSocket();
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState(null);
@@ -16,6 +21,15 @@ export default function WelcomeScreen() {
   const [waitingForA, setWaitingForA] = useState(false);
   const [blockedError, setBlockedError] = useState(null); // Added state for blocked error UI
   const setupCompletedRef = useRef(false);
+
+  // Save the resolved restaurant slug to session state on mount / update
+  useEffect(() => {
+    sessionStorage.setItem('restaurant_slug', activeRestaurantSlug);
+  }, [activeRestaurantSlug]);
+
+  const contextPath = activeRestaurantSlug && activeRestaurantSlug !== 'default'
+    ? `/r/${activeRestaurantSlug}/t/${tableToken}/context`
+    : `/t/${tableToken}/context`;
 
   // Join setup room on mount
   useEffect(() => {
@@ -71,7 +85,7 @@ export default function WelcomeScreen() {
         if (data.mode === 'dual-phone') {
           setStatus('Joining partner...');
           try {
-            const joinRes = await joinDualSession({ session_id: data.sessionId });
+            const joinRes = await joinDualSession({ session_id: data.sessionId, restaurant_slug: activeRestaurantSlug });
             const { participant_id, participant_token, session_id } = joinRes.data;
             storeParticipant(participant_id, session_id, participant_token);
             storeDualSession(tableToken, session_id, participant_id, participant_token);
@@ -97,7 +111,7 @@ export default function WelcomeScreen() {
                       if (response.status === 'granted') {
                           sessionStorage.setItem(`table_lock_${tableToken}`, response.lockToken);
                           setStatus('Ready to start');
-                          navigate(`/t/${tableToken}/context`);
+                          navigate(contextPath);
                       } else {
                           setWaitingForA(true);
                           setStatus(null);
@@ -114,7 +128,7 @@ export default function WelcomeScreen() {
               }
           } else {
               // If disconnected entirely, just navigate and let next page handle errors
-              navigate(`/t/${tableToken}/context`);
+              navigate(contextPath);
           }
         }
       };
@@ -153,7 +167,8 @@ export default function WelcomeScreen() {
       // 2. Resolve Session State
       const resolveRes = await resolveSession({ 
           table_token: tableToken, 
-          device_token: deviceToken 
+          device_token: deviceToken,
+          restaurant_slug: activeRestaurantSlug
       });
       
       const { action, session_id, participant_id, participant_token, mode, reason, role } = resolveRes.data;
@@ -184,7 +199,8 @@ export default function WelcomeScreen() {
           // Auto-join waiting session (Phone B joins Phone A) or Reclaim spot
           const joinRes = await joinDualSession({ 
               session_id,
-              reclaim_role: action === 'reclaim_dual' ? role : undefined
+              reclaim_role: action === 'reclaim_dual' ? role : undefined,
+              restaurant_slug: activeRestaurantSlug
           });
           const { 
               participant_id: newPid, 
@@ -237,7 +253,7 @@ export default function WelcomeScreen() {
           
           if (claimRes.status === 'granted') {
               setStatus('Ready to start');
-              navigate(`/t/${tableToken}/context`);
+              navigate(contextPath);
           } else if (claimRes.status === 'offline') {
               // Show error, don't bypass lock
               alert("Connection issue. Please wait and try again.");
@@ -253,7 +269,7 @@ export default function WelcomeScreen() {
     } catch (err) {
       console.error('Resolution error:', err);
       // Fallback: Start New Flow
-      navigate(`/t/${tableToken}/context`);
+      navigate(contextPath);
     } finally {
       setChecking(false);
     }

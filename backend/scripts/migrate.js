@@ -97,7 +97,7 @@ const init = async () => {
         await dbClient.query('ROLLBACK');
         
         // Handle the "already exists" case gracefully
-        if (err.message.includes('already exists')) {
+        if (err.message.includes('already exists') || err.message.includes('existe déjà') || err.code === '42P07' || err.code === '42710') {
           console.log(`⚠️  Relation in ${fileName} already exists. Marking as completed in tracking table.`);
           await dbClient.query(
             'INSERT INTO schema_migrations (migration_name) VALUES ($1)',
@@ -123,7 +123,9 @@ const init = async () => {
       '004_v1_2_upgrade.sql',
       '005_v1_3_dual_security.sql',
       '006_fix_missing_hints.sql',
-      '007_add_session_lifecycle_fields.sql'
+      '007_add_session_lifecycle_fields.sql',
+      '008_add_restaurants_and_multi_tenancy.sql',
+      '009_admin_dashboards.sql'
     ];
 
     // 3. Execute Migration Files

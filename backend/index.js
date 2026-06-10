@@ -5,6 +5,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
 const sessionRoutes = require('./routes/sessionRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const publicRoutes = require('./routes/publicRoutes');
 const db = require('./db');
 const deckService = require('./services/deckService');
 
@@ -16,6 +18,8 @@ try {
 }
 
 const { cleanupSessions } = require('./jobs/cleanup');
+
+const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 
 const app = express();
 const server = http.createServer(app);
@@ -102,17 +106,24 @@ app.use((req, res, next) => {
 
 // --- API & Static Routes ---
 app.use('/sessions', sessionRoutes);
-if (API_PREFIX) {
+app.use('/api/sessions', sessionRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/tenant', adminRoutes);
+app.use('/api/public', publicRoutes);
+if (API_PREFIX && API_PREFIX !== '/api') {
   app.use(`${API_PREFIX}/sessions`, sessionRoutes);
+  app.use(`${API_PREFIX}/admin`, adminRoutes);
+  app.use(`${API_PREFIX}/tenant`, adminRoutes);
+  app.use(`${API_PREFIX}/public`, publicRoutes);
 }
 
 // Health Check
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+  res.status(200).json({ status: 'ok' });
 });
 if (API_PREFIX) {
   app.get(`${API_PREFIX}/health`, (req, res) => {
-    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+    res.status(200).json({ status: 'ok' });
   });
 }
 
@@ -420,9 +431,8 @@ io.on('connection', (socket) => {
         [context, sessionId]
       );
 
-      const s = updated.rows[0];
       if (s) {
-        await deckService.getDeckSession(s.restaurant_id || 'default', s.table_token, context, s.session_group_id);
+        await deckService.getDeckSession(s.restaurant_id || DEFAULT_RESTAURANT_ID, s.table_token, context, s.session_group_id);
       }
 
       clearSessionState(sessionId);
@@ -448,11 +458,16 @@ io.on('connection', (socket) => {
 });
 
 // --- Server Startup ---
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`
-  🚀 Server ready on port ${PORT}
-  🌍 Environment: ${process.env.NODE_ENV || 'development'}
-  `);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+    🚀 Server ready on port ${PORT}
+    🌍 Environment: ${process.env.NODE_ENV || 'development'}
+    `);
+  });
+}
 
-module.exports = { app, io, server, clearSetupLockForTable };
+module.exports = app;
+app.io = io;
+app.server = server;
+app.clearSetupLockForTable = clearSetupLockForTable;

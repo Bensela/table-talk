@@ -3,11 +3,14 @@ import { motion } from 'framer-motion';
 import SelectionCard from '../components/ui/SelectionCard';
 
 export default function ContextSelection() {
-  const { tableToken } = useParams();
+  const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
 
   const handleSelectContext = (context) => {
-    navigate(`/t/${tableToken}/mode`, { state: { context } });
+    const modePath = restaurantSlug
+      ? `/r/${restaurantSlug}/t/${tableToken}/mode`
+      : `/t/${tableToken}/mode`;
+    navigate(modePath, { state: { context } });
   };
 
   const contexts = [

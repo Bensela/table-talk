@@ -9,7 +9,7 @@ import { storeParticipant, getStoredParticipant, storeDualSession } from '../uti
 import { useSocket } from '../context/SocketContext';
 
 export default function ModeSelection() {
-  const { tableToken, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
+  const { tableToken, restaurantSlug, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocket();
@@ -41,7 +41,10 @@ export default function ModeSelection() {
     } else if (!tableToken || !context) {
       // If we're in the new flow but missing data, redirect back
       if (tableToken) {
-        navigate(`/t/${tableToken}/context`);
+        const contextPath = restaurantSlug
+          ? `/r/${restaurantSlug}/t/${tableToken}/context`
+          : `/t/${tableToken}/context`;
+        navigate(contextPath);
       } else {
         navigate('/');
       }
@@ -54,7 +57,8 @@ export default function ModeSelection() {
       const { data } = await createSession({
         table_token: tableToken,
         context: context,
-        mode: 'single-phone'
+        mode: 'single-phone',
+        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
@@ -87,7 +91,8 @@ export default function ModeSelection() {
       const { data } = await createSession({
         table_token: tableToken,
         context: context,
-        mode: 'dual-phone'
+        mode: 'dual-phone',
+        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
@@ -226,7 +231,8 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
     try {
       const { data } = await joinDualSession({
         table_token: tableToken,
-        code: joinCode
+        code: joinCode,
+        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       navigate(`/session/${data.session_id}/game`);

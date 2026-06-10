@@ -5,6 +5,41 @@ const crypto = require('crypto');
 
 const SESSION_DURATION_HOURS = 24;
 
+const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
+
+async function resolveRestaurantId(restaurant_id, restaurant_slug) {
+  if (!restaurant_id && !restaurant_slug) {
+    return DEFAULT_RESTAURANT_ID;
+  }
+  
+  try {
+    let queryStr = 'SELECT id FROM restaurants WHERE ';
+    let params = [];
+    if (restaurant_id && restaurant_id !== 'default' && restaurant_id !== DEFAULT_RESTAURANT_ID) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(restaurant_id)) {
+        queryStr += 'id = $1';
+        params.push(restaurant_id);
+      } else {
+        queryStr += 'slug = $1';
+        params.push(restaurant_id);
+      }
+    } else if (restaurant_slug && restaurant_slug !== 'default') {
+      queryStr += 'slug = $1';
+      params.push(restaurant_slug);
+    } else {
+      return DEFAULT_RESTAURANT_ID;
+    }
+    const res = await db.query(queryStr, params);
+    if (res.rows.length > 0) {
+      return res.rows[0].id;
+    }
+  } catch (e) {
+    console.error('Error resolving restaurant_id:', e);
+  }
+  return DEFAULT_RESTAURANT_ID;
+}
+
 // --- Helper Functions ---
 
 function generatePairingCode() {
@@ -26,7 +61,7 @@ function hashPairingCode(code, sessionId, salt = process.env.SECRET_SALT || 'def
 const createSession = async (req, res) => {
   // Support both legacy table_id and new table_token
   const table_token = req.body.table_token || req.body.table_id;
-  const { restaurant_id, context, mode } = req.body;
+  const { restaurant_id, restaurant_slug, context, mode } = req.body;
 
   if (!table_token) {
     return res.status(400).json({ error: 'table_token is required' });
@@ -42,6 +77,8 @@ const createSession = async (req, res) => {
   }
 
   try {
+    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+
     // 1. Determine Session Group
     const sessionGroupId = crypto.randomUUID();
     const isNewGroup = true;
@@ -75,7 +112,7 @@ const createSession = async (req, res) => {
     if (context) {
       // Pass sessionGroupId to deck service if updated to support it
       // For now, keep existing call but note deckService might need update
-      await deckService.getDeckSession(restaurant_id || 'default', table_token, context, sessionGroupId);
+      await deckService.getDeckSession(resolvedRestaurantId, table_token, context, sessionGroupId);
     }
 
     // 5. Create Session
@@ -89,7 +126,7 @@ const createSession = async (req, res) => {
       [
         sessionId,
         table_token, 
-        restaurant_id || 'default', 
+        resolvedRestaurantId, 
         context || 'Exploring', 
         mode || 'single-phone',
         sessionGroupId,
@@ -183,7 +220,7 @@ const createSession = async (req, res) => {
 };
 
 const joinDualPhoneSession = async (req, res) => {
-  const { table_token, restaurant_id, session_id, reclaim_role } = req.body;
+  const { table_token, restaurant_id, restaurant_slug, session_id, reclaim_role } = req.body;
 
   try {
     let validSession = null;
@@ -199,6 +236,7 @@ const joinDualPhoneSession = async (req, res) => {
       
       if (result.rows.length > 0) validSession = result.rows[0];
     } else if (table_token) {
+      const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
       // Find latest waiting session
       const result = await db.query(`
         SELECT * FROM sessions
@@ -207,7 +245,7 @@ const joinDualPhoneSession = async (req, res) => {
           AND dual_status = 'waiting'
           AND expires_at > NOW()
         ORDER BY created_at DESC LIMIT 1
-      `, [table_token, restaurant_id || 'default']);
+      `, [table_token, resolvedRestaurantId]);
 
       if (result.rows.length > 0) validSession = result.rows[0];
     }
@@ -305,7 +343,7 @@ const getSession = async (req, res) => {
       const deckResult = await db.query(
         `SELECT position_index FROM deck_sessions 
          WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
-        [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+        [session.restaurant_id || DEFAULT_RESTAURANT_ID, session.table_token, session.context, today, session.session_group_id]
       );
       if (deckResult.rows.length > 0) {
         position_index = deckResult.rows[0].position_index;
@@ -349,7 +387,7 @@ const updateSession = async (req, res) => {
       // Re-use createSession logic (or similar) to ensure deck_sessions row exists
       const deckService = require('../services/deckService');
       await deckService.getDeckSession(
-          updatedSession.restaurant_id || 'default', 
+          updatedSession.restaurant_id || DEFAULT_RESTAURANT_ID, 
           updatedSession.table_token, 
           context, 
           updatedSession.session_group_id
@@ -406,7 +444,7 @@ const updateSession = async (req, res) => {
         await db.query(
           `UPDATE deck_sessions SET position_index = $1, updated_at = NOW()
            WHERE restaurant_id = $2 AND table_token = $3 AND relationship_context = $4 AND service_day = $5 AND session_group_id = $6`,
-          [position_index, session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+          [position_index, session.restaurant_id || DEFAULT_RESTAURANT_ID, session.table_token, session.context, today, session.session_group_id]
         );
       }
       updatedSession = session; // Just return session, position updated in other table
@@ -446,7 +484,7 @@ const endSession = async (req, res) => {
         await db.query(
           `UPDATE deck_sessions SET position_index = 0, updated_at = NOW()
            WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
-          [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+          [session.restaurant_id || DEFAULT_RESTAURANT_ID, session.table_token, session.context, today, session.session_group_id]
         );
       }
     } else {
@@ -535,7 +573,7 @@ const heartbeat = async (req, res) => {
 };
 
 const resumeSessionByQr = async (req, res) => {
-  const { table_token, restaurant_id, participant_token } = req.body;
+  const { table_token, restaurant_id, restaurant_slug, participant_token } = req.body;
 
   if (!table_token || !participant_token) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -543,6 +581,7 @@ const resumeSessionByQr = async (req, res) => {
 
   try {
     const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
+    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
 
     // Find active session for this table where the participant belongs
     // Join sessions and session_participants
@@ -558,7 +597,7 @@ const resumeSessionByQr = async (req, res) => {
           CASE WHEN s.mode = 'dual-phone' THEN 1 ELSE 2 END,
           s.created_at DESC
         LIMIT 1
-    `, [table_token, restaurant_id || 'default', participantTokenHash]);
+    `, [table_token, resolvedRestaurantId, participantTokenHash]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'No active session found for this participant.' });
@@ -581,14 +620,14 @@ const resumeSessionByQr = async (req, res) => {
 };
 
 const resolveSession = async (req, res) => {
-  const { restaurant_id, table_token, device_token } = req.body;
+  const { restaurant_id, restaurant_slug, table_token, device_token } = req.body;
 
   if (!table_token) {
     return res.status(400).json({ error: 'table_token is required' });
   }
 
   try {
-    const restaurantId = restaurant_id || 'default';
+    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
 
     // 1. Attempt Resume by Device Token
     if (device_token) {
@@ -611,19 +650,20 @@ const resolveSession = async (req, res) => {
         RETURNING s.session_id
       `, [participantTokenHash]);
 
-      // Now check if they have ANY active session anywhere
+      // Now check if they have ANY active session anywhere for this restaurant
       const anyActiveSession = await db.query(`
         SELECT s.session_id, s.table_token, s.mode, s.dual_status, sp.role
         FROM sessions s
         JOIN session_participants sp ON s.session_id = sp.session_id
         WHERE sp.participant_token_hash = $1
+          AND s.restaurant_id = $2
           AND s.expires_at > NOW()
           AND (s.dual_status IS NULL OR s.dual_status != 'ended')
         ORDER BY 
           CASE WHEN s.mode = 'dual-phone' THEN 1 ELSE 2 END,
           s.created_at DESC
         LIMIT 1
-      `, [participantTokenHash]);
+      `, [participantTokenHash, resolvedRestaurantId]);
 
       if (anyActiveSession.rows.length > 0) {
         const activeSession = anyActiveSession.rows[0];
@@ -901,7 +941,7 @@ const resolveSession = async (req, res) => {
         AND expires_at > NOW()
       ORDER BY created_at DESC
       LIMIT 1
-    `, [table_token, restaurantId]);
+    `, [table_token, resolvedRestaurantId]);
 
     if (dualResult.rows.length > 0) {
       const dualSession = dualResult.rows[0];
@@ -1007,7 +1047,7 @@ const getSessionState = async (req, res) => {
       const deckResult = await db.query(
         `SELECT position_index FROM deck_sessions 
          WHERE restaurant_id = $1 AND table_token = $2 AND relationship_context = $3 AND service_day = $4 AND session_group_id = $5`,
-        [session.restaurant_id || 'default', session.table_token, session.context, today, session.session_group_id]
+        [session.restaurant_id || DEFAULT_RESTAURANT_ID, session.table_token, session.context, today, session.session_group_id]
       );
       if (deckResult.rows.length > 0) {
         position_index = deckResult.rows[0].position_index;
@@ -1017,7 +1057,7 @@ const getSessionState = async (req, res) => {
     // Get current question via Deck Service
     // This handles deck_session lookup, seed usage, and shuffling
     const question = await deckService.getCurrentQuestion({
-      restaurant_id: session.restaurant_id || 'default',
+      restaurant_id: session.restaurant_id || DEFAULT_RESTAURANT_ID,
       table_token: session.table_token,
       context: session.context,
       session_group_id: session.session_group_id
@@ -1224,7 +1264,7 @@ const upgradeToDual = async (req, res) => {
             await db.query(`
               INSERT INTO dual_groups (dual_group_id, restaurant_id, table_token, active_session_id, expires_at)
               VALUES ($1, $2, $3, $4, $5)
-            `, [dual_group_id, sessionData.restaurant_id || 'default', sessionData.table_token, session_id, expires_at]);
+            `, [dual_group_id, sessionData.restaurant_id || DEFAULT_RESTAURANT_ID, sessionData.table_token, session_id, expires_at]);
         } catch (dbErr) {
             console.error("DB Error inserting dual_group:", dbErr);
             throw dbErr; // Rethrow to be caught by outer block

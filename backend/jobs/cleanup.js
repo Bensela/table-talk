@@ -48,7 +48,7 @@ async function cleanupSessions() {
         AND expires_at > NOW()
       RETURNING session_id, table_token
     `);
-    if (expiredWaiting.rowCount > 0) {
+    if (expiredWaiting && expiredWaiting.rowCount > 0) {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
         notifySessionTermination(expiredWaiting.rows);
     }
@@ -63,11 +63,11 @@ async function cleanupSessions() {
           (fresh_intent_a = TRUE AND COALESCE(fresh_intent_b, FALSE) = FALSE)
           OR (COALESCE(fresh_intent_a, FALSE) = FALSE AND fresh_intent_b = TRUE)
         )
-        AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
-        AND dual_status != 'ended'
+      AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
+      AND dual_status != 'ended'
       RETURNING session_id, table_token
     `);
-    if (expiredFreshIntents.rowCount > 0) {
+    if (expiredFreshIntents && expiredFreshIntents.rowCount > 0) {
         console.log(`[CLEANUP] Cleared unconfirmed Start Fresh intents for ${expiredFreshIntents.rowCount} sessions`);
     }
 
@@ -84,7 +84,7 @@ async function cleanupSessions() {
         )
       RETURNING session_id
     `);
-    if (extendedSessions.rowCount > 0) {
+    if (extendedSessions && extendedSessions.rowCount > 0) {
         console.log(`[CLEANUP] Extended ${extendedSessions.rowCount} active sessions past midnight`);
     }
     
@@ -101,17 +101,22 @@ async function cleanupSessions() {
       RETURNING session_id
     `);
     
-    if (deletedSessions.rowCount > 0) {
+    if (deletedSessions && deletedSessions.rowCount > 0) {
         console.log(`[CLEANUP] Deleted ${deletedSessions.rowCount} expired sessions (midnight limit)`);
     }
 
     // Log cleanup analytics
-    if (expiredWaiting.rowCount > 0 || deletedSessions.rowCount > 0 || expiredFreshIntents.rowCount > 0 || extendedSessions.rowCount > 0) {
+    const eWaitingCount = expiredWaiting ? expiredWaiting.rowCount : 0;
+    const dSessionsCount = deletedSessions ? deletedSessions.rowCount : 0;
+    const eFreshCount = expiredFreshIntents ? expiredFreshIntents.rowCount : 0;
+    const eSessionsCount = extendedSessions ? extendedSessions.rowCount : 0;
+
+    if (eWaitingCount > 0 || dSessionsCount > 0 || eFreshCount > 0 || eSessionsCount > 0) {
         await logAnalyticsEvent('cleanup_job_completed', {
-            expired_waiting: expiredWaiting.rowCount,
-            deleted_sessions: deletedSessions.rowCount,
-            expired_fresh: expiredFreshIntents.rowCount,
-            extended_sessions: extendedSessions.rowCount
+            expired_waiting: eWaitingCount,
+            deleted_sessions: dSessionsCount,
+            expired_fresh: eFreshCount,
+            extended_sessions: eSessionsCount
         });
     }
 
@@ -121,6 +126,8 @@ async function cleanupSessions() {
 }
 
 // Schedule: every minute so 5-minute rules do not drift by another full cron interval
-cron.schedule('* * * * *', cleanupSessions);
+if (process.env.NODE_ENV !== 'test') {
+  cron.schedule('* * * * *', cleanupSessions);
+}
 
 module.exports = { cleanupSessions };

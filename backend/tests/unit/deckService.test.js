@@ -126,15 +126,16 @@ describe('DeckService', () => {
       it('should increment position index', async () => {
           const mockDeckSession = { deck_context_id: 'd1', position_index: 5 };
           db.query.mockResolvedValueOnce({ rows: [mockDeckSession] }); // getDeckSession
+          db.query.mockResolvedValueOnce({ rows: [] }); // getAllQuestions
           db.query.mockResolvedValueOnce({ rows: [] }); // UPDATE
 
           const newIndex = await deckService.advanceDeck({ 
               restaurant_id: 'r1', table_token: 't1', context: 'Exploring' 
           });
 
-          expect(newIndex).toBe(6);
-          expect(db.query).toHaveBeenCalledTimes(2);
-          expect(db.query.mock.calls[1][0]).toContain('UPDATE deck_sessions');
+          expect(newIndex).toBe(7);
+          expect(db.query).toHaveBeenCalledTimes(3);
+          expect(db.query.mock.calls[2][0]).toContain('UPDATE deck_sessions');
       });
   });
 });

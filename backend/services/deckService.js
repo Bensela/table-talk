@@ -1,14 +1,15 @@
 const db = require('../db');
 const crypto = require('crypto');
 
-// Cache all questions in memory
-let questionsCache = null;
+// Cache all questions in memory by restaurant_id
+let questionsCache = {};
 
-const getAllQuestions = async () => {
-  if (questionsCache) return questionsCache;
-  const result = await db.query('SELECT * FROM questions WHERE active = true ORDER BY question_id');
-  questionsCache = result.rows;
-  return questionsCache;
+const getAllQuestions = async (restaurant_id) => {
+  const restId = restaurant_id || 'd0000000-0000-0000-0000-000000000000';
+  if (questionsCache[restId]) return questionsCache[restId];
+  const result = await db.query('SELECT * FROM questions WHERE active = true AND restaurant_id = $1 ORDER BY question_id', [restId]);
+  questionsCache[restId] = result.rows;
+  return questionsCache[restId];
 };
 
 // Simple seeded random generator
@@ -138,9 +139,10 @@ const getDeckSession = async (restaurant_id, table_token, context, session_group
 };
 
 const getCurrentQuestion = async (session) => {
+  const restId = session.restaurant_id || 'd0000000-0000-0000-0000-000000000000';
   // 1. Get Deck Session
   const deckSession = await getDeckSession(
-    session.restaurant_id || 'default', 
+    restId, 
     session.table_token, 
     session.context,
     session.session_group_id
@@ -152,7 +154,7 @@ const getCurrentQuestion = async (session) => {
   }
   
   // 2. Get Questions for Context
-  const allQuestions = await getAllQuestions();
+  const allQuestions = await getAllQuestions(restId);
   // Filter questions that match the context (or if context is null/global)
   const deckQuestions = allQuestions.filter(q => 
     !q.context || q.context === session.context
@@ -188,16 +190,17 @@ const getCurrentQuestion = async (session) => {
 };
 
 const advanceDeck = async (session) => {
+  const restId = session.restaurant_id || 'd0000000-0000-0000-0000-000000000000';
   console.log(`[DeckService] Advancing deck for ${session.table_token}`);
   const deckSession = await getDeckSession(
-    session.restaurant_id || 'default', 
+    restId, 
     session.table_token, 
     session.context,
     session.session_group_id
   );
 
   // Get total questions to handle wraparound
-  const allQuestions = await getAllQuestions();
+  const allQuestions = await getAllQuestions(restId);
   const deckQuestions = allQuestions.filter(q => 
     !q.context || q.context === session.context
   );
@@ -221,18 +224,19 @@ const advanceDeck = async (session) => {
 };
 
 const previousDeck = async (session) => {
+  const restId = session.restaurant_id || 'd0000000-0000-0000-0000-000000000000';
   console.log(`[DeckService] Rewinding deck for ${session.table_token}`);
   
   // 1. Get Deck Session
   const deckSession = await getDeckSession(
-    session.restaurant_id || 'default', 
+    restId, 
     session.table_token, 
     session.context,
     session.session_group_id
   );
 
   // 2. Get total questions
-  const allQuestions = await getAllQuestions();
+  const allQuestions = await getAllQuestions(restId);
   const deckQuestions = allQuestions.filter(q => 
     !q.context || q.context === session.context
   );
@@ -261,7 +265,7 @@ const previousDeck = async (session) => {
 
 const getQuestionAtIndex = async (restaurant_id, context, index) => {
   // Get all questions (cached)
-  const allQuestions = await getAllQuestions();
+  const allQuestions = await getAllQuestions(restaurant_id);
   
   // Filter by context
   const deckQuestions = allQuestions.filter(q => 
@@ -303,5 +307,5 @@ module.exports = {
   advanceDeck,
   previousDeck,
   getQuestionAtIndex, // Exporting placeholder to avoid crash, but will replace usage
-  _resetCache: () => { questionsCache = null; }
+  _resetCache: () => { questionsCache = {}; }
 };

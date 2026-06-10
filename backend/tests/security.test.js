@@ -3,12 +3,18 @@ const app = require('../index');
 const db = require('../db');
 const crypto = require('crypto');
 
+const { joinAttempts } = require('../middleware/rateLimiter');
+
 describe('Security & Isolation Tests', () => {
   let tableToken = 'table_sec_test';
   
   beforeAll(async () => {
     // Setup clean state if needed
     await db.query('DELETE FROM sessions WHERE table_token = $1', [tableToken]);
+  });
+
+  beforeEach(() => {
+    if (joinAttempts) joinAttempts.clear();
   });
 
   afterAll(async () => {
@@ -29,8 +35,8 @@ describe('Security & Isolation Tests', () => {
           .post('/sessions/join-dual')
           .send({ table_token: tableToken, code: '000000' });
           
-        // Either 403 (invalid code) or 429 (rate limited if we hit it already)
-        expect([403, 429]).toContain(res.status);
+        // Either 403, 404 (no waiting session), or 429 (rate limited if we hit it already)
+        expect([403, 404, 429]).toContain(res.status);
       }
 
       // 6th attempt MUST be rate limited
