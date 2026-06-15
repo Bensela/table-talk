@@ -13,7 +13,8 @@ const resolveRestaurant = async (req, res, next) => {
 
   try {
     const result = await db.query(
-      `SELECT id, slug, name, plan, active
+      `SELECT id, slug, name, plan, active, contact_email, contact_phone,
+              address, latitude, longitude, manager_name
        FROM restaurants
        WHERE slug = $1`,
       [slug]

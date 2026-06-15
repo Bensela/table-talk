@@ -86,8 +86,9 @@ async function login(req, res) {
 async function getTenants(req, res) {
   try {
     const result = await db.query(
-      `SELECT id, name, slug, billing_status, created_at 
-       FROM restaurants 
+      `SELECT id, name, slug, billing_status, contact_email, contact_phone,
+              address, latitude, longitude, manager_name, created_at
+       FROM restaurants
        ORDER BY created_at DESC`
     );
     res.json(result.rows);
@@ -102,7 +103,7 @@ async function getTenants(req, res) {
  * Super Admin: Register a new tenant. Optionally creates a tenant admin user.
  */
 async function createTenant(req, res) {
-  const { name, slug, adminEmail, adminPassword } = req.body;
+  const { name, slug, adminEmail, adminPassword, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
   if (!name || !slug) {
     return res.status(400).json({ error: 'Name and slug are required' });
   }
@@ -117,10 +118,10 @@ async function createTenant(req, res) {
     await db.query('BEGIN');
 
     const restResult = await db.query(
-      `INSERT INTO restaurants (name, slug, billing_status) 
-       VALUES ($1, $2, 'active') 
-       RETURNING id, name, slug, billing_status, created_at`,
-      [name, slug]
+      `INSERT INTO restaurants (name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name)
+       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
+      [name, slug, contactEmail || null, contactPhone || null, address || null, latitude || null, longitude || null, managerName || null]
     );
 
     const restaurant = restResult.rows[0];
@@ -158,7 +159,7 @@ async function createTenant(req, res) {
  */
 async function updateTenant(req, res) {
   const { id } = req.params;
-  const { name, slug, billing_status } = req.body;
+  const { name, slug, billing_status, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
 
   try {
     const fields = [];
@@ -170,7 +171,6 @@ async function updateTenant(req, res) {
       params.push(name);
     }
     if (slug !== undefined) {
-      // Slug check
       const slugCheck = await db.query('SELECT 1 FROM restaurants WHERE slug = $1 AND id != $2', [slug, id]);
       if (slugCheck.rowCount > 0) {
         return res.status(400).json({ error: 'Slug is already in use' });
@@ -185,16 +185,42 @@ async function updateTenant(req, res) {
       fields.push(`billing_status = $${index++}`);
       params.push(billing_status);
     }
+    if (contactEmail !== undefined) {
+      fields.push(`contact_email = $${index++}`);
+      params.push(contactEmail || null);
+    }
+    if (contactPhone !== undefined) {
+      fields.push(`contact_phone = $${index++}`);
+      params.push(contactPhone || null);
+    }
+    if (address !== undefined) {
+      fields.push(`address = $${index++}`);
+      params.push(address || null);
+    }
+    if (latitude !== undefined) {
+      fields.push(`latitude = $${index++}`);
+      params.push(latitude || null);
+    }
+    if (longitude !== undefined) {
+      fields.push(`longitude = $${index++}`);
+      params.push(longitude || null);
+    }
+    if (managerName !== undefined) {
+      fields.push(`manager_name = $${index++}`);
+      params.push(managerName || null);
+    }
 
-    if (fields.length === 0) {
+    fields.push(`updated_at = NOW()`);
+
+    if (fields.length === 1) {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
     const result = await db.query(
-      `UPDATE restaurants 
-       SET ${fields.join(', ')} 
-       WHERE id = $1 
-       RETURNING id, name, slug, billing_status, created_at`,
+      `UPDATE restaurants
+       SET ${fields.join(', ')}
+       WHERE id = $1
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
       params
     );
 
@@ -250,8 +276,9 @@ async function getTenantBilling(req, res) {
 
   try {
     const result = await db.query(
-      `SELECT id, name, slug, billing_status, created_at 
-       FROM restaurants 
+      `SELECT id, name, slug, billing_status, contact_email, contact_phone,
+              address, latitude, longitude, manager_name, created_at
+       FROM restaurants
        WHERE id = $1`,
       [restaurantId]
     );
@@ -263,6 +290,39 @@ async function getTenantBilling(req, res) {
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Get tenant billing error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+async function updateTenantProfile(req, res) {
+  const restaurantId = req.user.restaurant_id;
+  if (!restaurantId) {
+    return res.status(400).json({ error: 'User is not associated with any restaurant' });
+  }
+  const { name, managerName, contactEmail, contactPhone, address, latitude, longitude } = req.body;
+  try {
+    const fields = [];
+    const params = [restaurantId];
+    let i = 2;
+    if (name !== undefined)         { fields.push(`name = $${i++}`);          params.push(name); }
+    if (managerName !== undefined)    { fields.push(`manager_name = $${i++}`);  params.push(managerName || null); }
+    if (contactEmail !== undefined)   { fields.push(`contact_email = $${i++}`); params.push(contactEmail || null); }
+    if (contactPhone !== undefined)   { fields.push(`contact_phone = $${i++}`); params.push(contactPhone || null); }
+    if (address !== undefined)        { fields.push(`address = $${i++}`);        params.push(address || null); }
+    if (latitude !== undefined)       { fields.push(`latitude = $${i++}`);       params.push(latitude || null); }
+    if (longitude !== undefined)     { fields.push(`longitude = $${i++}`);     params.push(longitude || null); }
+    fields.push(`updated_at = NOW()`);
+    if (fields.length === 1) return res.status(400).json({ error: 'No fields to update' });
+
+    const result = await db.query(
+      `UPDATE restaurants SET ${fields.join(', ')} WHERE id = $1
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
+      params
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Update tenant profile error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -339,9 +399,10 @@ module.exports = {
   getTenants,
   createTenant,
   updateTenant,
+  updateTenantProfile,
   reshuffleGlobalQuestions,
   getTenantBilling,
   getTenantTables,
   createTenantTable,
-  hashPassword // Exported for potential test usage
+  hashPassword
 };
