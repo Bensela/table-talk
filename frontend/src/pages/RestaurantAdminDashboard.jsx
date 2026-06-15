@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 
 export default function RestaurantAdminDashboard() {
-  const navigate = useNavigate();
+  const { checking, logout } = useAdminAuth();
   const [tables, setTables] = useState([]);
   const [profile, setProfile] = useState(null);
   const [profileEdit, setProfileEdit] = useState(false);
@@ -21,31 +22,26 @@ export default function RestaurantAdminDashboard() {
   const [selectedTables, setSelectedTables] = useState([]); // selected table IDs
   const [generatingQr, setGeneratingQr] = useState(false);
 
+  // Loading guard — redirect to login if no token
+  if (checking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   useEffect(() => {
     fetchData();
   }, []);
 
-  const getHeaders = () => {
-    const token = localStorage.getItem('adminToken');
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    };
-  };
-
   const fetchData = async () => {
     try {
-      // Fetch Tables
-      const tablesRes = await fetch('/api/tenant/tables', { headers: getHeaders() });
-      if (tablesRes.status === 401 || tablesRes.status === 403) {
-        navigate('/admin/login');
-        return;
-      }
+      const tablesRes = await fetch('/api/tenant/tables', { headers: getAdminHeaders() });
       const tablesData = await tablesRes.json();
       setTables(Array.isArray(tablesData) ? tablesData : []);
 
-      // Fetch Profile / Billing Info
-      const billingRes = await fetch('/api/tenant/billing', { headers: getHeaders() });
+      const billingRes = await fetch('/api/tenant/billing', { headers: getAdminHeaders() });
       if (billingRes.ok) {
         const data = await billingRes.json();
         setProfile(data);
@@ -64,7 +60,7 @@ export default function RestaurantAdminDashboard() {
     try {
       const res = await fetch('/api/tenant/tables', {
         method: 'POST',
-        headers: getHeaders(),
+        headers: getAdminHeaders(),
         body: JSON.stringify({ table_number: tableNumber })
       });
 
@@ -143,7 +139,7 @@ export default function RestaurantAdminDashboard() {
 
       const res = await fetch('/api/tenant/qr', {
         method: 'POST',
-        headers: getHeaders(),
+        headers: getAdminHeaders(),
         body: JSON.stringify({ tables: selectedNumbers })
       });
       const data = await res.json();
@@ -270,7 +266,7 @@ export default function RestaurantAdminDashboard() {
             </div>
           )}
           <button
-            onClick={() => { localStorage.clear(); navigate('/admin/login'); }}
+            onClick={() => { localStorage.clear(); logout(); }}
             className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2 rounded-xl transition-all"
           >
             Sign Out

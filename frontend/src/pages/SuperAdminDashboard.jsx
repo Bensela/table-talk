@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 
 export default function SuperAdminDashboard() {
-  const navigate = useNavigate();
+  const { checking, user, logout } = useAdminAuth();
   const [tenants, setTenants] = useState([]);
   const [globalQuestions, setGlobalQuestions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -29,17 +29,20 @@ export default function SuperAdminDashboard() {
   // Toggle collapsed rows
   const [expandedId, setExpandedId] = useState(null);
 
-  useEffect(() => { fetchData(); }, []);
+  // Loading guard — redirect to login if no token
+  if (checking) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
-  const getHeaders = () => ({
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
-  });
+  useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
     try {
-      const tenantsRes = await fetch('/api/admin/tenants', { headers: getHeaders() });
-      if (tenantsRes.status === 401 || tenantsRes.status === 403) { navigate('/admin/login'); return; }
+      const tenantsRes = await fetch('/api/admin/tenants', { headers: getAdminHeaders() });
       const data = await tenantsRes.json();
       setTenants(Array.isArray(data) ? data : []);
 
@@ -57,7 +60,7 @@ export default function SuperAdminDashboard() {
     setFormError(''); setFormSuccess(''); setLoading(true);
     try {
       const res = await fetch('/api/admin/tenants', {
-        method: 'POST', headers: getHeaders(),
+        method: 'POST', headers: getAdminHeaders(),
         body: JSON.stringify({
           name: form.name, slug: form.slug,
           managerName: form.managerName || null,
@@ -99,7 +102,7 @@ export default function SuperAdminDashboard() {
     setEditError(''); setEditSuccess(''); setLoading(true);
     try {
       const res = await fetch(`/api/admin/tenants/${editingTenant.id}`, {
-        method: 'PATCH', headers: getHeaders(),
+        method: 'PATCH', headers: getAdminHeaders(),
         body: JSON.stringify({
           name: editForm.name,
           slug: editForm.slug,
@@ -124,7 +127,7 @@ export default function SuperAdminDashboard() {
     const next = t.billing_status === 'active' ? 'suspended' : 'active';
     try {
       const res = await fetch(`/api/admin/tenants/${t.id}`, {
-        method: 'PATCH', headers: getHeaders(),
+        method: 'PATCH', headers: getAdminHeaders(),
         body: JSON.stringify({ billing_status: next })
       });
       if (res.ok) fetchData();
@@ -139,7 +142,7 @@ export default function SuperAdminDashboard() {
     setGlobalQuestions(list);
     try {
       await fetch('/api/admin/questions/reshuffle', {
-        method: 'PATCH', headers: getHeaders(),
+        method: 'PATCH', headers: getAdminHeaders(),
         body: JSON.stringify({ question_ids: list.map(q => q.id) })
       });
     } catch (err) { console.error(err); }
@@ -156,7 +159,7 @@ export default function SuperAdminDashboard() {
           <h1 className="text-3xl font-extrabold tracking-tight">Super Admin Dashboard</h1>
           <p className="text-slate-400 text-sm mt-1">Manage restaurants, contacts, billing, and locations</p>
         </div>
-        <button onClick={() => { localStorage.clear(); navigate('/admin/login'); }}
+        <button onClick={() => logout()}
           className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2 rounded-xl transition-all">
           Sign Out
         </button>
