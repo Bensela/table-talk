@@ -3,8 +3,9 @@ const router = express.Router();
 const sessionController = require('../controllers/sessionController');
 const questionController = require('../controllers/questionController');
 const { joinRateLimiter } = require('../middleware/rateLimiter');
+const { resolveRestaurant } = require('../middleware/resolveRestaurant');
 
-router.post('/', sessionController.createSession);
+router.post('/', resolveRestaurant, sessionController.createSession);
 router.post('/join-dual', joinRateLimiter, sessionController.joinDualPhoneSession);
 router.post('/resolve', sessionController.resolveSession);
 router.post('/resume-by-qr', sessionController.resumeSessionByQr);

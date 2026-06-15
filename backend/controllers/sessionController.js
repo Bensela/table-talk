@@ -61,7 +61,9 @@ function hashPairingCode(code, sessionId, salt = process.env.SECRET_SALT || 'def
 const createSession = async (req, res) => {
   // Support both legacy table_id and new table_token
   const table_token = req.body.table_token || req.body.table_id;
-  const { restaurant_id, restaurant_slug, context, mode } = req.body;
+  const { restaurant_id, context, mode } = req.body;
+  // Use middleware-resolved restaurant slug if available
+  const restaurant_slug = req.restaurant?.slug || restaurant_id;
 
   if (!table_token) {
     return res.status(400).json({ error: 'table_token is required' });

@@ -7,6 +7,8 @@ const { Server } = require('socket.io');
 const sessionRoutes = require('./routes/sessionRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const publicRoutes = require('./routes/publicRoutes');
+const { resolveRestaurant } = require('./middleware/resolveRestaurant');
+const restaurantRoutes = require('./routes/restaurantRoutes');
 const db = require('./db');
 const deckService = require('./services/deckService');
 
@@ -115,6 +117,12 @@ if (API_PREFIX && API_PREFIX !== '/api') {
   app.use(`${API_PREFIX}/admin`, adminRoutes);
   app.use(`${API_PREFIX}/tenant`, adminRoutes);
   app.use(`${API_PREFIX}/public`, publicRoutes);
+}
+
+// Restaurant admin routes
+app.use('/restaurants', restaurantRoutes);
+if (API_PREFIX) {
+  app.use(`${API_PREFIX}/restaurants`, restaurantRoutes);
 }
 
 // Health Check
