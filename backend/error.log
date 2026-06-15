@@ -26,3 +26,21 @@ error: une valeur NULL viole la contrainte NOT NULL de la colonne « expires_at 
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     at async upgradeToDual (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:1167:9)
 
+2026-06-03T16:19:55.471Z - Error creating session: Cannot read properties of undefined (reading 'rows')
+TypeError: Cannot read properties of undefined (reading 'rows')
+    at Object.rows [as getDeckSession] (C:\Users\Public\Documents\Table-Talk\backend\services\deckService.js:116:16)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at createSession (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:115:7)
+
+2026-06-03T16:37:47.254Z - Error creating session: Cannot read properties of undefined (reading 'rows')
+TypeError: Cannot read properties of undefined (reading 'rows')
+    at Object.rows [as getDeckSession] (C:\Users\Public\Documents\Table-Talk\backend\services\deckService.js:116:16)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at createSession (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:115:7)
+
+2026-06-03T16:37:58.939Z - Error creating session: Cannot read properties of undefined (reading 'rows')
+TypeError: Cannot read properties of undefined (reading 'rows')
+    at Object.rows [as getDeckSession] (C:\Users\Public\Documents\Table-Talk\backend\services\deckService.js:116:16)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at createSession (C:\Users\Public\Documents\Table-Talk\backend\controllers\sessionController.js:115:7)
+

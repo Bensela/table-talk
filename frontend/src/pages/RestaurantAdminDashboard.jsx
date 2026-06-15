@@ -15,6 +15,12 @@ export default function RestaurantAdminDashboard() {
   const [loading, setLoading] = useState(false);
   const printAreaRef = useRef(null);
 
+  // QR generation state
+  const [qrModal, setQrModal] = useState(false);
+  const [qrResults, setQrResults] = useState([]); // [{ id, table_number, url, qr }]
+  const [selectedTables, setSelectedTables] = useState([]); // selected table IDs
+  const [generatingQr, setGeneratingQr] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -112,6 +118,46 @@ export default function RestaurantAdminDashboard() {
       setTimeout(() => setProfileEdit(false), 1500);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
+  };
+
+  // ── QR Code Generation ──────────────────────────────────────────────────────────
+  const openQrModal = () => {
+    setQrResults([]);
+    setSelectedTables(tables.map(t => t.id));
+    setQrModal(true);
+  };
+
+  const toggleTableSelection = (id) => {
+    setSelectedTables(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const generateQrCodes = async () => {
+    if (selectedTables.length === 0) return;
+    setGeneratingQr(true);
+    try {
+      const selectedNumbers = tables
+        .filter(t => selectedTables.includes(t.id))
+        .map(t => t.table_number);
+
+      const res = await fetch('/api/tenant/qr', {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ tables: selectedNumbers })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to generate QR codes');
+      setQrResults(data);
+    } catch (err) { setError(err.message); }
+    finally { setGeneratingQr(false); }
+  };
+
+  const downloadQr = (result) => {
+    const link = document.createElement('a');
+    link.href = result.qr;
+    link.download = `qr-table-${result.table_number}.png`;
+    link.click();
   };
 
   const handlePrint = (table) => {
@@ -272,7 +318,17 @@ export default function RestaurantAdminDashboard() {
         {/* Table Management List */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl backdrop-blur-md">
-            <h2 className="text-xl font-bold mb-6">Registered Tables</h2>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold">Registered Tables</h2>
+              {tables.length > 0 && (
+                <button
+                  onClick={openQrModal}
+                  className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
+                >
+                  <span>📱</span> Generate QR Codes
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {tables.map(t => (
                 <div key={t.id} className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
@@ -385,6 +441,118 @@ export default function RestaurantAdminDashboard() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* QR Code Generation Modal */}
+      <AnimatePresence>
+        {qrModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/70 backdrop-blur-sm">
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+              className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-xl font-bold">Generate QR Codes</h3>
+                  <p className="text-xs text-slate-400 mt-1">Select tables and generate downloadable QR images</p>
+                </div>
+                <button onClick={() => setQrModal(false)} className="text-slate-500 hover:text-white text-2xl leading-none">&times;</button>
+              </div>
+
+              {!qrResults.length ? (
+                <>
+                  {/* Table selection */}
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Select Tables</p>
+                  <div className="flex gap-2 flex-wrap mb-4">
+                    <button
+                      onClick={() => setSelectedTables(tables.map(t => t.id))}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white border border-slate-700 transition-all"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() => setSelectedTables([])}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition-all"
+                    >
+                      Clear
+                    </button>
+                    <span className="text-xs text-slate-500 self-center ml-1">
+                      {selectedTables.length} of {tables.length} selected
+                    </span>
+                  </div>
+                  <div className="space-y-2 mb-6 max-h-48 overflow-y-auto">
+                    {tables.map(t => (
+                      <label key={t.id} className={`flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-all ${
+                        selectedTables.includes(t.id)
+                          ? 'bg-indigo-600/10 border-indigo-500/40'
+                          : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                      }`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedTables.includes(t.id)}
+                          onChange={() => toggleTableSelection(t.id)}
+                          className="accent-indigo-500 w-4 h-4"
+                        />
+                        <span className="text-sm font-bold text-white">{t.table_number}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => setQrModal(false)}
+                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 px-4 rounded-xl transition-all text-sm">
+                      Cancel
+                    </button>
+                    <button onClick={generateQrCodes} disabled={selectedTables.length === 0 || generatingQr}
+                      className="flex-1 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm">
+                      {generatingQr ? 'Generating...' : `Generate ${selectedTables.length} QR Code${selectedTables.length !== 1 ? 's' : ''}`}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* QR results grid */}
+                  <div className="flex justify-between items-center mb-4">
+                    <p className="text-sm font-bold text-emerald-400">{qrResults.length} QR codes generated</p>
+                    <button
+                      onClick={() => { setQrResults([]); }}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 font-bold transition-colors"
+                    >
+                      ← Generate More
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 max-h-[60vh] overflow-y-auto mb-6">
+                    {qrResults.map(r => (
+                      <div key={r.id} className="bg-white rounded-2xl p-4 flex flex-col items-center text-center">
+                        <p className="text-xs font-black text-slate-800 mb-2 tracking-wider uppercase">Table</p>
+                        <p className="text-lg font-black text-slate-900 mb-3">{r.table_number}</p>
+                        <img src={r.qr} alt={`QR for ${r.table_number}`} className="w-full rounded-xl" />
+                        <div className="mt-2 flex gap-1 w-full">
+                          <button
+                            onClick={() => downloadQr(r)}
+                            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 rounded-xl transition-all"
+                          >
+                            Download PNG
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => setQrModal(false)}
+                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 px-4 rounded-xl transition-all text-sm">
+                      Done
+                    </button>
+                    <button
+                      onClick={() => qrResults.forEach(r => downloadQr(r))}
+                      className="flex-1 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all text-sm"
+                    >
+                      Download All as PNG
+                    </button>
+                  </div>
+                </>
+              )}
             </motion.div>
           </motion.div>
         )}

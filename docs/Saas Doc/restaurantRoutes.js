@@ -70,16 +70,14 @@ router.get('/:slug/info', async (req, res) => {
 // ── Admin: get restaurant details ─────────────────────────────────────────────
 router.get('/:slug', adminAuth, (req, res) => {
   // secret_key intentionally excluded from response
-  const { id, slug, name, plan, active, contact_email, contact_phone,
-          address, latitude, longitude, manager_name, created_at } = req.restaurant;
-  res.json({ id, slug, name, plan, active, contact_email, contact_phone,
-              address, latitude, longitude, manager_name, created_at });
+  const { id, slug, name, plan, active, created_at } = req.restaurant;
+  res.json({ id, slug, name, plan, active, created_at });
 });
 
 // ── Super-admin: create a restaurant ─────────────────────────────────────────
-// POST /restaurants  { name, slug, contactEmail, contactPhone, address, latitude, longitude, managerName }
+// POST /restaurants  { name, slug }
 router.post('/', superAdminGuard, async (req, res) => {
-  const { name, slug, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
+  const { name, slug } = req.body;
   if (!name || !slug) {
     return res.status(400).json({ error: 'name and slug are required' });
   }
@@ -89,10 +87,10 @@ router.post('/', superAdminGuard, async (req, res) => {
 
   try {
     const result = await db.query(
-      `INSERT INTO restaurants (slug, name, secret_key, contact_email, contact_phone, address, latitude, longitude, manager_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, slug, name, plan, secret_key, active, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
-      [slugClean, name, secretKey, contactEmail || null, contactPhone || null, address || null, latitude || null, longitude || null, managerName || null]
+      `INSERT INTO restaurants (slug, name, secret_key)
+       VALUES ($1, $2, $3)
+       RETURNING id, slug, name, plan, secret_key, active, created_at`,
+      [slugClean, name, secretKey]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -145,7 +143,7 @@ router.post('/:slug/qr', adminAuth, async (req, res) => {
   try {
     const results = [];
     for (const tableId of tables) {
-      const url = `${baseUrl}/r/${req.params.slug}/t/${encodeURIComponent(tableId)}`;
+      const url = `${baseUrl}/t/${req.params.slug}/${tableId}`;
       const dataUrl = await QRCode.toDataURL(url, {
         width: 600,
         margin: 2,
@@ -194,36 +192,6 @@ router.get('/:slug/analytics', adminAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('[GET /restaurants/:slug/analytics]', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ── Admin: update restaurant profile ──────────────────────────────────────────
-router.patch('/:slug', adminAuth, async (req, res) => {
-  const { name, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
-  try {
-    const fields = [];
-    const params = [req.params.slug];
-    let i = 2;
-    if (name !== undefined)        { fields.push(`name = $${i++}`);         params.push(name); }
-    if (contactEmail !== undefined) { fields.push(`contact_email = $${i++}`); params.push(contactEmail || null); }
-    if (contactPhone !== undefined) { fields.push(`contact_phone = $${i++}`); params.push(contactPhone || null); }
-    if (address !== undefined)      { fields.push(`address = $${i++}`);       params.push(address || null); }
-    if (latitude !== undefined)     { fields.push(`latitude = $${i++}`);      params.push(latitude || null); }
-    if (longitude !== undefined)    { fields.push(`longitude = $${i++}`);     params.push(longitude || null); }
-    if (managerName !== undefined)  { fields.push(`manager_name = $${i++}`); params.push(managerName || null); }
-    fields.push(`updated_at = NOW()`);
-    if (fields.length === 1) return res.status(400).json({ error: 'No fields to update' });
-
-    const result = await db.query(
-      `UPDATE restaurants SET ${fields.join(', ')} WHERE slug = $1
-       RETURNING id, slug, name, plan, active, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
-      params
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('[PATCH /restaurants/:slug]', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

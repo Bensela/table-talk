@@ -1,31 +1,64 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../components/ui/Button';
-import { resolveSession, joinDualSession, createSession } from '../api';
+import { resolveSession, joinDualSession, publicHandshake } from '../api';
 import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 
 export default function WelcomeScreen() {
   const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
-  const queryParams = new URLSearchParams(location.search);
-  const restaurantQueryParam = queryParams.get('restaurant');
-  const activeRestaurantSlug = restaurantSlug || restaurantQueryParam || 'default';
+
+  // restaurantSlug comes from the path; fall back to 'default' for legacy QR codes
+  const activeRestaurantSlug = restaurantSlug || 'default';
 
   const { socket, isConnected, ensureConnection } = useSocket();
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState(null);
   const [setupStatus, setSetupStatus] = useState('available'); // 'available', 'busy', 'granted'
   const [waitingForA, setWaitingForA] = useState(false);
-  const [blockedError, setBlockedError] = useState(null); // Added state for blocked error UI
+  const [blockedError, setBlockedError] = useState(null);
+  const [subscriptionError, setSubscriptionError] = useState(null); // 'suspended' | 'invalid'
   const setupCompletedRef = useRef(false);
+  const validatedRef = useRef(false);
 
   // Save the resolved restaurant slug to session state on mount / update
   useEffect(() => {
     sessionStorage.setItem('restaurant_slug', activeRestaurantSlug);
   }, [activeRestaurantSlug]);
+
+  // ── Subscription & Table Validation ────────────────────────────────────────────
+  // Runs once after socket connects to validate restaurant is active and table registered.
+  useEffect(() => {
+    if (!tableToken || validatedRef.current) return;
+
+    async function validate() {
+      validatedRef.current = true;
+      try {
+        // Skip validation for legacy 'default' restaurant (no slug)
+        if (activeRestaurantSlug === 'default') return;
+
+        await publicHandshake(activeRestaurantSlug, tableToken);
+        // Valid — proceed normally
+      } catch (err) {
+        if (err.response?.status === 403) {
+          setSubscriptionError('suspended');
+        } else {
+          setSubscriptionError('invalid');
+        }
+      }
+    }
+
+    // Validate as soon as socket is connected so we fail fast
+    if (isConnected) {
+      validate();
+    } else if (socket) {
+      const onConnect = () => validate();
+      socket.on('connect', onConnect);
+      return () => socket.off('connect', onConnect);
+    }
+  }, [isConnected, socket, tableToken, activeRestaurantSlug]);
 
   const contextPath = activeRestaurantSlug && activeRestaurantSlug !== 'default'
     ? `/r/${activeRestaurantSlug}/t/${tableToken}/context`
@@ -274,6 +307,58 @@ export default function WelcomeScreen() {
       setChecking(false);
     }
   };
+
+  // Subscription Error: Service Suspended
+  if (subscriptionError === 'suspended') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden font-sans">
+        <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ type: 'spring', duration: 0.8 }}
+          className="max-w-md w-full backdrop-blur-xl bg-slate-900/60 border border-slate-800/80 rounded-3xl p-8 md:p-10 shadow-2xl relative z-10"
+        >
+          <div className="w-20 h-20 bg-amber-500/10 border border-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl">🛠️</div>
+          <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+            Service Temporarily Unavailable
+          </h1>
+          <p className="text-slate-400 text-base leading-relaxed mb-8">
+            This restaurant's subscription is inactive or suspended. Please contact the restaurant or try again later.
+          </p>
+          <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-slate-800 text-slate-300 hover:bg-slate-800">
+            Go Home
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Subscription Error: Invalid / Unregistered
+  if (subscriptionError === 'invalid') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden font-sans">
+        <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-rose-500/5 rounded-full blur-3xl pointer-events-none" />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ type: 'spring', duration: 0.8 }}
+          className="max-w-md w-full backdrop-blur-xl bg-slate-900/60 border border-slate-800/80 rounded-3xl p-8 md:p-10 shadow-2xl relative z-10"
+        >
+          <div className="w-20 h-20 bg-rose-500/10 border border-rose-500/20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl">⚠️</div>
+          <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+            Invalid QR Code
+          </h1>
+          <p className="text-slate-400 text-base leading-relaxed mb-8">
+            This QR code is invalid, expired, or the table is not registered with any active restaurant. Please scan a valid QR code.
+          </p>
+          <Button onClick={() => navigate('/')} variant="primary" fullWidth className="bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/20">
+            Scan Again / Home
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
 
   // Waiting UI for Phone B
   if (waitingForA) {

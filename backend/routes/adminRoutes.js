@@ -16,6 +16,8 @@ router.patch('/questions/reshuffle', authenticateToken, requireRole(['SUPER_ADMI
 router.get('/billing', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.getTenantBilling);
 router.patch('/profile', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.updateTenantProfile);
 router.get('/tables', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.getTenantTables);
+router.post('/qr', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.generateTenantQr);
+router.patch('/tables/:id/qr', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.regenerateTableQr);
 router.post('/tables', authenticateToken, requireRole(['RESTAURANT_ADMIN']), adminController.createTenantTable);
 
 module.exports = router;

@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 const db = require('../db');
 const { signToken } = require('../middleware/authMiddleware');
+const QRCode = require('qrcode');
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://tabletalk.app';
 
 /**
  * PBKDF2 Hashing function matching migration logic:
@@ -375,9 +378,8 @@ async function createTenantTable(req, res) {
     }
     const slug = restRes.rows[0].slug;
 
-    // Generate table public session QR URL
-    // Format: https://tabletalk.app/r/[slug]?table=[number]
-    const qr_code_url = `https://tabletalk.app/r/${slug}?table=${encodeURIComponent(table_number)}`;
+    // Generate table public QR URL using path-based format: /r/{slug}/t/{tableNumber}
+    const qr_code_url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(table_number)}`;
 
     const result = await db.query(
       `INSERT INTO restaurant_tables (restaurant_id, table_number, qr_code_url) 
@@ -394,6 +396,84 @@ async function createTenantTable(req, res) {
   }
 }
 
+/**
+ * POST /api/tenant/qr
+ * Restaurant Admin: Generate QR codes for selected table(s) or all tables.
+ * Body: { tables?: string[] } — if omitted, generates for all tables.
+ * Returns array of { id, table_number, url, qr } where qr is a data URL.
+ */
+async function generateTenantQr(req, res) {
+  const restaurantId = req.user.restaurant_id;
+  if (!restaurantId) {
+    return res.status(400).json({ error: 'User is not associated with any restaurant' });
+  }
+  const { tables } = req.body; // optional array of table_numbers
+
+  try {
+    const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
+    if (!restRes.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+    const slug = restRes.rows[0].slug;
+
+    let query = `SELECT id, table_number, qr_code_url FROM restaurant_tables WHERE restaurant_id = $1`;
+    const params = [restaurantId];
+    if (Array.isArray(tables) && tables.length > 0) {
+      query += ` AND table_number = ANY($2)`;
+      params.push(tables);
+    }
+    query += ` ORDER BY table_number ASC`;
+
+    const rows = await db.query(query, params);
+    const results = await Promise.all(rows.rows.map(async (row) => {
+      const url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
+      const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
+      return { id: row.id, table_number: row.table_number, url, qr };
+    }));
+
+    res.json(results);
+  } catch (err) {
+    console.error('Generate tenant QR error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * PATCH /api/tenant/tables/:id/qr
+ * Restaurant Admin: Regenerate QR code for a single table. Returns fresh QR data URL.
+ */
+async function regenerateTableQr(req, res) {
+  const restaurantId = req.user.restaurant_id;
+  if (!restaurantId) {
+    return res.status(400).json({ error: 'User is not associated with any restaurant' });
+  }
+  const { id } = req.params;
+
+  try {
+    const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
+    if (!restRes.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+    const slug = restRes.rows[0].slug;
+
+    const rowRes = await db.query(
+      `SELECT id, table_number FROM restaurant_tables WHERE id = $1 AND restaurant_id = $2`,
+      [id, restaurantId]
+    );
+    if (!rowRes.rows.length) return res.status(404).json({ error: 'Table not found' });
+
+    const row = rowRes.rows[0];
+    const url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
+    const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
+
+    await db.query(
+      `UPDATE restaurant_tables SET qr_code_url = $1 WHERE id = $2`,
+      [url, id]
+    );
+
+    res.json({ id: row.id, table_number: row.table_number, url, qr });
+  } catch (err) {
+    console.error('Regenerate table QR error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 module.exports = {
   login,
   getTenants,
@@ -404,5 +484,7 @@ module.exports = {
   getTenantBilling,
   getTenantTables,
   createTenantTable,
+  generateTenantQr,
+  regenerateTableQr,
   hashPassword
 };
