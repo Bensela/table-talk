@@ -125,7 +125,12 @@ const init = async () => {
       '006_fix_missing_hints.sql',
       '007_add_session_lifecycle_fields.sql',
       '008_add_restaurants_and_multi_tenancy.sql',
-      '009_admin_dashboards.sql'
+      '009_admin_dashboards.sql',
+      '009_restaurant_profile.sql',
+      '010_seed_default_access.sql',
+      '011_restaurant_invites.sql',
+      '012_questions_sub_category.sql',
+      '013_password_reset.sql'
     ];
 
     // 3. Execute Migration Files

@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
@@ -14,7 +13,11 @@ export default function RestaurantAdminDashboard() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [addressLookup, setAddressLookup] = useState({ loading: false, error: '', resolvedAddress: '' });
+  const [printPaperSize, setPrintPaperSize] = useState('letter');
+  const [printingTableId, setPrintingTableId] = useState(null);
   const printAreaRef = useRef(null);
+  const addressLookupRequestRef = useRef(0);
 
   // QR generation state
   const [qrModal, setQrModal] = useState(false);
@@ -22,18 +25,89 @@ export default function RestaurantAdminDashboard() {
   const [selectedTables, setSelectedTables] = useState([]); // selected table IDs
   const [generatingQr, setGeneratingQr] = useState(false);
 
-  // Loading guard — redirect to login if no token
-  if (checking) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!checking) {
+      fetchData();
+    }
+  }, [checking]);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (!profileEdit) {
+      return undefined;
+    }
+
+    const trimmedAddress = String(editForm.address || '').trim();
+
+    if (!trimmedAddress) {
+      setAddressLookup({ loading: false, error: '', resolvedAddress: '' });
+      setEditForm((current) => (
+        current.latitude || current.longitude
+          ? { ...current, latitude: '', longitude: '' }
+          : current
+      ));
+      return undefined;
+    }
+
+    if (trimmedAddress.length < 10) {
+      setAddressLookup((current) => ({ ...current, loading: false, error: '', resolvedAddress: '' }));
+      return undefined;
+    }
+
+    if (
+      addressLookup.resolvedAddress === trimmedAddress &&
+      String(editForm.latitude || '').trim() &&
+      String(editForm.longitude || '').trim()
+    ) {
+      return undefined;
+    }
+
+    const requestId = addressLookupRequestRef.current + 1;
+    addressLookupRequestRef.current = requestId;
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setAddressLookup({ loading: true, error: '', resolvedAddress: '' });
+
+        const response = await fetch('/api/admin/geocode-address', {
+          method: 'POST',
+          headers: getAdminHeaders(),
+          body: JSON.stringify({ address: trimmedAddress })
+        });
+
+        const data = await response.json();
+
+        if (requestId !== addressLookupRequestRef.current) {
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to locate that address');
+        }
+
+        setEditForm((current) => {
+          if (String(current.address || '').trim() !== trimmedAddress) {
+            return current;
+          }
+
+          return {
+            ...current,
+            latitude: String(data.latitude),
+            longitude: String(data.longitude)
+          };
+        });
+
+        setAddressLookup({ loading: false, error: '', resolvedAddress: trimmedAddress });
+      } catch (err) {
+        if (requestId !== addressLookupRequestRef.current) {
+          return;
+        }
+
+        setAddressLookup({ loading: false, error: err.message, resolvedAddress: '' });
+      }
+    }, 700);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [profileEdit, editForm.address, editForm.latitude, editForm.longitude, addressLookup.resolvedAddress]);
 
   const fetchData = async () => {
     try {
@@ -87,6 +161,11 @@ export default function RestaurantAdminDashboard() {
       latitude: profile?.latitude != null ? String(profile.latitude) : '',
       longitude: profile?.longitude != null ? String(profile.longitude) : ''
     });
+    setAddressLookup({
+      loading: false,
+      error: '',
+      resolvedAddress: profile?.address && profile?.latitude != null && profile?.longitude != null ? profile.address : ''
+    });
     setError(''); setSuccess('');
     setProfileEdit(true);
   };
@@ -96,7 +175,7 @@ export default function RestaurantAdminDashboard() {
     setError(''); setSuccess(''); setLoading(true);
     try {
       const res = await fetch('/api/tenant/profile', {
-        method: 'PATCH', headers: getHeaders(),
+        method: 'PATCH', headers: getAdminHeaders(),
         body: JSON.stringify({
           name: editForm.name,
           managerName: editForm.managerName || null,
@@ -156,26 +235,77 @@ export default function RestaurantAdminDashboard() {
     link.click();
   };
 
-  const handlePrint = (table) => {
-    const printWindow = window.open('', '_blank');
-    const html = `
+  const handlePrint = async (table) => {
+    setError('');
+    setSuccess('');
+    setPrintingTableId(table.id);
+
+    try {
+      const res = await fetch('/api/tenant/qr', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ tables: [table.table_number] })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate QR code');
+      }
+
+      const qrEntry = Array.isArray(data) ? data[0] : null;
+      if (!qrEntry?.qr) {
+        throw new Error('QR code data is missing');
+      }
+
+      const paperSizeCss = printPaperSize === 'a4'
+        ? 'A4'
+        : printPaperSize === 'a5'
+          ? 'A5'
+          : 'Letter';
+
+      const restaurantName = profile?.name || 'Table Talk';
+      const printWindow = window.open('', '_blank');
+      const html = `
       <html>
         <head>
           <title>Print QR - Table ${table.table_number}</title>
           <style>
+            @page {
+              size: ${paperSizeCss};
+              margin: 14mm;
+            }
+            @media print {
+              body {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+            }
             body {
               font-family: system-ui, -apple-system, sans-serif;
-              text-align: center;
-              padding: 40px;
+              margin: 0;
+              padding: 0;
               color: #1e293b;
+              background: #ffffff;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
             }
             .card {
               max-width: 320px;
               margin: 0 auto;
-              border: 2px dashed #cbd5e1;
+              border: 2px dashed rgba(148, 163, 184, 0.8);
               border-radius: 24px;
               padding: 32px;
               box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            }
+            .restaurant {
+              font-size: 14px;
+              font-weight: 800;
+              color: #0f172a;
+              text-transform: uppercase;
+              letter-spacing: 0.14em;
+              margin-bottom: 14px;
             }
             .logo {
               font-size: 24px;
@@ -186,7 +316,7 @@ export default function RestaurantAdminDashboard() {
             .logo span {
               color: #6366f1;
             }
-            .qr-placeholder {
+            .qr-frame {
               width: 200px;
               height: 200px;
               background: #f8fafc;
@@ -197,9 +327,12 @@ export default function RestaurantAdminDashboard() {
               justify-content: center;
               border-radius: 16px;
               position: relative;
+              overflow: hidden;
             }
-            .qr-code {
-              font-size: 72px;
+            .qr-frame img {
+              width: 100%;
+              height: 100%;
+              object-fit: cover;
             }
             .table-label {
               font-size: 14px;
@@ -223,9 +356,10 @@ export default function RestaurantAdminDashboard() {
         </head>
         <body>
           <div class="card">
+            <div class="restaurant">${restaurantName}</div>
             <div class="logo">Table<span>-Talk</span></div>
-            <div class="qr-placeholder">
-              <span class="qr-code">📱</span>
+            <div class="qr-frame">
+              <img src="${qrEntry.qr}" alt="QR code for table ${table.table_number}" />
             </div>
             <div class="table-label">Table</div>
             <div class="table-number">${table.table_number}</div>
@@ -240,9 +374,22 @@ export default function RestaurantAdminDashboard() {
         </body>
       </html>
     `;
-    printWindow.document.write(html);
-    printWindow.document.close();
+      printWindow.document.write(html);
+      printWindow.document.close();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPrintingTableId(null);
+    }
   };
+
+  if (checking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-6 font-sans">
@@ -298,14 +445,14 @@ export default function RestaurantAdminDashboard() {
                 )}
               </div>
             </div>
-            {profile.latitude && profile.longitude && (
+            {(profile.latitude && profile.longitude) || profile.address ? (
               <div className="w-full lg:w-80 shrink-0">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Location</h4>
                 <div className="rounded-xl overflow-hidden border border-slate-700">
                   <MapDisplay latitude={profile.latitude} longitude={profile.longitude} address={profile.address} height={160} />
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       )}
@@ -316,14 +463,28 @@ export default function RestaurantAdminDashboard() {
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl backdrop-blur-md">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold">Registered Tables</h2>
-              {tables.length > 0 && (
-                <button
-                  onClick={openQrModal}
-                  className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
-                >
-                  <span>📱</span> Generate QR Codes
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/40 px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paper</span>
+                  <select
+                    value={printPaperSize}
+                    onChange={(event) => setPrintPaperSize(event.target.value)}
+                    className="bg-transparent text-xs font-semibold text-slate-200 focus:outline-none"
+                  >
+                    <option value="letter">Letter</option>
+                    <option value="a4">A4</option>
+                    <option value="a5">A5</option>
+                  </select>
+                </div>
+                {tables.length > 0 && (
+                  <button
+                    onClick={openQrModal}
+                    className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
+                  >
+                    <span>📱</span> Generate QR Codes
+                  </button>
+                )}
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {tables.map(t => (
@@ -336,6 +497,7 @@ export default function RestaurantAdminDashboard() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => handlePrint(t)}
+                      disabled={printingTableId === t.id}
                       className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition-all hover:shadow-lg hover:shadow-indigo-500/20 flex items-center gap-1.5"
                     >
                       <span>🖨️</span> Print QR
@@ -415,15 +577,27 @@ export default function RestaurantAdminDashboard() {
                   value={editForm.contactPhone} onChange={v => setEditForm(f => ({ ...f, contactPhone: v }))} />
                 <Field label="Street Address" placeholder="Full address"
                   value={editForm.address} onChange={v => setEditForm(f => ({ ...f, address: v }))} />
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                  {addressLookup.loading
+                    ? 'Looking up latitude and longitude from the address...'
+                    : addressLookup.error
+                      ? addressLookup.error
+                      : 'Latitude and longitude are filled automatically when the address is recognized.'}
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <Field label="Latitude" placeholder="40.7128"
                     value={editForm.latitude} onChange={v => setEditForm(f => ({ ...f, latitude: v }))} />
                   <Field label="Longitude" placeholder="-74.0060"
                     value={editForm.longitude} onChange={v => setEditForm(f => ({ ...f, longitude: v }))} />
                 </div>
-                {(editForm.latitude && editForm.longitude) && (
+                {((editForm.latitude && editForm.longitude) || editForm.address) && (
                   <div className="rounded-xl overflow-hidden border border-slate-700">
-                    <MapDisplay latitude={parseFloat(editForm.latitude)} longitude={parseFloat(editForm.longitude)} address={editForm.address} height={120} />
+                    <MapDisplay
+                      latitude={editForm.latitude ? parseFloat(editForm.latitude) : null}
+                      longitude={editForm.longitude ? parseFloat(editForm.longitude) : null}
+                      address={editForm.address}
+                      height={120}
+                    />
                   </div>
                 )}
                 <div className="flex gap-3 pt-2">

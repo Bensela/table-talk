@@ -1,15 +1,26 @@
 const db = require('../db');
 const crypto = require('crypto');
 
-// Cache all questions in memory by restaurant_id
-let questionsCache = {};
+const GLOBAL_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 
 const getAllQuestions = async (restaurant_id) => {
   const restId = restaurant_id || 'd0000000-0000-0000-0000-000000000000';
-  if (questionsCache[restId]) return questionsCache[restId];
-  const result = await db.query('SELECT * FROM questions WHERE active = true AND restaurant_id = $1 ORDER BY question_id', [restId]);
-  questionsCache[restId] = result.rows;
-  return questionsCache[restId];
+  const result = await db.query(
+    `SELECT *
+     FROM questions
+     WHERE active = true
+       AND (restaurant_id = $1 OR restaurant_id IS NULL OR restaurant_id = $2)
+     ORDER BY
+       CASE
+         WHEN restaurant_id = $1 THEN 0
+         WHEN restaurant_id IS NULL THEN 1
+         ELSE 2
+       END,
+       COALESCE(sort_order, 2147483647),
+       question_id`,
+    [restId, GLOBAL_RESTAURANT_ID]
+  );
+  return result.rows;
 };
 
 // Simple seeded random generator
@@ -307,5 +318,5 @@ module.exports = {
   advanceDeck,
   previousDeck,
   getQuestionAtIndex, // Exporting placeholder to avoid crash, but will replace usage
-  _resetCache: () => { questionsCache = {}; }
+  _resetCache: () => {}
 };

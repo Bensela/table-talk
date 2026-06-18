@@ -6,9 +6,9 @@ const { joinRateLimiter } = require('../middleware/rateLimiter');
 const { resolveRestaurant } = require('../middleware/resolveRestaurant');
 
 router.post('/', resolveRestaurant, sessionController.createSession);
-router.post('/join-dual', joinRateLimiter, sessionController.joinDualPhoneSession);
-router.post('/resolve', sessionController.resolveSession);
-router.post('/resume-by-qr', sessionController.resumeSessionByQr);
+router.post('/join-dual', joinRateLimiter, resolveRestaurant, sessionController.joinDualPhoneSession);
+router.post('/resolve', resolveRestaurant, sessionController.resolveSession);
+router.post('/resume-by-qr', resolveRestaurant, sessionController.resumeSessionByQr);
 router.get('/:session_id', sessionController.getSession);
 router.get('/:session_id/state', sessionController.getSessionState); // Add state route
 router.post('/:session_id/heartbeat', sessionController.heartbeat); // Add heartbeat route

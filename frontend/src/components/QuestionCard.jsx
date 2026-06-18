@@ -40,6 +40,7 @@ export default function QuestionCard({
   const [submitted, setSubmitted] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState(partnerSelectionsData);
   const [showReadyButton, setShowReadyButton] = useState(false);
+  const normalizedOptions = useMemo(() => normalizeQuestionOptions(question?.options), [question?.options]);
 
   // Sync prop changes (if parent gets data first/later)
   useEffect(() => {
@@ -87,14 +88,14 @@ export default function QuestionCard({
     // 4. Find text
     // Fallback to "..." if text not found, but if we have a valid ID but no text, show "Unknown"
     // This helps distinguish between "No ID found" vs "ID found but no text match"
-    const text = question.options?.options?.find(o => String(o.id) === String(pAuthId))?.text;
+    const text = normalizedOptions.find((option) => String(option.id) === String(pAuthId))?.text;
     
     // Final fallback: if pAuthId exists but no text match, show ID for debugging? 
     // Or better: check if pAuthId is null
     if (!pAuthId) return '...';
     
     return text || '...';
-  }, [localRevealed, partnerSelections, userId, selectedOption, question?.options]);
+  }, [localRevealed, partnerSelections, userId, selectedOption, normalizedOptions]);
 
   useEffect(() => {
     setLocalRevealed(isRevealed);
@@ -263,7 +264,7 @@ export default function QuestionCard({
           )}
 
           {/* MULTIPLE CHOICE */}
-          {isMultipleChoice && question.options && (
+          {isMultipleChoice && normalizedOptions.length > 0 && (
             <AnimatePresence mode="wait">
               {/* Only show the options list if the answers haven't been revealed OR if it's the "Reveal" phase. 
                   Since we no longer fade/hide locally on "submit", we can just keep showing it. 
@@ -278,7 +279,7 @@ export default function QuestionCard({
                 transition={{ type: "spring", bounce: 0.4, duration: 0.6 }}
                 className="space-y-3 mt-4 relative z-20"
               >
-                {(question.options.options || question.options).map((opt) => {
+                {normalizedOptions.map((opt) => {
                 const isSelected = selectedOption === opt.id;
                 // Check if partner selected this
                 const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => String(uid) !== String(userId))?.[1];
@@ -323,9 +324,6 @@ export default function QuestionCard({
         {/* Hint Indicator / Reveal Button */}
         {!isMultipleChoice && !localRevealed && (
           <div className="absolute bottom-6 left-0 w-full text-center pointer-events-none">
-             {/* If explicit button desired, we can uncomment this or replace the text below */}
-             {/* <button className="pointer-events-auto text-sm text-blue-500 font-bold underline">Reveal Hint</button> */}
-             
             <span className="text-xs text-gray-300 font-bold uppercase tracking-wide animate-pulse">
               Tap card to reveal hint
             </span>
@@ -464,4 +462,57 @@ export default function QuestionCard({
       </div>
     </div>
   );
+}
+
+function normalizeQuestionOptions(rawOptions) {
+  if (!rawOptions) {
+    return [];
+  }
+
+  const sourceOptions = Array.isArray(rawOptions)
+    ? rawOptions
+    : Array.isArray(rawOptions.options)
+      ? rawOptions.options
+      : typeof rawOptions === 'string'
+        ? rawOptions.split('|').map((item) => item.trim()).filter(Boolean)
+        : [];
+
+  return sourceOptions
+    .map((option, index) => normalizeQuestionOption(option, index))
+    .filter(Boolean);
+}
+
+function normalizeQuestionOption(option, index) {
+  if (option == null) {
+    return null;
+  }
+
+  if (typeof option === 'object' && !Array.isArray(option)) {
+    const rawText = option.text ?? option.label ?? option.value ?? '';
+    const text = cleanOptionLabel(rawText);
+    if (!text) {
+      return null;
+    }
+
+    return {
+      id: String(option.id ?? option.value ?? `option-${index + 1}`),
+      text
+    };
+  }
+
+  const text = cleanOptionLabel(option);
+  if (!text) {
+    return null;
+  }
+
+  return {
+    id: `option-${index + 1}`,
+    text
+  };
+}
+
+function cleanOptionLabel(value) {
+  return String(value ?? '')
+    .replace(/^[A-Z]\s*[:.)-]\s*/i, '')
+    .trim();
 }

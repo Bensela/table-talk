@@ -44,7 +44,22 @@ export default function MapDisplay({ latitude, longitude, address, height = 180 
     );
   }
 
-  // Fallback: address-based embed
+  if (searchSrc) {
+    return (
+      <iframe
+        title="Restaurant Location Search"
+        width="100%"
+        height={height}
+        src={searchSrc}
+        style={{ border: 0, borderRadius: '12px' }}
+        allowFullScreen
+        loading="lazy"
+        referrerPolicy="no-referrer-when-downgrade"
+      />
+    );
+  }
+
+  // Fallback: address text only
   return (
     <div
       className="flex items-center justify-center rounded-xl border border-slate-700 bg-slate-800/40 text-slate-400 text-xs"

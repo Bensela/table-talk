@@ -10,8 +10,7 @@ export default function WelcomeScreen() {
   const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
 
-  // restaurantSlug comes from the path; fall back to 'default' for legacy QR codes
-  const activeRestaurantSlug = restaurantSlug || 'default';
+  const activeRestaurantSlug = restaurantSlug || null;
 
   const { socket, isConnected, ensureConnection } = useSocket();
   const [checking, setChecking] = useState(false);
@@ -25,20 +24,21 @@ export default function WelcomeScreen() {
 
   // Save the resolved restaurant slug to session state on mount / update
   useEffect(() => {
+    if (!activeRestaurantSlug) {
+      setSubscriptionError('invalid');
+      return;
+    }
     sessionStorage.setItem('restaurant_slug', activeRestaurantSlug);
   }, [activeRestaurantSlug]);
 
   // ── Subscription & Table Validation ────────────────────────────────────────────
   // Runs once after socket connects to validate restaurant is active and table registered.
   useEffect(() => {
-    if (!tableToken || validatedRef.current) return;
+    if (!tableToken || !activeRestaurantSlug || validatedRef.current) return;
 
     async function validate() {
       validatedRef.current = true;
       try {
-        // Skip validation for legacy 'default' restaurant (no slug)
-        if (activeRestaurantSlug === 'default') return;
-
         await publicHandshake(activeRestaurantSlug, tableToken);
         // Valid — proceed normally
       } catch (err) {
@@ -60,9 +60,7 @@ export default function WelcomeScreen() {
     }
   }, [isConnected, socket, tableToken, activeRestaurantSlug]);
 
-  const contextPath = activeRestaurantSlug && activeRestaurantSlug !== 'default'
-    ? `/r/${activeRestaurantSlug}/t/${tableToken}/context`
-    : `/t/${tableToken}/context`;
+  const contextPath = `/r/${activeRestaurantSlug}/t/${tableToken}/context`;
 
   // Join setup room on mount
   useEffect(() => {
