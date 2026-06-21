@@ -108,6 +108,9 @@ app.use((req, res, next) => {
 
 // --- API & Static Routes ---
 app.use('/sessions', sessionRoutes);
+app.use('/admin', adminRoutes);
+app.use('/tenant', adminRoutes);
+app.use('/public', publicRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tenant', adminRoutes);
