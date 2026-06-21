@@ -1,9 +1,29 @@
 import axios from 'axios';
 
 const isDev = import.meta.env.DEV;
+const rawApiBaseUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api');
+
+export const apiBaseUrl = rawApiBaseUrl.replace(/\/+$/, '');
+
+export function buildApiUrl(path = '') {
+  if (!path) {
+    return apiBaseUrl;
+  }
+
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${apiBaseUrl}${normalizedPath}`;
+}
+
+export function apiFetch(path, options) {
+  return fetch(buildApiUrl(path), options);
+}
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api'),
+  baseURL: apiBaseUrl,
 });
 
 // Updated createSession to accept table_token, context, and mode

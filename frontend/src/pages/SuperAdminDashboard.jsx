@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 
@@ -110,7 +111,7 @@ export default function SuperAdminDashboard() {
       try {
         setTenantAddressLookup({ loading: true, error: '', resolvedAddress: '' });
 
-        const response = await fetch('/api/admin/geocode-address', {
+        const response = await apiFetch('/admin/geocode-address', {
           method: 'POST',
           headers: getAdminHeaders(),
           body: JSON.stringify({ address: trimmedAddress })
@@ -155,9 +156,9 @@ export default function SuperAdminDashboard() {
     try {
       setPageLoading(true);
       const [tenantsRes, questionsRes, metricsRes] = await Promise.all([
-        fetch('/api/admin/tenants', { headers: getAdminHeaders() }),
-        fetch('/api/admin/questions', { headers: getAdminHeaders() }),
-        fetch(`/api/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, { headers: getAdminHeaders() })
+        apiFetch('/admin/tenants', { headers: getAdminHeaders() }),
+        apiFetch('/admin/questions', { headers: getAdminHeaders() }),
+        apiFetch(`/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, { headers: getAdminHeaders() })
       ]);
 
       const tenantsData = await tenantsRes.json();
@@ -180,7 +181,7 @@ export default function SuperAdminDashboard() {
         setMetricsLoading(true);
       }
 
-      const response = await fetch(`/api/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, {
+      const response = await apiFetch(`/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, {
         headers: getAdminHeaders()
       });
       const data = await response.json();
@@ -283,7 +284,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setInviteLoading(true);
-      const response = await fetch('/api/admin/tenants/invites', {
+      const response = await apiFetch('/admin/tenants/invites', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({
@@ -336,7 +337,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setPageLoading(true);
-      const response = await fetch(`/api/admin/tenants/${editingTenant.id}`, {
+      const response = await apiFetch(`/admin/tenants/${editingTenant.id}`, {
         method: 'PATCH',
         headers: getAdminHeaders(),
         body: JSON.stringify({
@@ -370,7 +371,7 @@ export default function SuperAdminDashboard() {
     const nextStatus = tenant.billing_status === 'active' ? 'suspended' : 'active';
 
     try {
-      const response = await fetch(`/api/admin/tenants/${tenant.id}`, {
+      const response = await apiFetch(`/admin/tenants/${tenant.id}`, {
         method: 'PATCH',
         headers: getAdminHeaders(),
         body: JSON.stringify({ billing_status: nextStatus })
@@ -405,7 +406,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setTenantActionLoading(true);
-      const response = await fetch(`/api/admin/tenants/${tenant.id}`, {
+      const response = await apiFetch(`/admin/tenants/${tenant.id}`, {
         method: 'DELETE',
         headers: getAdminHeaders()
       });
@@ -446,7 +447,7 @@ export default function SuperAdminDashboard() {
     setGlobalQuestions(updatedQuestions);
 
     try {
-      await fetch('/api/admin/questions/reshuffle', {
+      await apiFetch('/admin/questions/reshuffle', {
         method: 'PATCH',
         headers: getAdminHeaders(),
         body: JSON.stringify({
@@ -471,7 +472,7 @@ export default function SuperAdminDashboard() {
       setQuestionLoading(true);
       const csvText = await csvFile.text();
 
-      const response = await fetch('/api/admin/questions/import', {
+      const response = await apiFetch('/admin/questions/import', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({
@@ -542,7 +543,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setQuestionActionLoading(true);
-      const response = await fetch(`/api/admin/questions/${editingQuestion.question_id}`, {
+      const response = await apiFetch(`/admin/questions/${editingQuestion.question_id}`, {
         method: 'PATCH',
         headers: getAdminHeaders(),
         body: JSON.stringify({
@@ -581,7 +582,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setQuestionActionLoading(true);
-      const response = await fetch(`/api/admin/questions/${questionId}`, {
+      const response = await apiFetch(`/admin/questions/${questionId}`, {
         method: 'DELETE',
         headers: getAdminHeaders()
       });
@@ -616,7 +617,7 @@ export default function SuperAdminDashboard() {
 
     try {
       setQuestionActionLoading(true);
-      const response = await fetch('/api/admin/questions/bulk-delete', {
+      const response = await apiFetch('/admin/questions/bulk-delete', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({ question_ids: selectedQuestionIds })

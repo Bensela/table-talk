@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 
@@ -68,7 +69,7 @@ export default function RestaurantAdminDashboard() {
       try {
         setAddressLookup({ loading: true, error: '', resolvedAddress: '' });
 
-        const response = await fetch('/api/admin/geocode-address', {
+        const response = await apiFetch('/admin/geocode-address', {
           method: 'POST',
           headers: getAdminHeaders(),
           body: JSON.stringify({ address: trimmedAddress })
@@ -111,11 +112,11 @@ export default function RestaurantAdminDashboard() {
 
   const fetchData = async () => {
     try {
-      const tablesRes = await fetch('/api/tenant/tables', { headers: getAdminHeaders() });
+      const tablesRes = await apiFetch('/tenant/tables', { headers: getAdminHeaders() });
       const tablesData = await tablesRes.json();
       setTables(Array.isArray(tablesData) ? tablesData : []);
 
-      const billingRes = await fetch('/api/tenant/billing', { headers: getAdminHeaders() });
+      const billingRes = await apiFetch('/tenant/billing', { headers: getAdminHeaders() });
       if (billingRes.ok) {
         const data = await billingRes.json();
         setProfile(data);
@@ -132,7 +133,7 @@ export default function RestaurantAdminDashboard() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/tenant/tables', {
+      const res = await apiFetch('/tenant/tables', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({ table_number: tableNumber })
@@ -174,7 +175,7 @@ export default function RestaurantAdminDashboard() {
     e.preventDefault();
     setError(''); setSuccess(''); setLoading(true);
     try {
-      const res = await fetch('/api/tenant/profile', {
+      const res = await apiFetch('/tenant/profile', {
         method: 'PATCH', headers: getAdminHeaders(),
         body: JSON.stringify({
           name: editForm.name,
@@ -216,7 +217,7 @@ export default function RestaurantAdminDashboard() {
         .filter(t => selectedTables.includes(t.id))
         .map(t => t.table_number);
 
-      const res = await fetch('/api/tenant/qr', {
+      const res = await apiFetch('/tenant/qr', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({ tables: selectedNumbers })
@@ -241,7 +242,7 @@ export default function RestaurantAdminDashboard() {
     setPrintingTableId(table.id);
 
     try {
-      const res = await fetch('/api/tenant/qr', {
+      const res = await apiFetch('/tenant/qr', {
         method: 'POST',
         headers: getAdminHeaders(),
         body: JSON.stringify({ tables: [table.table_number] })

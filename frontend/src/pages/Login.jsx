@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { apiFetch } from '../api';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -31,7 +32,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/admin/login', {
+      const response = await apiFetch('/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -75,7 +76,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/admin/forgot-password', {
+      const response = await apiFetch('/admin/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -118,7 +119,7 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const response = await fetch('/api/admin/reset-password', {
+      const response = await apiFetch('/admin/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: resetToken, new_password: resetPassword }),
