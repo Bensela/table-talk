@@ -68,6 +68,9 @@ export default function SuperAdminDashboard() {
     billing_status: ''
   });
   const [billingProvisionForm, setBillingProvisionForm] = useState({ start: 1, end: 10, pattern: 'Table {n}', single: '' });
+  const [saPrintPaperSize, setSaPrintPaperSize] = useState('letter');
+  const [saPrintingTableId, setSaPrintingTableId] = useState(null);
+  const [saBulkPrinting, setSaBulkPrinting] = useState(false);
   const [billingSearch, setBillingSearch] = useState('');
   const [paymentGateway, setPaymentGateway] = useState(null);
   const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
@@ -683,6 +686,214 @@ export default function SuperAdminDashboard() {
       setBillingError(err.message);
     } finally {
       setBillingActionLoading(false);
+    }
+  };
+
+  const buildSaPrintQrCardHtml = (restaurantName, entries, { paperSize }) => {
+    const safeName = String(restaurantName || 'Table Talk').replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
+    const paperSizeCss = paperSize === 'a4' ? 'A4' : paperSize === 'a5' ? 'A5' : 'Letter';
+    const cols = paperSize === 'a5' ? 1 : 2;
+    const gapMm = 8;
+    const pageMarginMm = 12;
+    const cards = entries.map((entry) => {
+      const tbl = String(entry.table_number).replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
+      return `<div class="card">
+        <div class="restaurant">${safeName}</div>
+        <div class="logo">Table<span>-Talk</span></div>
+        <div class="qr-frame">
+          <img src="${entry.qr}" alt="QR code for table ${tbl}" />
+        </div>
+        <div class="table-label">Table</div>
+        <div class="table-number">${tbl}</div>
+        <div class="instruction">
+          Scan with your phone camera to join<br/>
+          the conversational game at this table.
+        </div>
+      </div>`;
+    }).join('\n');
+
+    return `<!doctype html>
+<html>
+  <head>
+    <title>Print QR Codes${entries.length === 1 ? ` - ${entries[0].table_number}` : ` (${entries.length})`}</title>
+    <style>
+      @page { size: ${paperSizeCss}; margin: ${pageMarginMm}mm; }
+      @media print {
+        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #ffffff; color: #1e293b; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      body { min-height: 100vh; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(${cols}, minmax(0, 1fr));
+        gap: ${gapMm}mm;
+      }
+      .card {
+        border: 2px dashed rgba(148, 163, 184, 0.8);
+        border-radius: 24px;
+        padding: 28px 24px;
+        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.08);
+        page-break-inside: avoid;
+        break-inside: avoid;
+        text-align: center;
+      }
+      .restaurant {
+        font-size: 13px; font-weight: 800; color: #0f172a;
+        text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 12px;
+      }
+      .logo { font-size: 22px; font-weight: 800; margin-bottom: 20px; letter-spacing: -0.025em; }
+      .logo span { color: #6366f1; }
+      .qr-frame {
+        width: 180px; height: 180px; background: #f8fafc; border: 1px solid #e2e8f0;
+        margin: 0 auto 20px; display: flex; align-items: center; justify-content: center;
+        border-radius: 16px; overflow: hidden;
+      }
+      .qr-frame img { width: 100%; height: 100%; object-fit: cover; }
+      .table-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 4px; }
+      .table-number { font-size: 28px; font-weight: 900; margin-bottom: 12px; }
+      .instruction { font-size: 11px; color: #94a3b8; line-height: 1.5; }
+      @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="grid">
+      ${cards}
+    </div>
+    <script> window.onload = function() { window.print(); window.close(); } </script>
+  </body>
+</html>`;
+  };
+
+  const downloadSaQrPng = (entry) => {
+    if (!entry?.qr) return;
+    try {
+      const a = document.createElement('a');
+      const safe = String(entry.table_number || 'qr').replace(/[^A-Za-z0-9_-]+/g, '_');
+      a.href = entry.qr;
+      a.download = `qr_table_${safe}.png`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 50);
+    } catch (err) {
+      console.error(err);
+      setBillingError('Unable to download PNG.');
+    }
+  };
+
+  const handleSaPrintSingleQr = async (table) => {
+    if (!billingDetail?.tenant?.id || !table?.id) return;
+    setSaPrintingTableId(table.id);
+    setBillingError('');
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/qr`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ table_ids: [table.id] })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to generate QR code');
+      }
+      const data = await res.json();
+      if (!Array.isArray(data) || !data[0]?.qr) {
+        throw new Error('QR code data is missing');
+      }
+      const html = buildSaPrintQrCardHtml(
+        billingDetail.billing?.name || billingDetail.tenant?.name || 'Table Talk',
+        [data[0]],
+        { paperSize: saPrintPaperSize }
+      );
+      const w = window.open('', '_blank');
+      w.document.write(html);
+      w.document.close();
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setSaPrintingTableId(null);
+    }
+  };
+
+  const handleSaPrintAllQr = async () => {
+    const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+    if (!tables.length || !billingDetail?.tenant?.id) return;
+    setSaBulkPrinting(true);
+    setBillingError('');
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/qr`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ table_ids: tables.map((t) => t.id) })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to generate QR codes');
+      }
+      const data = await res.json();
+      if (!Array.isArray(data) || !data.length) throw new Error('No QR codes returned');
+      const html = buildSaPrintQrCardHtml(
+        billingDetail.billing?.name || billingDetail.tenant?.name || 'Table Talk',
+        data,
+        { paperSize: saPrintPaperSize }
+      );
+      const w = window.open('', '_blank');
+      w.document.write(html);
+      w.document.close();
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setSaBulkPrinting(false);
+    }
+  };
+
+  const handleSaDownloadSingleQr = async (table) => {
+    if (!billingDetail?.tenant?.id || !table?.id) return;
+    setSaPrintingTableId(table.id);
+    setBillingError('');
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/qr`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ table_ids: [table.id] })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to generate QR code');
+      }
+      const data = await res.json();
+      if (!Array.isArray(data) || !data[0]?.qr) throw new Error('QR code data is missing');
+      downloadSaQrPng(data[0]);
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setSaPrintingTableId(null);
+    }
+  };
+
+  const handleSaDownloadAllPng = async () => {
+    const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+    if (!tables.length || !billingDetail?.tenant?.id) return;
+    setSaBulkPrinting(true);
+    setBillingError('');
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/qr`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ table_ids: tables.map((t) => t.id) })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to generate QR codes');
+      }
+      const data = await res.json();
+      if (!Array.isArray(data) || !data.length) throw new Error('No QR codes returned');
+      data.forEach((entry, idx) => {
+        setTimeout(() => downloadSaQrPng(entry), idx * 220);
+      });
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setSaBulkPrinting(false);
     }
   };
 
@@ -2497,6 +2708,123 @@ export default function SuperAdminDashboard() {
                     </button>
                   </div>
                 </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5 mb-6">
+                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-violet-300 mb-2">Registered Tables / Print</div>
+                    <div className="text-sm text-slate-300">
+                      Print or download any provisioned table QR directly from Super Admin. Paper size below applies to all print actions on this tenant.
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 justify-start lg:justify-end">
+                    <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paper</span>
+                      <select
+                        value={saPrintPaperSize}
+                        onChange={(event) => setSaPrintPaperSize(event.target.value)}
+                        className="bg-transparent text-xs font-semibold text-slate-200 focus:outline-none"
+                      >
+                        <option value="letter">Letter</option>
+                        <option value="a4">A4</option>
+                        <option value="a5">A5</option>
+                      </select>
+                    </div>
+                    {(() => {
+                      const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+                      const hasTables = tables.length > 0;
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleSaPrintAllQr}
+                            disabled={!hasTables || saBulkPrinting}
+                            className="rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
+                          >
+                            <span>🖨️</span>
+                            {saBulkPrinting ? 'Opening…' : hasTables ? `Print All (${tables.length})` : 'Print All'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaDownloadAllPng}
+                            disabled={!hasTables || saBulkPrinting}
+                            className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
+                          >
+                            <span>⬇️</span>
+                            {saBulkPrinting ? 'Downloading…' : hasTables ? `Download All PNG (${tables.length})` : 'Download All PNG'}
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {(() => {
+                  const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+                  if (tables.length === 0) {
+                    return (
+                      <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
+                        No tables have been provisioned for this tenant yet. Use the <span className="text-amber-300 font-semibold">Trial QR Provisioning</span> panel above to add the first table.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {tables.map((t) => (
+                        <div
+                          key={t.id}
+                          className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3"
+                        >
+                          <div>
+                            <span className="text-xs font-bold tracking-wider text-violet-400 uppercase">Table Number</span>
+                            <h3 className="text-2xl font-black text-white mt-0.5">{t.table_number}</h3>
+                            <p className="text-[10px] text-slate-500 truncate mt-1" title={t.qr_code_url || ''}>
+                              {t.qr_code_url || '—'}
+                            </p>
+                            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                              {t.provisioned_by_super_admin_id ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                  SA Provisioned
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 text-slate-300 border border-slate-500/30">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                                  RA Registered
+                                </span>
+                              )}
+                              {t.created_at && (
+                                <span className="text-[10px] text-slate-500 font-medium">
+                                  {new Date(t.created_at).toLocaleDateString()}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSaDownloadSingleQr(t)}
+                              disabled={saPrintingTableId === t.id || saBulkPrinting}
+                              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold py-2 transition-all"
+                            >
+                              {saPrintingTableId === t.id ? '…' : 'Download PNG'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaPrintSingleQr(t)}
+                              disabled={saPrintingTableId === t.id || saBulkPrinting}
+                              className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold py-2 transition-all flex items-center justify-center gap-1.5"
+                            >
+                              <span>🖨️</span>
+                              {saPrintingTableId === t.id ? 'Opening…' : 'Print QR'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">

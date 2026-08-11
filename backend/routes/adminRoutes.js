@@ -176,10 +176,20 @@ router.get('/billing/tenants', authenticateToken, requireRole(['SUPER_ADMIN']), 
 // Billing: Super Admin get one tenant billing detail
 router.get('/billing/tenants/:restaurantId', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
   try {
+    const db = require('../db');
     const billing = await billingService.getRestaurantBilling(req.params.restaurantId);
     if (!billing) return res.status(404).json({ error: 'Restaurant not found' });
     const invoices = await billingService.listRestaurantInvoices(req.params.restaurantId, 24);
-    return res.json({ billing, invoices });
+    const tablesRes = await db.query(
+      `SELECT id, table_number, qr_code_url, provisioned_by_super_admin_id, created_at
+       FROM restaurant_tables
+       WHERE restaurant_id = $1
+       ORDER BY
+         CASE WHEN table_number ~ '^[0-9]+$' THEN LPAD(table_number, 10, '0') ELSE table_number END
+         ASC NULLS LAST, id ASC`,
+      [req.params.restaurantId]
+    );
+    return res.json({ billing, invoices, tables: tablesRes.rows });
   } catch (err) {
     console.error('[admin billing tenant detail] failed:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -273,6 +283,22 @@ router.post('/billing/tenants/:restaurantId/trial/tables', authenticateToken, re
   } catch (err) {
     console.error('[admin billing trial tables] failed:', err);
     return res.status(400).json({ error: err.message || 'Unable to provision trial QRs' });
+  }
+});
+
+// Billing: Super Admin generate QR PNG data URLs for any registered table(s) on a tenant
+// (works for trial + any plan; does NOT create/register tables, only produces printable QR payloads)
+router.post('/billing/tenants/:restaurantId/qr', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
+  try {
+    const { table_ids, table_numbers } = req.body || {};
+    const qrs = await billingService.generateTenantQrDataUrls(req.params.restaurantId, {
+      tableIds: Array.isArray(table_ids) ? table_ids : null,
+      tableNumbers: Array.isArray(table_numbers) ? table_numbers : null
+    });
+    return res.json(qrs);
+  } catch (err) {
+    console.error('[admin billing tenant qr] failed:', err);
+    return res.status(400).json({ error: err.message || 'Unable to generate QR codes' });
   }
 });
 

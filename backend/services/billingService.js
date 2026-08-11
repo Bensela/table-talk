@@ -511,6 +511,51 @@ async function provisionTrialQrForTable(restaurantId, tableNumber, { superAdminU
   return { ...row.rows[0], qr: qrPngDataUrl, url: qrUrl };
 }
 
+async function generateTenantQrDataUrls(restaurantId, { tableIds = null, tableNumbers = null } = {}) {
+  if (!restaurantId) throw new Error('Restaurant ID required');
+  const slugRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
+  const slug = slugRes.rows[0]?.slug;
+  if (!slug) throw new Error('Restaurant slug not found');
+  const frontendUrl = await getFrontendUrl();
+
+  const params = [restaurantId];
+  let whereClauses = ['restaurant_id = $1'];
+  let idx = 2;
+  if (Array.isArray(tableIds) && tableIds.length > 0) {
+    whereClauses.push(`id = ANY($${idx++})`);
+    params.push(tableIds.map((x) => Number(x)).filter(Number.isFinite));
+  }
+  if (Array.isArray(tableNumbers) && tableNumbers.length > 0) {
+    whereClauses.push(`table_number = ANY($${idx++})`);
+    params.push(tableNumbers.map((x) => String(x).trim()));
+  }
+  const rows = await db.query(
+    `SELECT id, table_number, qr_code_url
+     FROM restaurant_tables
+     WHERE ${whereClauses.join(' AND ')}
+     ORDER BY
+       CASE WHEN table_number ~ '^[0-9]+$' THEN LPAD(table_number, 10, '0') ELSE table_number END
+       ASC NULLS LAST, id ASC`,
+    params
+  );
+
+  // eslint-disable-next-line global-require
+  const QRCode = require('qrcode');
+
+  const out = [];
+  for (const t of rows.rows) {
+    const baseUrl = t.qr_code_url || `${frontendUrl}/r/${slug}/t/${encodeURIComponent(String(t.table_number).trim())}`;
+    const qr = await QRCode.toDataURL(baseUrl, {
+      width: 600,
+      margin: 2,
+      errorCorrectionLevel: 'H',
+      color: { dark: '#000000', light: '#FFFFFF' }
+    });
+    out.push({ id: t.id, table_number: t.table_number, qr_code_url: baseUrl, qr });
+  }
+  return out;
+}
+
 function canRestaurantGenerateQr(billing, { isSuperAdminProvisioning = false } = {}) {
   if (!billing) return false;
   if (isSuperAdminProvisioning) {
@@ -866,5 +911,6 @@ module.exports = {
   createStripeBillingPortalSession,
   handleStripeWebhook,
   listRestaurantInvoices,
-  listBillingOverviewForSuperAdmin
+  listBillingOverviewForSuperAdmin,
+  generateTenantQrDataUrls
 };
