@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
+import Modal from '../components/ui/Modal';
 
 export default function SuperAdminDashboard() {
   const { checking, logout } = useAdminAuth();
@@ -71,6 +72,8 @@ export default function SuperAdminDashboard() {
   const [saPrintPaperSize, setSaPrintPaperSize] = useState('letter');
   const [saPrintingTableId, setSaPrintingTableId] = useState(null);
   const [saBulkPrinting, setSaBulkPrinting] = useState(false);
+  const [saDeletingTableId, setSaDeletingTableId] = useState(null);
+  const [saDeleteConfirmTable, setSaDeleteConfirmTable] = useState(null);
   const [billingSearch, setBillingSearch] = useState('');
   const [paymentGateway, setPaymentGateway] = useState(null);
   const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
@@ -894,6 +897,42 @@ export default function SuperAdminDashboard() {
       setBillingError(err.message);
     } finally {
       setSaBulkPrinting(false);
+    }
+  };
+
+  const handleSaDeleteTable = async () => {
+    const table = saDeleteConfirmTable;
+    if (!table?.id || !billingDetail?.tenant?.id) return;
+    setSaDeletingTableId(table.id);
+    setBillingError('');
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/tables/${encodeURIComponent(table.id)}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders()
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to delete table');
+      }
+      // Refresh the full tenant detail so tables list + billing stay in sync
+      const tenant = billingDetail.tenant;
+      const detailRes = await apiFetch(`/admin/billing/tenants/${tenant.id}`, { headers: getAdminHeaders() });
+      if (detailRes.ok) {
+        const detail = await detailRes.json();
+        setBillingDetail({ tenant, ...detail });
+      } else {
+        // Optimistic fallback: filter out the deleted row locally
+        setBillingDetail((cur) => {
+          if (!cur) return cur;
+          return { ...cur, tables: (Array.isArray(cur.tables) ? cur.tables : []).filter((t) => t.id !== table.id) };
+        });
+      }
+      setBillingSuccess(`Deleted table ${String(table.table_number || table.id)}`);
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setSaDeletingTableId(null);
+      setSaDeleteConfirmTable(null);
     }
   };
 
@@ -2805,7 +2844,7 @@ export default function SuperAdminDashboard() {
                             <button
                               type="button"
                               onClick={() => handleSaDownloadSingleQr(t)}
-                              disabled={saPrintingTableId === t.id || saBulkPrinting}
+                              disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
                               className="flex-1 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold py-2 transition-all"
                             >
                               {saPrintingTableId === t.id ? '…' : 'Download PNG'}
@@ -2813,11 +2852,21 @@ export default function SuperAdminDashboard() {
                             <button
                               type="button"
                               onClick={() => handleSaPrintSingleQr(t)}
-                              disabled={saPrintingTableId === t.id || saBulkPrinting}
+                              disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
                               className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold py-2 transition-all flex items-center justify-center gap-1.5"
                             >
                               <span>🖨️</span>
                               {saPrintingTableId === t.id ? 'Opening…' : 'Print QR'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSaDeleteConfirmTable(t)}
+                              disabled={saDeletingTableId === t.id || saBulkPrinting || saPrintingTableId === t.id}
+                              title={`Delete ${String(t.table_number)} QR and table registration`}
+                              aria-label={`Delete table ${String(t.table_number)}`}
+                              className="shrink-0 rounded-xl border border-rose-900/60 bg-rose-950/30 hover:bg-rose-900/50 disabled:opacity-50 disabled:cursor-not-allowed text-rose-200 text-xs font-bold py-2 px-3 transition-all"
+                            >
+                              🗑
                             </button>
                           </div>
                         </div>
@@ -2825,6 +2874,26 @@ export default function SuperAdminDashboard() {
                     </div>
                   );
                 })()}
+
+                {saDeleteConfirmTable && (
+                  <Modal
+                    isOpen={Boolean(saDeleteConfirmTable)}
+                    onClose={() => !saDeletingTableId && setSaDeleteConfirmTable(null)}
+                    variant="danger"
+                    size="md"
+                    title={`Delete table ${String(saDeleteConfirmTable.table_number || saDeleteConfirmTable.id || '')}?`}
+                    subtitle="This removes the table registration and its QR code from this tenant. Any existing scans will stop working. This action cannot be undone."
+                    icon={<span className="text-3xl">🗑️</span>}
+                    actionLabel={saDeletingTableId ? 'Deleting…' : 'Yes, delete this table'}
+                    actionVariant="danger"
+                    actionLoading={Boolean(saDeletingTableId)}
+                    actionDisabled={Boolean(saDeletingTableId)}
+                    closeLabel={saDeletingTableId ? 'Deleting…' : 'Cancel'}
+                    closeVariant="secondary"
+                    closeDisabled={Boolean(saDeletingTableId)}
+                    onAction={handleSaDeleteTable}
+                  />
+                )}
               </div>
 
               <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">

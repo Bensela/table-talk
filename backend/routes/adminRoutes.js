@@ -286,6 +286,32 @@ router.post('/billing/tenants/:restaurantId/trial/tables', authenticateToken, re
   }
 });
 
+// Billing: Super Admin delete a single registered table + its QR
+router.delete('/billing/tenants/:restaurantId/tables/:tableId', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
+  try {
+    const db = require('../db');
+    const { restaurantId, tableId } = req.params;
+    const del = await db.query(
+      'DELETE FROM restaurant_tables WHERE id = $1 AND restaurant_id = $2 RETURNING id, table_number',
+      [tableId, restaurantId]
+    );
+    if (!del.rowCount) {
+      return res.status(404).json({ error: 'Table not found for this tenant' });
+    }
+    try {
+      await db.query(
+        `INSERT INTO analytics_events (event_type, event_data)
+         VALUES ('super_admin.table_deleted', $1::jsonb)`,
+        [{ super_admin_user_id: req.user.id, restaurant_id: restaurantId, table_id: tableId, table_number: del.rows[0]?.table_number }]
+      );
+    } catch (_e) { /* non-fatal: analytics insert shouldn't block the response */ }
+    return res.json({ deleted: del.rows[0] });
+  } catch (err) {
+    console.error('[admin billing delete table] failed:', err);
+    return res.status(500).json({ error: 'Failed to delete table' });
+  }
+});
+
 // Billing: Super Admin generate QR PNG data URLs for any registered table(s) on a tenant
 // (works for trial + any plan; does NOT create/register tables, only produces printable QR payloads)
 router.post('/billing/tenants/:restaurantId/qr', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {

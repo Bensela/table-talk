@@ -523,7 +523,7 @@ async function generateTenantQrDataUrls(restaurantId, { tableIds = null, tableNu
   let idx = 2;
   if (Array.isArray(tableIds) && tableIds.length > 0) {
     whereClauses.push(`id = ANY($${idx++})`);
-    params.push(tableIds.map((x) => Number(x)).filter(Number.isFinite));
+    params.push(tableIds.map((x) => (x == null ? '' : String(x).trim())).filter(Boolean));
   }
   if (Array.isArray(tableNumbers) && tableNumbers.length > 0) {
     whereClauses.push(`table_number = ANY($${idx++})`);
