@@ -3,11 +3,13 @@ const db = require('../db');
 const { signToken } = require('../middleware/authMiddleware');
 const QRCode = require('qrcode');
 const deckService = require('../services/deckService');
+const billingService = require('../services/billingService');
 const { geocodeAddress } = require('../services/geocodeService');
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://tabletalk.app').replace(/\/+$/, '');
 const GLOBAL_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 const INVITE_EXPIRY_DAYS = Number.parseInt(process.env.RESTAURANT_INVITE_EXPIRY_DAYS || '14', 10);
+const TRIAL_DURATION_DAYS = Number.parseInt(process.env.RESTAURANT_TRIAL_DAYS || '14', 10);
 
 /**
  * PBKDF2 Hashing function matching migration logic:
@@ -627,14 +629,16 @@ async function createTenantInvite(req, res) {
     const token = crypto.randomBytes(32).toString('hex');
     const tokenHash = hashInviteToken(token);
     const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    const trialStartsAt = new Date();
+    const trialEndsAt = new Date(trialStartsAt.getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
 
     await db.query('BEGIN');
 
     const restaurantResult = await db.query(
-      `INSERT INTO restaurants (name, slug, billing_status, contact_email)
-       VALUES ($1, $2, 'pending', $3)
-       RETURNING id, name, slug, billing_status, contact_email, created_at`,
-      [trimmedName, slug, trimmedEmail]
+      `INSERT INTO restaurants (name, slug, billing_status, contact_email, plan, trial_ends_at)
+       VALUES ($1, $2, 'pending', $3, 'trial', $4)
+       RETURNING id, name, slug, billing_status, contact_email, plan, trial_ends_at, created_at`,
+      [trimmedName, slug, trimmedEmail, trialEndsAt]
     );
 
     const restaurant = restaurantResult.rows[0];
@@ -702,12 +706,15 @@ async function createTenant(req, res) {
       shouldGeocode: Boolean(address) && (latitude === undefined || latitude === null || latitude === '') && (longitude === undefined || longitude === null || longitude === '')
     });
 
+    const trialStartsAt = new Date();
+    const trialEndsAt = new Date(trialStartsAt.getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
+
     await db.query('BEGIN');
 
     const restResult = await db.query(
-      `INSERT INTO restaurants (name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name)
-       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8)
-       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
+      `INSERT INTO restaurants (name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, plan, trial_ends_at)
+       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, 'trial', $9)
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, plan, trial_ends_at, created_at`,
       [
         name,
         slug,
@@ -716,7 +723,8 @@ async function createTenant(req, res) {
         location?.address ?? (address || null),
         location?.latitude ?? parseOptionalNumber(latitude),
         location?.longitude ?? parseOptionalNumber(longitude),
-        managerName || null
+        managerName || null,
+        trialEndsAt
       ]
     );
 
@@ -1596,7 +1604,8 @@ async function getTenantTables(req, res) {
 
 /**
  * POST /api/tenant/tables
- * Restaurant Admin: Register a new table, generate its QR URL
+ * Restaurant Admin: Register a new table, generate its QR URL.
+ * Trial-plan restaurants are NOT allowed to self-create tables/QRs — SA provisions them explicitly.
  */
 async function createTenantTable(req, res) {
   const restaurantId = req.user.restaurant_id;
@@ -1610,6 +1619,20 @@ async function createTenantTable(req, res) {
   }
 
   try {
+    // Trial-plan restaurants cannot self-generate tables/QRs.
+    const billing = await billingService.canRestaurantGenerateQr(restaurantId);
+    if (billing === false || (typeof billing === 'object' && billing.can_generate_qr === false)) {
+      const info = await billingService.getRestaurantBilling(restaurantId);
+      if (!info || info.plan === 'trial') {
+        return res.status(403).json({
+          error: 'Trial restaurants cannot generate QR codes. Please ask your Super Admin to provision trial-QR tables.'
+        });
+      }
+    }
+    if (typeof billing === 'object' && billing.can_generate_qr === false && info?.plan !== 'trial') {
+      return res.status(403).json({ error: 'QR generation is disabled for this restaurant. Please contact support.' });
+    }
+
     // Get restaurant slug
     const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
     if (restRes.rows.length === 0) {
@@ -1618,11 +1641,12 @@ async function createTenantTable(req, res) {
     const slug = restRes.rows[0].slug;
 
     // Generate table public QR URL using path-based format: /r/{slug}/t/{tableNumber}
-    const qr_code_url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(table_number)}`;
+    const frontendBase = await billingService.getFrontendUrl();
+    const qr_code_url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(table_number)}`;
 
     const result = await db.query(
-      `INSERT INTO restaurant_tables (restaurant_id, table_number, qr_code_url) 
-       VALUES ($1, $2, $3) 
+      `INSERT INTO restaurant_tables (restaurant_id, table_number, qr_code_url)
+       VALUES ($1, $2, $3)
        ON CONFLICT (restaurant_id, table_number) DO UPDATE SET qr_code_url = EXCLUDED.qr_code_url
        RETURNING id, table_number, qr_code_url, created_at`,
       [restaurantId, table_number, qr_code_url]
@@ -1638,7 +1662,7 @@ async function createTenantTable(req, res) {
 /**
  * POST /api/tenant/qr
  * Restaurant Admin: Generate QR codes for selected table(s) or all tables.
- * Body: { tables?: string[] } — if omitted, generates for all tables.
+ * Trial-plan restaurants are NOT allowed to self-serve QRs.
  * Returns array of { id, table_number, url, qr } where qr is a data URL.
  */
 async function generateTenantQr(req, res) {
@@ -1649,9 +1673,19 @@ async function generateTenantQr(req, res) {
   const { tables } = req.body; // optional array of table_numbers
 
   try {
-    const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
-    if (!restRes.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
-    const slug = restRes.rows[0].slug;
+    // Trial-plan restaurants cannot self-generate QRs.
+    const billingInfo = await billingService.getRestaurantBilling(restaurantId);
+    if (!billingInfo) return res.status(404).json({ error: 'Restaurant not found' });
+    if (!billingInfo.can_generate_qr || billingInfo.plan === 'trial') {
+      return res.status(403).json({
+        error: billingInfo.plan === 'trial'
+          ? 'Trial restaurants cannot generate QR codes. Please ask your Super Admin to provision trial-QR tables.'
+          : 'QR generation is disabled for this restaurant. Please contact support.'
+      });
+    }
+
+    const slug = billingInfo.slug;
+    if (!slug) return res.status(404).json({ error: 'Restaurant not found' });
 
     let query = `SELECT id, table_number, qr_code_url FROM restaurant_tables WHERE restaurant_id = $1`;
     const params = [restaurantId];
@@ -1661,9 +1695,10 @@ async function generateTenantQr(req, res) {
     }
     query += ` ORDER BY table_number ASC`;
 
+    const frontendBase = await billingService.getFrontendUrl();
     const rows = await db.query(query, params);
     const results = await Promise.all(rows.rows.map(async (row) => {
-      const url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
+      const url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
       const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
       return { id: row.id, table_number: row.table_number, url, qr };
     }));
@@ -1687,9 +1722,18 @@ async function regenerateTableQr(req, res) {
   const { id } = req.params;
 
   try {
-    const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
-    if (!restRes.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
-    const slug = restRes.rows[0].slug;
+    const billingInfo = await billingService.getRestaurantBilling(restaurantId);
+    if (!billingInfo) return res.status(404).json({ error: 'Restaurant not found' });
+    if (!billingInfo.can_generate_qr || billingInfo.plan === 'trial') {
+      return res.status(403).json({
+        error: billingInfo.plan === 'trial'
+          ? 'Trial restaurants cannot regenerate QRs. Please ask your Super Admin.'
+          : 'QR regeneration is disabled for this restaurant. Please contact support.'
+      });
+    }
+
+    const slug = billingInfo.slug;
+    if (!slug) return res.status(404).json({ error: 'Restaurant not found' });
 
     const rowRes = await db.query(
       `SELECT id, table_number FROM restaurant_tables WHERE id = $1 AND restaurant_id = $2`,
@@ -1697,8 +1741,9 @@ async function regenerateTableQr(req, res) {
     );
     if (!rowRes.rows.length) return res.status(404).json({ error: 'Table not found' });
 
+    const frontendBase = await billingService.getFrontendUrl();
     const row = rowRes.rows[0];
-    const url = `${FRONTEND_URL}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
+    const url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
     const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
 
     await db.query(

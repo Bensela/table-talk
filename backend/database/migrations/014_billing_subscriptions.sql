@@ -27,13 +27,14 @@ END $$;
 
 ALTER TABLE restaurants
   ALTER COLUMN plan TYPE VARCHAR(32),
-  ALTER COLUMN plan SET DEFAULT 'starter';
+  ALTER COLUMN plan SET DEFAULT 'trial';
 
 ALTER TABLE restaurants
   ADD CONSTRAINT restaurants_plan_check
   CHECK (plan IN ('free','pro','enterprise','trial','starter','premium'));
 
--- Default all existing rows to a safe canonical tier if not already set.
+-- Default ALL existing rows (pre-migration) to Starter for safety.
+-- Brand new rows created AFTER this migration will use the DEFAULT 'trial' set above.
 UPDATE restaurants
 SET    plan = 'starter'
 WHERE  plan IS NULL OR plan NOT IN ('trial','starter','premium','enterprise','free','pro');

@@ -223,7 +223,7 @@ export default function SuperAdminDashboard() {
         setPgForm({
           provider: s.provider || 'stripe',
           mode: s.mode || 'test',
-          stripe_publishable_key: s.stripe_publishable_key || '',
+          stripe_publishable_key: s.stripe_publishable_key_masked || '',
           stripe_secret_key: s.stripe_secret_key_masked || '',
           stripe_webhook_secret: s.stripe_webhook_secret_masked || '',
           frontend_url: s.frontend_url || ''
@@ -267,7 +267,7 @@ export default function SuperAdminDashboard() {
       setPgForm({
         provider: s.provider || 'stripe',
         mode: s.mode || 'test',
-        stripe_publishable_key: s.stripe_publishable_key || '',
+        stripe_publishable_key: s.stripe_publishable_key_masked || '',
         stripe_secret_key: s.stripe_secret_key_masked || '',
         stripe_webhook_secret: s.stripe_webhook_secret_masked || '',
         frontend_url: s.frontend_url || ''
@@ -1503,55 +1503,41 @@ export default function SuperAdminDashboard() {
                 </div>
               </div>
 
-              <div className="md:col-span-2">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Publishable Key (pk_*)</label>
-                  {(paymentGateway?.settings?.sources || {}).stripe_publishable_key && (
-                    <SourcePill source={paymentGateway.settings.sources.stripe_publishable_key} />
-                  )}
-                </div>
-                <input
-                  type="text"
-                  value={pgForm.stripe_publishable_key || ''}
-                  onChange={(e) => setPgForm((p) => ({ ...p, stripe_publishable_key: e.target.value }))}
-                  placeholder="pk_test_… or pk_live_…"
-                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
-                />
-              </div>
+              <MaskedInputField
+                label="Publishable Key (PK_*)"
+                value={pgForm.stripe_publishable_key || ''}
+                onChange={(v) => setPgForm((p) => ({ ...p, stripe_publishable_key: v }))}
+                placeholder="pk_test_… or pk_live_…"
+                source={(paymentGateway?.settings?.sources || {}).stripe_publishable_key}
+                fieldKey="stripe_publishable_key"
+                autoComplete="off"
+                apiFetch={apiFetch}
+                onBanner={setPgBanner}
+              />
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Secret Key (sk_*)</label>
-                  {(paymentGateway?.settings?.sources || {}).stripe_secret_key && (
-                    <SourcePill source={paymentGateway.settings.sources.stripe_secret_key} />
-                  )}
-                </div>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={pgForm.stripe_secret_key || ''}
-                  onChange={(e) => setPgForm((p) => ({ ...p, stripe_secret_key: e.target.value }))}
-                  placeholder="sk_test_… / sk_live_… (leave masked to keep existing)"
-                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
-                />
-              </div>
+              <MaskedInputField
+                label="Secret Key (SK_*)"
+                value={pgForm.stripe_secret_key || ''}
+                onChange={(v) => setPgForm((p) => ({ ...p, stripe_secret_key: v }))}
+                placeholder="sk_test_… / sk_live_… (leave masked to keep existing)"
+                source={(paymentGateway?.settings?.sources || {}).stripe_secret_key}
+                fieldKey="stripe_secret_key"
+                autoComplete="new-password"
+                apiFetch={apiFetch}
+                onBanner={setPgBanner}
+              />
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Webhook Secret (whsec_*)</label>
-                  {(paymentGateway?.settings?.sources || {}).stripe_webhook_secret && (
-                    <SourcePill source={paymentGateway.settings.sources.stripe_webhook_secret} />
-                  )}
-                </div>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={pgForm.stripe_webhook_secret || ''}
-                  onChange={(e) => setPgForm((p) => ({ ...p, stripe_webhook_secret: e.target.value }))}
-                  placeholder="whsec_… (leave masked to keep existing)"
-                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
-                />
-              </div>
+              <MaskedInputField
+                label="Webhook Secret (WHSEC_*)"
+                value={pgForm.stripe_webhook_secret || ''}
+                onChange={(v) => setPgForm((p) => ({ ...p, stripe_webhook_secret: v }))}
+                placeholder="whsec_… (leave masked to keep existing)"
+                source={(paymentGateway?.settings?.sources || {}).stripe_webhook_secret}
+                fieldKey="stripe_webhook_secret"
+                autoComplete="new-password"
+                apiFetch={apiFetch}
+                onBanner={setPgBanner}
+              />
 
               <div className="md:col-span-2">
                 <div className="flex items-center justify-between mb-2">
@@ -2966,6 +2952,151 @@ function SourcePill({ source }) {
     >
       {cfg.label}
     </span>
+  );
+}
+
+/**
+ * Masked text/password input with explicit one-by-one reveal.
+ * Never shows plaintext by default — user must click the eye (Reveal) button
+ * to POST to the single-field reveal endpoint. Plaintext auto-remasks on blur
+ * or after 30 seconds. Copy button copies whatever is currently shown
+ * (so masked by default, plaintext only if the user explicitly revealed).
+ */
+function MaskedInputField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  source,
+  fieldKey, // one of 'stripe_publishable_key' | 'stripe_secret_key' | 'stripe_webhook_secret'
+  autoComplete = 'new-password',
+  apiFetch,
+  onBanner,
+  allowTypeTextWhenEditing = true
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [copyState, setCopyState] = useState('copy'); // 'copy' | 'copied'
+  const REMASK_MS = 30000;
+
+  useEffect(() => {
+    if (!revealed) return undefined;
+    const t = setTimeout(() => setRevealed(false), REMASK_MS);
+    return () => clearTimeout(t);
+  }, [revealed]);
+
+  const maskedOnly = Boolean(value) && /\*{4,}/.test(String(value));
+  const inputType = revealed ? 'text' : 'password';
+
+  const copyCurrent = async () => {
+    try {
+      await navigator.clipboard?.writeText(String(value || ''));
+      setCopyState('copied');
+      setTimeout(() => setCopyState('copy'), 1600);
+    } catch (_) {
+      onBanner?.({ kind: 'error', message: 'Clipboard unavailable. Copy manually.' });
+    }
+  };
+
+  const triggerReveal = async () => {
+    if (revealed) { setRevealed(false); return; }
+    if (!maskedOnly) {
+      // Value is already a fresh plaintext being edited — just show/hide.
+      setRevealed(true);
+      return;
+    }
+    // Only when showing the backend's masked token do we hit the reveal endpoint.
+    try {
+      setRevealing(true);
+      const res = await apiFetch(`/admin/platform/payment-gateway/reveal-field`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ field: fieldKey })
+      });
+      if (!res.ok) throw new Error('Unable to reveal field');
+      const data = await res.json();
+      const plaintext = typeof data?.value === 'string' ? data.value : '';
+      setRevealing(false);
+      if (plaintext) {
+        // Put the plaintext into the form value ONLY in the reveal state;
+        // when remasking occurs, we re-apply the original masked string
+        // via onChange below.
+        onChange?.(plaintext);
+        setRevealed(true);
+        onBanner?.({
+          kind: 'success',
+          message: `Revealed ${label}. Plaintext will re-mask after 30s or when you focus away.`
+        });
+      } else {
+        onBanner?.({ kind: 'warn', message: `${label} is not configured on this environment.` });
+      }
+    } catch (err) {
+      setRevealing(false);
+      const msg = err?.message || 'Reveal failed';
+      if (/too many reveal/i.test(msg)) onBanner?.({ kind: 'warn', message: 'Too many reveals. Wait 60 seconds.' });
+      else onBanner?.({ kind: 'error', message: `Could not reveal ${label}. ${msg}` });
+    }
+  };
+
+  const handleBlur = () => {
+    // On blur: if the value was plaintext (from a reveal) and hasn't been edited into
+    // a NEW valid plaintext (presence of * or length change), revert to masked token.
+    // Simplest UX: always re-mask on blur. The user must re-reveal to see again.
+    setRevealed(false);
+  };
+
+  return (
+    <div className="md:col-span-1">
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <label className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</label>
+        {source && <SourcePill source={source} />}
+      </div>
+      <div className="relative">
+        <input
+          type={allowTypeTextWhenEditing && !maskedOnly ? 'text' : inputType}
+          autoComplete={autoComplete}
+          value={value || ''}
+          onChange={(e) => {
+            // Any user keystroke counts as "editing a new value" so we don't
+            // re-use the reveal endpoint round-trip again for this value.
+            onChange?.(e.target.value);
+          }}
+          onBlur={handleBlur}
+          placeholder={placeholder}
+          spellCheck={false}
+          className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 pr-[7.5rem] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
+        />
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-1">
+          <button
+            type="button"
+            title={revealed ? 'Hide' : 'Reveal (audited)'}
+            onClick={triggerReveal}
+            disabled={revealing}
+            className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-700 bg-slate-900/70 text-slate-300 hover:text-white hover:bg-slate-800/80 disabled:opacity-50"
+            style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
+          >
+            {revealing
+              ? <span className="text-[10px] font-bold">…</span>
+              : revealed
+                ? <span aria-hidden className="text-sm leading-none">🙈</span>
+                : <span aria-hidden className="text-sm leading-none">👁</span>}
+          </button>
+          <button
+            type="button"
+            title={copyState === 'copied' ? 'Copied!' : 'Copy (masked unless revealed)'}
+            onClick={copyCurrent}
+            className={`inline-flex items-center justify-center h-9 px-2.5 rounded-lg border text-[10px] font-bold uppercase tracking-[0.18em] transition-colors ${
+              copyState === 'copied'
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                : 'border-slate-700 bg-slate-900/70 text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+            style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
+          >
+            {copyState === 'copied' ? 'OK' : 'Copy'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

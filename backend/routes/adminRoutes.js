@@ -114,6 +114,31 @@ router.post('/platform/payment-gateway/verify', authenticateToken, requireRole([
   }
 });
 
+// Reveal a single stored key/secret plaintext (SA only) — explicit one-by-one opt-in, audit logged.
+const REVEAL_RATE_WINDOW_MS = 60 * 1000;
+const REVEAL_RATE_MAX = 5;
+const _revealRate = new Map(); // userId -> [{ts: number}]
+router.post('/platform/payment-gateway/reveal-field', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
+  try {
+    const userId = String(req.user?.id || 'anon');
+    const now = Date.now();
+    const window = _revealRate.get(userId) || [];
+    const trimmed = window.filter((ts) => now - ts < REVEAL_RATE_WINDOW_MS);
+    if (trimmed.length >= REVEAL_RATE_MAX) {
+      return res.status(429).json({ error: 'Too many reveal requests. Please wait 60 seconds.' });
+    }
+    trimmed.push(now);
+    _revealRate.set(userId, trimmed);
+
+    const field = String(req.body?.field || '').trim();
+    const revealed = await platformSettings.revealPaymentGatewayField(field, req.user?.id || null);
+    return res.json({ field: revealed.field, value: revealed.value });
+  } catch (err) {
+    console.error('[payment gateway reveal] failed:', err);
+    return res.status(400).json({ error: err.message || 'Reveal failed' });
+  }
+});
+
 // Billing: Super Admin tenant overview
 router.get('/billing/tenants', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
   try {
@@ -266,7 +291,8 @@ router.get('/billing', authenticateToken, requireRole(['RESTAURANT_ADMIN', 'SUPE
       payment_gateway: {
         provider: paymentGateway.provider,
         mode: paymentGateway.mode,
-        publishable_key: paymentGateway.stripe_publishable_key,
+        publishable_key_masked: paymentGateway.stripe_publishable_key_masked,
+        has_publishable_key: paymentGateway.has_stripe_publishable_key,
         frontend_url: paymentGateway.frontend_url,
         has_webhook_secret: paymentGateway.has_stripe_webhook_secret,
         has_secret_key: paymentGateway.has_stripe_secret_key
@@ -288,7 +314,8 @@ router.get('/billing/payment-gateway', authenticateToken, requireRole(['RESTAURA
     return res.json({
       provider: gateway.provider,
       mode: gateway.mode,
-      publishable_key: gateway.stripe_publishable_key,
+      publishable_key_masked: gateway.stripe_publishable_key_masked,
+      has_publishable_key: gateway.has_stripe_publishable_key,
       frontend_url: gateway.frontend_url,
       has_secret_key: gateway.has_stripe_secret_key,
       has_webhook_secret: gateway.has_stripe_webhook_secret,

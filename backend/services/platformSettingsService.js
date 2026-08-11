@@ -116,7 +116,8 @@ async function getPaymentGatewayPublic() {
   return {
     provider,
     mode,
-    stripe_publishable_key: publishable,
+    stripe_publishable_key_masked: maskKey(publishable),
+    has_stripe_publishable_key: Boolean(publishable),
     frontend_url: frontendUrl,
     has_stripe_secret_key: hasSecret,
     has_stripe_webhook_secret: hasWebhook,
@@ -149,7 +150,8 @@ async function getPaymentGatewaySecretOnlyForSuperAdmin() {
   return {
     provider,
     mode,
-    stripe_publishable_key: publishable,
+    stripe_publishable_key_masked: maskKey(publishable),
+    has_stripe_publishable_key: Boolean(publishable),
     stripe_secret_key_masked: maskSecret(secret),
     stripe_webhook_secret_masked: maskSecret(webhook),
     frontend_url: frontendUrl,
@@ -172,6 +174,72 @@ function maskSecret(value) {
   const s = String(value);
   if (s.length <= 8) return '*'.repeat(s.length);
   return `${s.slice(0, 4)}${'*'.repeat(Math.max(4, s.length - 8))}${s.slice(-4)}`;
+}
+
+function maskKey(value) {
+  if (!value) return '';
+  const s = String(value);
+  // For prefix-style keys (pk_test_, pk_live_, sk_test_, whsec_, …) preserve prefix and last 6 chars.
+  const prefixMatch = s.match(/^(pk_test_|pk_live_|sk_test_|sk_live_|whsec_|rk_test_|rk_live_)/);
+  if (prefixMatch) {
+    const prefix = prefixMatch[1];
+    const tail = s.slice(prefix.length);
+    if (tail.length <= 12) return `${prefix}${'*'.repeat(tail.length)}`;
+    return `${prefix}${'*'.repeat(Math.max(6, tail.length - 6))}${tail.slice(-6)}`;
+  }
+  if (s.length <= 8) return '*'.repeat(s.length);
+  return `${s.slice(0, 3)}${'*'.repeat(Math.max(6, s.length - 9))}${s.slice(-3)}`;
+}
+
+/**
+ * Reveal a single stored secret / key plaintext.
+ * Allowed fields: 'stripe_secret_key', 'stripe_webhook_secret', 'stripe_publishable_key'.
+ * This is the ONLY endpoint that returns plaintext values for secrets;
+ * the generic GET endpoints always return masked versions for safety.
+ */
+async function revealPaymentGatewayField(fieldKey, actorUserId) {
+  const allowed = new Set([
+    'stripe_secret_key',
+    'stripe_webhook_secret',
+    'stripe_publishable_key'
+  ]);
+  if (!allowed.has(fieldKey)) {
+    throw new Error(`Unsupported reveal field: ${fieldKey}`);
+  }
+  const rows = await getAllRaw();
+  const mapping = {
+    stripe_secret_key: 'payment_gateway.stripe_secret_key',
+    stripe_webhook_secret: 'payment_gateway.stripe_webhook_secret',
+    stripe_publishable_key: 'payment_gateway.stripe_publishable_key'
+  };
+  const storeKey = mapping[fieldKey];
+  const plaintext = resolveValue(rows[storeKey], storeKey);
+
+  // Persist an explicit audit trail for every reveal so any sensitive access
+  // is attributable to a specific super admin at a specific time.
+  try {
+    await db.query(
+      `INSERT INTO analytics_events (session_id, event_type, event_data, timestamp)
+       VALUES ($1, $2, $3::jsonb, NOW())`,
+      [
+        null,
+        'super_admin.payment_gateway.reveal',
+        JSON.stringify({
+          field: fieldKey,
+          setting_key: storeKey,
+          actor_user_id: actorUserId || null,
+          has_value: Boolean(plaintext)
+        })
+      ]
+    );
+  } catch (auditErr) {
+    console.warn('[platformSettings] Audit insert for reveal failed:', auditErr.message);
+  }
+
+  return {
+    field: fieldKey,
+    value: plaintext || ''
+  };
 }
 
 function deriveWebhookEndpointUrl(frontendUrl) {
@@ -222,16 +290,22 @@ async function upsertSetting({ key, value, isSecret = false, actorUserId, source
 
 async function setPaymentGatewaySettings(input, actorUserId) {
   const rows = await getAllRaw();
+  const existingPublishable = resolveValue(rows['payment_gateway.stripe_publishable_key'], 'payment_gateway.stripe_publishable_key');
   const existingSecret = resolveValue(rows['payment_gateway.stripe_secret_key'], 'payment_gateway.stripe_secret_key');
   const existingWebhook = resolveValue(rows['payment_gateway.stripe_webhook_secret'], 'payment_gateway.stripe_webhook_secret');
   const getOr = (rawVal, def) => {
     const v = resolveValue(rawVal, '') || '';
     return v || def;
   };
+
+  const nextPublishable = (input.stripe_publishable_key && input.stripe_publishable_key.trim())
+    ? isMaskedToken(input.stripe_publishable_key) ? existingPublishable : input.stripe_publishable_key.trim()
+    : existingPublishable || '';
+
   const keys = [
     ['payment_gateway.provider', input.provider ?? getOr(rows['payment_gateway.provider'], ''), false],
     ['payment_gateway.mode', input.mode ?? getOr(rows['payment_gateway.mode'], ''), false],
-    ['payment_gateway.stripe_publishable_key', input.stripe_publishable_key ?? getOr(rows['payment_gateway.stripe_publishable_key'], ''), false],
+    ['payment_gateway.stripe_publishable_key', nextPublishable, false],
     [
       'payment_gateway.frontend_url',
       String(input.frontend_url ?? getOr(rows['payment_gateway.frontend_url'], '')).replace(/\/+$/, ''),
@@ -269,5 +343,7 @@ module.exports = {
   setPaymentGatewaySettings,
   invalidateCache,
   deriveWebhookEndpointUrl,
-  maskSecret
+  maskSecret,
+  maskKey,
+  revealPaymentGatewayField
 };

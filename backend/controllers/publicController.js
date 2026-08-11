@@ -55,7 +55,7 @@ async function handshake(req, res) {
   try {
     // 1. Query the restaurant
     const restResult = await db.query(
-      'SELECT id, name, slug, billing_status FROM restaurants WHERE slug = $1',
+      'SELECT id, name, slug, billing_status, plan, trial_ends_at FROM restaurants WHERE slug = $1',
       [slug]
     );
 
@@ -71,12 +71,25 @@ async function handshake(req, res) {
     const restaurant = restResult.rows[0];
 
     // 2. Check billing status
-    if (restaurant.billing_status !== 'active') {
+    //    - Always allow billing_status = 'active'
+    //    - Also allow billing_status = 'pending' for Trial restaurants (SA
+    //      may provision Trial QRs before the invite-completion onboarding
+    //      flips billing_status to 'active'). Trial validity is already
+    //      bounded by trial_ends_at + plan = 'trial' only.
+    const isTrialPending =
+      restaurant.billing_status === 'pending' &&
+      restaurant.plan === 'trial' &&
+      restaurant.trial_ends_at &&
+      new Date(restaurant.trial_ends_at).getTime() > Date.now();
+
+    if (restaurant.billing_status !== 'active' && !isTrialPending) {
       await logPublicAnalyticsEvent('qr_scan_rejected', {
         reason: 'restaurant_inactive',
         restaurant_id: restaurant.id,
         restaurant_slug: restaurant.slug,
         restaurant_name: restaurant.name,
+        restaurant_billing_status: restaurant.billing_status,
+        restaurant_plan: restaurant.plan,
         table_number: table
       });
       return res.status(403).json({ error: 'Service is temporarily undergoing maintenance' });
