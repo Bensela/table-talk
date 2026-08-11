@@ -9,6 +9,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const publicRoutes = require('./routes/publicRoutes');
 const { resolveRestaurant } = require('./middleware/resolveRestaurant');
 const restaurantRoutes = require('./routes/restaurantRoutes');
+const billingRoutes = require('./routes/billingRoutes');
 const db = require('./db');
 const deckService = require('./services/deckService');
 
@@ -98,6 +99,15 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors(corsOptions));
+
+// Stripe webhook needs the raw payload to verify signatures.
+app.use('/billing/stripe/webhook', express.raw({ type: '*/*', limit: '2mb' }));
+app.use((req, _res, next) => {
+  if (req.originalUrl === '/api/billing/stripe/webhook') {
+    return express.raw({ type: '*/*', limit: '2mb' })(req, _res, next);
+  }
+  next();
+});
 app.use(express.json());
 
 // Logger
@@ -111,15 +121,18 @@ app.use('/sessions', sessionRoutes);
 app.use('/admin', adminRoutes);
 app.use('/tenant', adminRoutes);
 app.use('/public', publicRoutes);
+app.use('/billing', billingRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tenant', adminRoutes);
 app.use('/api/public', publicRoutes);
+app.use('/api/billing', billingRoutes);
 if (API_PREFIX && API_PREFIX !== '/api') {
   app.use(`${API_PREFIX}/sessions`, sessionRoutes);
   app.use(`${API_PREFIX}/admin`, adminRoutes);
   app.use(`${API_PREFIX}/tenant`, adminRoutes);
   app.use(`${API_PREFIX}/public`, publicRoutes);
+  app.use(`${API_PREFIX}/billing`, billingRoutes);
 }
 
 // Restaurant admin routes

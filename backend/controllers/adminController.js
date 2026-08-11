@@ -510,23 +510,85 @@ async function resetPassword(req, res) {
   }
 }
 
+// Defensive column guards so /admin/tenants never 500 before 014_billing_subscriptions.sql is applied.
+let _tenantColumnsCache = null;
+async function tenantColumns() {
+  if (_tenantColumnsCache) return _tenantColumnsCache;
+  try {
+    const res = await db.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'restaurants'`
+    );
+    const set = new Set(res.rows.map((r) => r.column_name));
+    _tenantColumnsCache = set;
+    return set;
+  } catch (_) {
+    _tenantColumnsCache = new Set();
+    return _tenantColumnsCache;
+  }
+}
+function tcol(set, name, fallback = 'NULL') {
+  return set.has(name) ? `"${name}"` : fallback;
+}
+
 /**
  * GET /api/admin/tenants
  * Super Admin: List all tenants (restaurants) with billing details.
  */
 async function getTenants(req, res) {
   try {
+    const cols = await tenantColumns();
+    const safeSelect = [
+      'id',
+      'name',
+      'slug',
+      `${tcol(cols, 'plan', "'starter'")} AS plan`,
+      `${tcol(cols, 'billing_status', "'pending'")} AS billing_status`,
+      `${tcol(cols, 'billing_provider', "'manual'")} AS billing_provider`,
+      `${tcol(cols, 'trial_ends_at')} AS trial_ends_at`,
+      `${tcol(cols, 'subscription_current_period_end')} AS subscription_current_period_end`,
+      `${tcol(cols, 'subscription_cancel_at_period_end', 'FALSE')} AS subscription_cancel_at_period_end`,
+      `${tcol(cols, 'contact_email')} AS contact_email`,
+      `${tcol(cols, 'contact_phone')} AS contact_phone`,
+      `${tcol(cols, 'address')} AS address`,
+      `${tcol(cols, 'latitude')} AS latitude`,
+      `${tcol(cols, 'longitude')} AS longitude`,
+      `${tcol(cols, 'manager_name')} AS manager_name`,
+      'created_at'
+    ].join(', ');
     const result = await db.query(
-      `SELECT id, name, slug, billing_status, contact_email, contact_phone,
-              address, latitude, longitude, manager_name, created_at
-       FROM restaurants
-       ORDER BY created_at DESC`
+      `SELECT ${safeSelect} FROM restaurants ORDER BY created_at DESC`
     );
-    res.json(result.rows);
+    const rows = result.rows.map((row) => ({
+      ...row,
+      computed_status: deriveComputedBillingStatus(row)
+    }));
+    res.json(rows);
   } catch (err) {
     console.error('Get tenants error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+}
+
+function deriveComputedBillingStatus(row) {
+  const status = row.billing_status;
+  if (status === 'suspended') return 'suspended';
+  const now = new Date();
+  const plan = row.plan;
+  if (row.trial_ends_at) {
+    if (now < new Date(row.trial_ends_at)) return 'trialing';
+    if (status === 'pending' || status === 'active') return 'past_due';
+  }
+  if (row.subscription_current_period_end && plan !== 'trial') {
+    const endDate = new Date(row.subscription_current_period_end);
+    if (now <= endDate) {
+      if (row.subscription_cancel_at_period_end) return 'cancel_at_period_end';
+      return 'active';
+    }
+    return 'past_due';
+  }
+  if (status === 'active') return 'active';
+  if (status === 'pending') return plan === 'trial' ? 'trialing' : 'pending';
+  return status || 'pending';
 }
 
 /**

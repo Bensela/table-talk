@@ -20,6 +20,16 @@ export default function RestaurantAdminDashboard() {
   const printAreaRef = useRef(null);
   const addressLookupRequestRef = useRef(0);
 
+  // Billing / subscription state
+  const [plans, setPlans] = useState([]);
+  const [billingProvider, setBillingProvider] = useState('manual');
+  const [billingActionLoading, setBillingActionLoading] = useState(false);
+  const [billingError, setBillingError] = useState('');
+  const [billingSuccess, setBillingSuccess] = useState('');
+  const [invoices, setInvoices] = useState([]);
+  const [paymentGateway, setPaymentGateway] = useState(null);
+  const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
+
   // QR generation state
   const [qrModal, setQrModal] = useState(false);
   const [qrResults, setQrResults] = useState([]); // [{ id, table_number, url, qr }]
@@ -116,10 +126,59 @@ export default function RestaurantAdminDashboard() {
       const tablesData = await tablesRes.json();
       setTables(Array.isArray(tablesData) ? tablesData : []);
 
-      const billingRes = await apiFetch('/tenant/billing', { headers: getAdminHeaders() });
+      const [profileRes, billingRes, plansRes, invoicesRes, pgRes] = await Promise.all([
+        apiFetch('/tenant/profile', { headers: getAdminHeaders() }),
+        apiFetch('/tenant/billing', { headers: getAdminHeaders() }),
+        apiFetch('/admin/plans'),
+        apiFetch('/tenant/billing/invoices', { headers: getAdminHeaders() }),
+        (async () => {
+          try {
+            setPaymentGatewayLoading(true);
+            return await apiFetch('/tenant/billing/payment-gateway', { headers: getAdminHeaders() });
+          } finally {
+            setPaymentGatewayLoading(false);
+          }
+        })()
+      ]);
+
+      const billingMerged = {};
       if (billingRes.ok) {
         const data = await billingRes.json();
-        setProfile(data);
+        Object.assign(billingMerged, data?.billing || data || {});
+        setBillingProvider(data?.billing_provider || 'manual');
+      }
+      if (profileRes.ok) {
+        const profileData = await profileRes.json();
+        Object.assign(billingMerged, profileData);
+      }
+      if (Object.keys(billingMerged).length) {
+        setProfile((prev) => ({ ...(prev || {}), ...billingMerged }));
+      }
+      if (plansRes.ok) {
+        const plansData = await plansRes.json();
+        setPlans(Array.isArray(plansData?.plans) ? plansData.plans : []);
+        if (plansData?.billing_provider) {
+          setBillingProvider(plansData.billing_provider);
+        }
+      }
+      if (invoicesRes.ok) {
+        const inv = await invoicesRes.json();
+        setInvoices(Array.isArray(inv?.invoices) ? inv.invoices : []);
+      }
+      if (pgRes?.ok) {
+        const pg = await pgRes.json();
+        setPaymentGateway(pg);
+      } else {
+        setPaymentGateway({
+          provider: billingProvider === 'stripe' ? 'stripe' : 'manual',
+          mode: 'test',
+          publishable_key: '',
+          has_secret_key: billingProvider === 'stripe',
+          has_webhook_secret: false,
+          restaurant_stripe_customer_id: null,
+          restaurant_stripe_subscription_id: null,
+          sources: {}
+        });
       }
     } catch (err) {
       console.error(err);
@@ -194,6 +253,66 @@ export default function RestaurantAdminDashboard() {
       setTimeout(() => setProfileEdit(false), 1500);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
+  };
+
+  // ── Billing / Subscription actions ───────────────────────────────────────────────
+  const currentPlan = profile?.plan || 'trial';
+  const isTrial = currentPlan === 'trial';
+  const canGenerateQr = profile && typeof profile.can_generate_qr === 'boolean' ? profile.can_generate_qr : !isTrial;
+  const computedBillingStatus = profile?.computed_status || profile?.billing_status || 'pending';
+
+  const handleCheckout = async (planKey) => {
+    setBillingError('');
+    setBillingSuccess('');
+    setBillingActionLoading(true);
+    try {
+      const res = await apiFetch('/tenant/billing/checkout', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ plan: planKey })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to start checkout');
+      if (data?.url) {
+        window.location.href = data.url;
+      } else if (data?.checkout_url) {
+        window.location.href = data.checkout_url;
+      } else {
+        setBillingSuccess('Plan activated.');
+        fetchData();
+      }
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setBillingActionLoading(false);
+    }
+  };
+
+  const handleOpenBillingPortal = async () => {
+    setBillingError('');
+    setBillingSuccess('');
+    setBillingActionLoading(true);
+    try {
+      const res = await apiFetch('/tenant/billing/portal', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to open billing portal');
+      if (data?.url) {
+        window.location.href = data.url;
+      } else if (data?.portal_url) {
+        window.location.href = data.portal_url;
+      } else {
+        setBillingSuccess('Billing updated.');
+        fetchData();
+      }
+    } catch (err) {
+      setBillingError(err.message);
+    } finally {
+      setBillingActionLoading(false);
+    }
   };
 
   // ── QR Code Generation ──────────────────────────────────────────────────────────
@@ -403,14 +522,38 @@ export default function RestaurantAdminDashboard() {
         </div>
         <div className="flex items-center gap-4">
           {profile && (
-            <div className="text-right">
-              <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                profile.billing_status === 'active'
-                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-              }`}>
-                Billing: {profile.billing_status}
-              </span>
+            <div className="text-right flex flex-col items-end gap-1.5">
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-[0.2em] border ${
+                  currentPlan === 'trial'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                    : currentPlan === 'starter'
+                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                      : currentPlan === 'premium'
+                        ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+                        : currentPlan === 'enterprise'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          : 'bg-slate-500/20 text-slate-300 border-slate-500/30'
+                }`}>
+                  {formatPlanLabel(currentPlan)}
+                </span>
+                <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider border ${
+                  computedBillingStatus === 'active'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : computedBillingStatus === 'trialing'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                      : computedBillingStatus === 'past_due'
+                        ? 'bg-orange-500/20 text-orange-300 border-orange-500/30'
+                        : computedBillingStatus === 'canceled' || computedBillingStatus === 'cancel_at_period_end'
+                          ? 'bg-slate-500/20 text-slate-300 border-slate-500/30'
+                          : computedBillingStatus === 'suspended' || computedBillingStatus === 'unpaid'
+                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                            : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                }`}>
+                  {formatStatusLabel(computedBillingStatus)}
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-500">Provider: {billingProvider}</span>
             </div>
           )}
           <button
@@ -458,6 +601,387 @@ export default function RestaurantAdminDashboard() {
         </div>
       )}
 
+      {/* Subscription & Billing Card */}
+      {profile && (
+        <section className="mb-8 bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full border border-violet-500/20 bg-violet-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-violet-200 mb-3">
+                Subscription
+              </div>
+              <h2 className="text-2xl font-extrabold tracking-tight text-white">Your Plan &amp; Billing</h2>
+              <p className="text-sm text-slate-400 mt-2 max-w-2xl">
+                Upgrade, manage your subscription, or open the billing portal. Trial-period QR codes are provisioned by the Catalyst Super Admin team during onboarding.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenBillingPortal}
+                disabled={billingActionLoading || billingProvider !== 'stripe' || !profile?.stripe_customer_id}
+                className="rounded-xl border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 px-4 py-2.5 text-sm font-bold text-violet-200 transition-all disabled:opacity-40"
+                title={billingProvider !== 'stripe' ? 'Stripe billing is not configured for this environment.' : !profile?.stripe_customer_id ? 'No Stripe customer linked yet. Complete a checkout first.' : ''}
+              >
+                {billingActionLoading ? 'Loading…' : 'Manage Billing'}
+              </button>
+              <button
+                type="button"
+                onClick={() => fetchData()}
+                className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-900/90 px-4 py-2.5 text-xs font-bold uppercase tracking-[0.18em] text-slate-300 transition-all"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {billingError && (
+            <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">{billingError}</div>
+          )}
+          {billingSuccess && (
+            <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs text-emerald-200">{billingSuccess}</div>
+          )}
+
+          {isTrial && !canGenerateQr && (
+            <div className="mb-6 rounded-2xl border border-amber-500/40 bg-[linear-gradient(135deg,rgba(251,191,36,0.14),rgba(251,146,60,0.06))] p-5">
+              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                <div>
+                  <h3 className="text-base font-extrabold text-amber-200">You are in your trial period.</h3>
+                  <p className="text-sm text-slate-300 mt-1.5 max-w-2xl">
+                    Trial QR codes and tables are generated and delivered by the Catalyst Super Admin team. If you haven&apos;t received them yet, contact your onboarding contact or support.
+                  </p>
+                  {profile?.trial_ends_at && (
+                    <div className="text-xs text-amber-200/90 mt-2">
+                      Trial ends on {new Date(profile.trial_ends_at).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 w-full lg:w-64 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleCheckout('starter')}
+                    disabled={billingActionLoading || billingProvider !== 'stripe'}
+                    className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
+                  >
+                    Upgrade to Starter
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCheckout('premium')}
+                    disabled={billingActionLoading || billingProvider !== 'stripe'}
+                    className="rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
+                  >
+                    Upgrade to Premium
+                  </button>
+                  {billingProvider !== 'stripe' && (
+                    <div className="text-[11px] text-slate-400">
+                      Manual billing mode — contact support to process your upgrade.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {computedBillingStatus === 'suspended' && (
+            <div className="mb-6 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-5 py-4">
+              <div className="text-sm font-bold text-rose-200">Your billing is suspended.</div>
+              <div className="text-xs text-rose-200/90 mt-1">
+                Please settle outstanding invoices or contact support to restore access to QR generation and advanced features.
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 2xl:grid-cols-[1.1fr_0.9fr] gap-6 mb-6">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+              <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Current Entitlements</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <MiniStat label="Plan" value={formatPlanLabel(currentPlan)} />
+                <MiniStat label="Max Tables" value={profile?.max_tables ?? 'Unlimited'} />
+                <MiniStat label="Sessions/Mo" value={profile?.max_monthly_sessions ?? 'Unlimited'} />
+                <MiniStat label="Support Tier" value={profile?.support_tier || 'Standard'} />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <EntitlementChip label="Generate QR" enabled={Boolean(canGenerateQr)} />
+                <EntitlementChip label="Dual-Phone" enabled={Boolean(profile?.can_use_dual_phone_sessions)} />
+                <EntitlementChip label="Export Analytics" enabled={Boolean(profile?.can_export_analytics)} />
+                <EntitlementChip label="Custom QR Brand" enabled={Boolean(profile?.can_use_custom_qr_branding)} />
+                <EntitlementChip label="Support" enabled={Boolean(profile?.can_access_support)} />
+              </div>
+              <div className="mt-4 text-xs text-slate-400 space-y-1">
+                {profile?.subscription_started_at && <div>Subscription started: {new Date(profile.subscription_started_at).toLocaleDateString()}</div>}
+                {profile?.subscription_current_period_end && <div>Renewal / next billing: {new Date(profile.subscription_current_period_end).toLocaleString()}</div>}
+                {profile?.subscription_cancel_at_period_end && <div className="text-amber-300">Your subscription cancels at the end of the current billing period.</div>}
+                {profile?.stripe_subscription_id ? <div>Stripe subscription linked.</div> : <div>No Stripe subscription linked.</div>}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Available Plans</div>
+                <div className="text-[11px] text-slate-500">
+                  {billingProvider === 'stripe' ? 'Checkout via Stripe' : 'Manual invoicing'}
+                </div>
+              </div>
+              <div className="space-y-3">
+                {(plans.length ? plans : [{ key: 'starter', name: 'Starter', tagline: 'Core venues', monthly_amount: 4900, currency: 'USD', interval: 'month', features: ['Unlimited single-phone sessions', 'Up to 20 tables', 'Analytics dashboard'], defaults: {} }, { key: 'premium', name: 'Premium', tagline: 'Growing venues', monthly_amount: 14900, currency: 'USD', interval: 'month', features: ['Everything in Starter', 'Dual-phone sessions', 'Custom QR branding'], defaults: {} }]).map((plan) => (
+                  <div key={plan.key} className={`rounded-2xl border p-4 transition-all ${
+                    currentPlan === plan.key ? 'border-violet-500/50 bg-violet-500/5' : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
+                  }`}>
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-[0.18em] border ${
+                            plan.key === 'starter'
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                              : plan.key === 'premium'
+                                ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+                                : plan.key === 'enterprise'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                          }`}>
+                            {plan.name}
+                          </span>
+                          {currentPlan === plan.key && (
+                            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Current</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-400">{plan.tagline || ''}</div>
+                        <div className="mt-2 text-sm text-slate-300 line-clamp-2">
+                          {Array.isArray(plan.features) ? plan.features.slice(0, 3).join(' · ') : ''}
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-2 shrink-0">
+                        <div className="text-right">
+                          <div className="text-xl font-extrabold text-white">
+                            {(plan?.currency || 'USD')} {typeof plan?.monthly_amount === 'number'
+                              ? (plan.monthly_amount / 100).toFixed(2)
+                              : plan?.monthly_amount ?? '—'}
+                          </div>
+                          <div className="text-[11px] text-slate-500 uppercase tracking-wider">per {plan?.interval || 'month'}</div>
+                        </div>
+                        {plan.key !== currentPlan ? (
+                          <button
+                            type="button"
+                            onClick={() => handleCheckout(plan.key)}
+                            disabled={billingActionLoading || billingProvider !== 'stripe'}
+                            className="rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white text-xs font-bold py-2 px-4 transition-all disabled:opacity-40 whitespace-nowrap"
+                          >
+                            {billingProvider === 'stripe' ? `Upgrade to ${plan.name}` : 'Contact support'}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">✓ Active</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-emerald-200">Need Enterprise?</div>
+                    <div className="text-xs text-slate-400 mt-1">Dedicated support, multi-location rollout, SSO, custom branding, and SLA.</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleOpenBillingPortal}
+                    disabled={billingActionLoading}
+                    className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 text-xs font-bold uppercase tracking-[0.2em] text-emerald-200 transition-all disabled:opacity-40 whitespace-nowrap"
+                  >
+                    Contact Sales
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Recent Invoices &amp; Billing Events</div>
+                <div className="text-xs text-slate-500 mt-1">Mirror of your Stripe invoices / manual billing entries.</div>
+              </div>
+            </div>
+            <div className="max-h-72 overflow-y-auto border border-slate-800 rounded-xl divide-y divide-slate-800">
+              {invoices.length === 0 && (
+                <div className="px-4 py-8 text-center text-sm text-slate-500">No invoices on file yet.</div>
+              )}
+              {invoices.map((inv) => (
+                <div key={inv.invoice_id || inv.id} className="grid grid-cols-12 gap-2 items-center px-4 py-3 text-xs">
+                  <div className="col-span-4 font-semibold text-white truncate">
+                    {inv.provider_invoice_number || inv.invoice_number || inv.invoice_id || `#${inv.id || '—'}`}
+                  </div>
+                  <div className="col-span-2">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider border ${
+                      inv.status === 'paid'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                        : inv.status === 'open'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                          : inv.status === 'void'
+                            ? 'bg-slate-500/20 text-slate-300 border-slate-500/30'
+                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                    }`}>
+                      {formatStatusLabel(inv.status || 'pending')}
+                    </span>
+                  </div>
+                  <div className="col-span-2 text-slate-300">
+                    {inv.currency || 'USD'} {typeof inv.amount_cents === 'number' ? (inv.amount_cents / 100).toFixed(2) : inv.amount_total ?? '—'}
+                  </div>
+                  <div className="col-span-2 text-slate-500 truncate">
+                    {inv.paid_at || inv.period_end || inv.created_at ? new Date(inv.paid_at || inv.period_end || inv.created_at).toLocaleDateString() : '—'}
+                  </div>
+                  <div className="col-span-2 text-right">
+                    {inv.hosted_invoice_url || inv.invoice_pdf ? (
+                      <a
+                        href={inv.hosted_invoice_url || inv.invoice_pdf}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center rounded-lg border border-slate-700 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-300 hover:border-indigo-500 hover:text-indigo-300 transition-colors"
+                      >
+                        View
+                      </a>
+                    ) : (
+                      <span className="text-slate-500">—</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Payment Gateway Card */}
+      <section className="mb-8 bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-sky-500/20 bg-sky-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-sky-200 mb-3">
+              Platform
+            </div>
+            <h2 className="text-2xl font-extrabold tracking-tight text-white">Payment Gateway</h2>
+            <p className="text-sm text-slate-400 mt-2 max-w-2xl">
+              Billing for this venue uses the platform-wide payment gateway configured by your Catalyst onboarding team.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fetchData()}
+              className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-900/90 px-4 py-2.5 text-xs font-bold uppercase tracking-[0.18em] text-slate-300 transition-all"
+            >
+              {paymentGatewayLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenBillingPortal}
+              disabled={billingActionLoading || !paymentGateway || paymentGateway.provider !== 'stripe' || !paymentGateway.has_secret_key || !profile?.stripe_customer_id}
+              className="rounded-xl bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 hover:brightness-110 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40 shadow-lg shadow-indigo-500/20"
+              title={
+                paymentGateway?.provider !== 'stripe'
+                  ? 'The platform is operating in manual billing mode.'
+                  : !paymentGateway?.has_secret_key
+                    ? 'Stripe is not connected yet — your onboarding team will enable checkout soon.'
+                    : !profile?.stripe_customer_id
+                      ? 'No Stripe customer linked yet — complete your first checkout first.'
+                      : ''
+              }
+            >
+              {billingActionLoading ? 'Loading…' : 'Visit Billing Portal'}
+            </button>
+          </div>
+        </div>
+
+        {paymentGatewayLoading && !paymentGateway && (
+          <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-950/60 px-5 py-8 text-center text-sm text-slate-500">
+            Loading payment gateway…
+          </div>
+        )}
+
+        {paymentGateway && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Provider</div>
+              <div className="flex items-center gap-3">
+                <div className={`h-10 w-10 rounded-2xl flex items-center justify-center text-lg font-extrabold ${
+                  paymentGateway.provider === 'stripe'
+                    ? 'bg-gradient-to-br from-indigo-500 to-violet-600 text-white'
+                    : 'bg-slate-700 text-slate-300'
+                }`}>
+                  {paymentGateway.provider === 'stripe' ? 'S' : 'M'}
+                </div>
+                <div>
+                  <div className="text-lg font-extrabold text-white">
+                    {paymentGateway.provider === 'stripe' ? 'Stripe' : 'Manual Billing'}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {paymentGateway.provider === 'stripe' ? 'Platform Stripe account' : 'Invoiced by Catalyst team'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Environment</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`text-[11px] font-bold uppercase tracking-[0.18em] px-2.5 py-1 rounded-full border ${
+                  paymentGateway.mode === 'live'
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                }`}>
+                  Mode: {paymentGateway.mode === 'live' ? 'Live' : 'Test'}
+                </span>
+                <span className={`text-[11px] font-bold uppercase tracking-[0.18em] px-2.5 py-1 rounded-full border ${
+                  paymentGateway.provider === 'stripe' && paymentGateway.has_secret_key
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : 'border-slate-600 bg-slate-800 text-slate-300'
+                }`}>
+                  {paymentGateway.provider === 'stripe' && paymentGateway.has_secret_key ? 'Stripe Connected' : 'Stripe Inactive'}
+                </span>
+                {paymentGateway.has_webhook_secret && (
+                  <span className="text-[11px] font-bold uppercase tracking-[0.18em] px-2.5 py-1 rounded-full border border-sky-500/40 bg-sky-500/10 text-sky-200">
+                    Webhooks active
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Account Linkage</div>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-400">Stripe customer</span>
+                  <span className={`font-mono ${paymentGateway.restaurant_stripe_customer_id ? 'text-emerald-200' : 'text-slate-500'}`}>
+                    {paymentGateway.restaurant_stripe_customer_id || 'Not linked'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-400">Subscription</span>
+                  <span className={`font-mono ${paymentGateway.restaurant_stripe_subscription_id ? 'text-emerald-200' : 'text-slate-500'}`}>
+                    {paymentGateway.restaurant_stripe_subscription_id || 'None'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {paymentGateway && paymentGateway.provider === 'manual' && (
+          <div className="mt-6 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+            <div className="text-sm font-bold text-amber-200">Your venue is on manual invoicing.</div>
+            <div className="text-xs text-amber-200/90 mt-1">
+              The Catalyst team handles billing and onboarding for your venue directly. To activate Stripe Checkout and the self-serve Billing Portal, contact your onboarding contact or Catalyst support.
+            </div>
+          </div>
+        )}
+
+        {paymentGateway && paymentGateway.provider === 'stripe' && !paymentGateway.has_secret_key && (
+          <div className="mt-6 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+            <div className="text-sm font-bold text-amber-200">Stripe is not yet connected for this environment.</div>
+            <div className="text-xs text-amber-200/90 mt-1">
+              Your onboarding team is finalizing Stripe credentials. Checkout and portal actions will be enabled once credentials are live.
+            </div>
+          </div>
+        )}
+      </section>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Table Management List */}
         <div className="lg:col-span-2 space-y-6">
@@ -478,15 +1002,26 @@ export default function RestaurantAdminDashboard() {
                   </select>
                 </div>
                 {tables.length > 0 && (
-                  <button
-                    onClick={openQrModal}
-                    className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
-                  >
-                    <span>📱</span> Generate QR Codes
-                  </button>
+                  canGenerateQr ? (
+                    <button
+                      onClick={openQrModal}
+                      className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
+                    >
+                      <span>📱</span> Generate QR Codes
+                    </button>
+                  ) : (
+                    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-[11px] font-semibold text-amber-200">
+                      Trial QRs provided by Super Admin
+                    </div>
+                  )
                 )}
               </div>
             </div>
+            {!canGenerateQr && (
+              <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/90">
+                During the trial period, QR codes are issued by the Catalyst Super Admin team. Once provisioned, they will appear here and you can print them. Upgrade to a paid plan to self-serve QR generation.
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {tables.map(t => (
                 <div key={t.id} className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
@@ -517,7 +1052,19 @@ export default function RestaurantAdminDashboard() {
         <div>
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl backdrop-blur-md sticky top-6">
             <h2 className="text-xl font-bold mb-4">Register New Table</h2>
-            <p className="text-xs text-slate-400 mb-6">Create a table mapping to automatically generate a conversational QR link</p>
+            <p className="text-xs text-slate-400 mb-6">
+              {canGenerateQr
+                ? 'Create a table mapping to automatically generate a conversational QR link'
+                : 'Trial tables are created and provisioned by the Catalyst Super Admin team. Upgrade to self-serve.'}
+            </p>
+            {!canGenerateQr && (
+              <div className="mb-5 rounded-2xl border border-amber-500/40 bg-[linear-gradient(135deg,rgba(251,191,36,0.14),rgba(251,146,60,0.06))] px-4 py-4">
+                <div className="text-sm font-extrabold text-amber-200 mb-1">Registration locked during trial</div>
+                <div className="text-xs text-slate-300">
+                  Your onboarding contact will provision your initial tables and QR codes. After trial, you can add and regenerate tables at any time.
+                </div>
+              </div>
+            )}
             <form onSubmit={handleRegisterTable} className="space-y-4">
               {error && (
                 <div className="bg-rose-500/20 border border-rose-500/50 text-rose-200 text-xs py-2 px-3 rounded-lg text-center">
@@ -535,19 +1082,24 @@ export default function RestaurantAdminDashboard() {
                 <input
                   type="text"
                   required
+                  disabled={!canGenerateQr}
                   value={tableNumber}
                   onChange={(e) => setTableNumber(e.target.value)}
                   placeholder="e.g. 5A, 12, Terrace-1"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-all text-sm"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-all text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
               <button
                 type="submit"
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm mt-6"
+                disabled={loading || !canGenerateQr}
+                className="w-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm mt-6 disabled:cursor-not-allowed"
               >
-                {loading ? 'Registering...' : 'Register Table'}
+                {loading
+                  ? 'Registering...'
+                  : canGenerateQr
+                    ? 'Register Table'
+                    : 'Registration locked during trial'}
               </button>
             </form>
           </div>
@@ -754,4 +1306,49 @@ function Field({ label, placeholder, value, onChange, type = 'text' }) {
       />
     </div>
   );
+}
+
+function MiniStat({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-500/20 to-slate-400/10 px-3 py-3">
+      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">{label}</div>
+      <div className="text-lg font-extrabold mt-1 leading-none text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function EntitlementChip({ label, enabled, value }) {
+  const cls = enabled ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/30' : 'bg-slate-500/15 text-slate-400 border border-slate-500/30';
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-xl text-[11px] font-bold uppercase tracking-wider ${cls}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${enabled ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+      {label}{value ? ` · ${value}` : ''}
+    </span>
+  );
+}
+
+function formatPlanLabel(plan) {
+  const map = { trial: 'Trial', starter: 'Starter', premium: 'Premium', enterprise: 'Enterprise', free: 'Free', pro: 'Pro' };
+  return map[plan] || 'Trial';
+}
+
+function formatStatusLabel(status) {
+  const key = String(status || 'pending').toLowerCase().trim();
+  const map = {
+    active: 'Active',
+    trialing: 'Trialing',
+    pending: 'Pending',
+    past_due: 'Past Due',
+    canceled: 'Canceled',
+    suspended: 'Suspended',
+    cancel_at_period_end: 'Canceling',
+    unpaid: 'Unpaid',
+    incomplete: 'Incomplete',
+    incomplete_expired: 'Expired',
+    paid: 'Paid',
+    open: 'Open',
+    void: 'Void'
+  };
+  if (map[key]) return map[key];
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

@@ -1,7 +1,17 @@
 const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config();
+// Load backend/.env first (canonical env for this server), then fall back to repo root .env if set.
+try {
+  require('dotenv').config({ path: path.resolve(__dirname, '..', '.env'), override: false });
+} catch (_) {
+  // ignore
+}
+try {
+  require('dotenv').config();
+} catch (_) {
+  // ignore
+}
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -130,7 +140,9 @@ const init = async () => {
       '010_seed_default_access.sql',
       '011_restaurant_invites.sql',
       '012_questions_sub_category.sql',
-      '013_password_reset.sql'
+      '013_password_reset.sql',
+      '014_billing_subscriptions.sql',
+      '015_payment_gateway_settings.sql'
     ];
 
     // 3. Execute Migration Files
