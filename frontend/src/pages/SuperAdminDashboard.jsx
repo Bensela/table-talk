@@ -1,12 +1,29 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { ChevronDown, Hash, Users, QrCode, Download, MoreHorizontal, Pencil, Trash2, Crown, Zap, Rocket, LayoutDashboard, Flag, FileText, Printer, AlertCircle, CheckCircle2, Clock, Sun, Moon, Monitor, Building2, Settings, Check, AlertTriangle, Search, RefreshCw, Plus, BarChart3, CreditCard, MapPin, Activity, Sparkles, LogOut, XCircle, Ban, BookOpenCheck } from 'lucide-react';
 import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 import Modal from '../components/ui/Modal';
+import ThemeToggle from '../components/ui/ThemeToggle';
 
 export default function SuperAdminDashboard() {
   const { checking, logout } = useAdminAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const TAB_DASHBOARD = 'dashboard';
+  const TAB_QUESTIONS = 'questions';
+  const initialTab = searchParams.get('tab') === TAB_QUESTIONS ? TAB_QUESTIONS : TAB_DASHBOARD;
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const setActiveTabSync = (next) => {
+    setActiveTab(next);
+    if (next === TAB_DASHBOARD) {
+      searchParams.delete('tab');
+      setSearchParams(searchParams, { replace: true });
+    } else {
+      setSearchParams({ tab: next }, { replace: true });
+    }
+  };
   const [tenants, setTenants] = useState([]);
   const [globalQuestions, setGlobalQuestions] = useState([]);
   const [pageLoading, setPageLoading] = useState(false);
@@ -88,6 +105,7 @@ export default function SuperAdminDashboard() {
     frontend_url: ''
   });
   const [pgBanner, setPgBanner] = useState(null);
+  const [openPanel, setOpenPanel] = useState('plan');
 
   useEffect(() => {
     if (!checking) {
@@ -1354,40 +1372,88 @@ export default function SuperAdminDashboard() {
 
   if (checking) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans">
-      <header className="flex justify-between items-center mb-10 pb-6 border-b border-slate-800">
-        <div>
-          <h1 className="text-3xl font-extrabold tracking-tight">Super Admin Dashboard</h1>
-          <p className="text-slate-400 text-sm mt-1">Manage restaurant onboarding, subscriptions, billing, and global questions</p>
+    <div className="min-h-screen bg-background text-foreground p-6 font-sans">
+      <header className="flex justify-between items-center mb-6 pb-6 border-b border-border">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-2xl bg-gradient-to-br from-violet-500/20 to-cyan-500/20 border border-violet-500/30">
+            <LayoutDashboard className="w-7 h-7 text-violet-400" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight">Super Admin Dashboard</h1>
+            <p className="text-muted-foreground text-sm mt-1">Manage restaurant onboarding, subscriptions, billing, and global questions</p>
+          </div>
         </div>
-        <button
-          onClick={() => logout()}
-          className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2 rounded-xl transition-all"
-        >
-          Sign Out
-        </button>
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <button
+            onClick={() => logout()}
+            className="inline-flex items-center gap-2 bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground font-semibold px-4 py-2 rounded-xl transition-colors duration-200"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign Out
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
-        <div className="xl:col-span-3 space-y-8">
-          <section className="relative overflow-hidden rounded-[32px] border border-cyan-500/20 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(168,85,247,0.18),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(2,6,23,0.98))] p-6 shadow-2xl">
-            <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
+      <nav className="mb-8 rounded-2xl border border-border bg-card p-2 shadow-[0_4px_20px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTabSync(TAB_DASHBOARD)}
+            aria-pressed={activeTab === TAB_DASHBOARD}
+            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold tracking-wide transition-all duration-200 ${
+              activeTab === TAB_DASHBOARD
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-[0_4px_18px_rgba(79,70,229,0.22)] dark:from-violet-500 dark:to-indigo-500 dark:shadow-[0_4px_20px_rgba(139,92,246,0.25)]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4" />
+            Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTabSync(TAB_QUESTIONS)}
+            aria-pressed={activeTab === TAB_QUESTIONS}
+            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold tracking-wide transition-all duration-200 ${
+              activeTab === TAB_QUESTIONS
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-[0_4px_18px_rgba(79,70,229,0.22)] dark:from-violet-500 dark:to-indigo-500 dark:shadow-[0_4px_20px_rgba(139,92,246,0.25)]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            <BookOpenCheck className="w-4 h-4" />
+            Question Library
+          </button>
+        </div>
+      </nav>
+
+      {activeTab === TAB_DASHBOARD && (
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+          <div className="xl:col-span-3 space-y-8">
+          <section className="relative overflow-hidden rounded-[32px] border border-border/80 bg-card shadow-[0_4px_28px_rgba(15,23,42,0.04)] dark:border-cyan-500/20 dark:bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(168,85,247,0.18),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(2,6,23,0.98))] dark:shadow-2xl p-6 transition-colors duration-300">
+            <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30 dark:opacity-30" />
+            <div className="absolute inset-0 pointer-events-none opacity-60 dark:hidden">
+              <div className="absolute -top-10 -left-10 w-60 h-60 rounded-full bg-cyan-300/20 blur-3xl" />
+              <div className="absolute -top-16 right-0 w-64 h-64 rounded-full bg-violet-300/15 blur-3xl" />
+            </div>
             <div className="relative z-10">
               <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
                 <div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-cyan-200 mb-3">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-emerald-700 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-200 mb-3">
+                    <Activity className="w-3 h-3 text-emerald-500 dark:text-emerald-400 animate-pulse" />
                     Live Platform Metrics
                   </div>
-                  <h2 className="text-2xl font-extrabold tracking-tight text-white">Real-Time Usage Command Center</h2>
-                  <p className="text-sm text-slate-400 mt-2 max-w-2xl">
+                  <div className="flex items-center gap-3">
+                    <BarChart3 className="w-7 h-7 text-cyan-600 dark:text-cyan-300" />
+                    <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Real-Time Usage Command Center</h2>
+                  </div>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-2 max-w-2xl">
                     Monitor live sessions, QR scans, restaurant activity, and where Table-Talk is being used across active tenant locations.
                   </p>
                 </div>
@@ -1398,10 +1464,10 @@ export default function SuperAdminDashboard() {
                         key={option}
                         type="button"
                         onClick={() => setMetricsRange(option)}
-                        className={`rounded-full px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] transition-all ${
+                        className={`rounded-full px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] transition-colors duration-200 ${
                           metricsRange === option
-                            ? 'bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20'
-                            : 'border border-slate-700 bg-slate-900/80 text-slate-300 hover:border-slate-500'
+                            ? 'bg-indigo-600 text-white shadow-[0_4px_14px_rgba(79,70,229,0.25)] dark:bg-cyan-500 dark:text-slate-950 dark:shadow-lg dark:shadow-cyan-500/20'
+                            : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:border-slate-500'
                         }`}
                       >
                         {option}
@@ -1412,19 +1478,21 @@ export default function SuperAdminDashboard() {
                     <button
                       type="button"
                       onClick={() => exportMetrics('csv')}
-                      className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-emerald-200 hover:bg-emerald-500/20"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-emerald-700 hover:bg-emerald-100 transition-colors duration-200 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200 dark:hover:bg-emerald-500/20"
                     >
+                      <FileText className="w-3.5 h-3.5" />
                       Export CSV
                     </button>
                     <button
                       type="button"
                       onClick={() => exportMetrics('json')}
-                      className="rounded-full border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-violet-200 hover:bg-violet-500/20"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/20 bg-violet-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-violet-700 hover:bg-violet-100 transition-colors duration-200 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
                     >
+                      <FileText className="w-3.5 h-3.5" />
                       Export JSON
                     </button>
                   </div>
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
                     {metricsLoading ? 'Refreshing live data…' : `Updated ${formatMetricsTimestamp(metrics.generated_at)}`}
                   </div>
                 </div>
@@ -1438,13 +1506,16 @@ export default function SuperAdminDashboard() {
               </div>
 
               <div className="grid grid-cols-1 2xl:grid-cols-[1.5fr_1fr] gap-6">
-                <div className="rounded-3xl border border-slate-800/80 bg-slate-950/70 p-5">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div>
-                      <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">{metricsRange} Activity Pulse</h3>
-                      <p className="text-xs text-slate-500 mt-1">QR validations, session starts, and question views across the selected reporting window.</p>
+                      <div className="flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-cyan-400" />
+                        <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">{metricsRange} Activity Pulse</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">QR validations, session starts, and question views across the selected reporting window.</p>
                     </div>
-                    <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider text-slate-500">
+                    <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider text-muted-foreground">
                       <LegendDot color="bg-cyan-400" label="Scans" />
                       <LegendDot color="bg-violet-400" label="Sessions" />
                       <LegendDot color="bg-amber-400" label="Views" />
@@ -1453,10 +1524,13 @@ export default function SuperAdminDashboard() {
                   <MetricsTimeline timeline={metrics.activity_timeline} />
                 </div>
 
-                <div className="rounded-3xl border border-slate-800/80 bg-slate-950/70 p-5">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
                   <div className="mb-4">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-violet-400" />
                       <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Context Mix · {metricsRange}</h3>
-                      <p className="text-xs text-slate-500 mt-1">Relationship contexts currently driving usage in the selected range.</p>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Relationship contexts currently driving usage in the selected range.</p>
                   </div>
                   <div className="space-y-3">
                     {metrics.context_mix.length > 0 ? (
@@ -1479,13 +1553,16 @@ export default function SuperAdminDashboard() {
               </div>
 
               <div className="grid grid-cols-1 2xl:grid-cols-[1.2fr_0.8fr] gap-6 mt-6">
-                <div className="rounded-3xl border border-slate-800/80 bg-slate-950/70 p-5">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div>
-                      <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Live Venue Feed</h3>
-                      <p className="text-xs text-slate-500 mt-1">Where the app is active right now based on recent tenant session activity.</p>
+                      <div className="flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-emerald-400" />
+                        <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Live Venue Feed</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Where the app is active right now based on recent tenant session activity.</p>
                     </div>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-muted-foreground">
                       {metrics.overview.active_restaurants} active subscriptions
                     </div>
                   </div>
@@ -1496,17 +1573,20 @@ export default function SuperAdminDashboard() {
                         <LiveVenueCard key={restaurant.id} restaurant={restaurant} />
                       ))
                     ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 px-4 py-10 text-center text-sm text-slate-500">
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/60 px-4 py-10 text-center text-sm text-muted-foreground">
                         No restaurants are live at this moment.
                       </div>
                     )}
                   </div>
                 </div>
 
-                <div className="rounded-3xl border border-slate-800/80 bg-slate-950/70 p-5">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
                   <div className="mb-4">
-                    <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Recent Platform Events</h3>
-                    <p className="text-xs text-slate-500 mt-1">Latest validated scans, session events, and engagement signals.</p>
+                    <div className="flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Recent Platform Events</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Latest validated scans, session events, and engagement signals.</p>
                   </div>
                   <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
                     {metrics.recent_activity.length > 0 ? (
@@ -1514,7 +1594,7 @@ export default function SuperAdminDashboard() {
                         <RecentActivityRow key={`${event.event_type}-${event.timestamp}-${index}`} event={event} />
                       ))
                     ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 px-4 py-8 text-center text-sm text-slate-500">
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">
                         No recent activity available.
                       </div>
                     )}
@@ -1524,31 +1604,37 @@ export default function SuperAdminDashboard() {
             </div>
           </section>
 
-          <section className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+          <section className="bg-card/60 border border-border rounded-3xl p-6 shadow-xl backdrop-blur-md">
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
               <div>
                 <div className="inline-flex items-center gap-2 rounded-full border border-violet-500/20 bg-violet-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-violet-200 mb-3">
+                  <CreditCard className="w-3 h-3" />
                   Monetization
                 </div>
-                <h2 className="text-2xl font-extrabold tracking-tight text-white">Billing &amp; Subscriptions</h2>
-                <p className="text-sm text-slate-400 mt-2 max-w-2xl">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="w-7 h-7 text-violet-400" />
+                  <h2 className="text-2xl font-extrabold tracking-tight text-foreground">Billing &amp; Subscriptions</h2>
+                </div>
+                <p className="text-sm text-muted-foreground mt-2 max-w-2xl">
                   Assign plans, override entitlements, and provision trial-period QR codes from here. Trial tenants cannot self-serve QRs — they are issued exclusively by Super Admin.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative w-full lg:w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <input
                     value={billingSearch}
                     onChange={(e) => setBillingSearch(e.target.value)}
                     placeholder="Search restaurant, slug, or email"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-violet-500"
+                    className="w-full pl-10 bg-input border border-border rounded-xl px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-violet-500 transition-colors duration-200"
                   />
                 </div>
                 <button
                   type="button"
                   onClick={handleRefreshBillingOverview}
-                  className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.18em] text-emerald-200 hover:bg-emerald-500/20"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.18em] text-emerald-200 hover:bg-emerald-500/20 transition-colors duration-200"
                 >
+                  <RefreshCw className={`w-3.5 h-3.5 ${billingLoading ? 'animate-spin' : ''}`} />
                   {billingLoading ? 'Refreshing…' : 'Refresh'}
                 </button>
               </div>
@@ -1571,16 +1657,16 @@ export default function SuperAdminDashboard() {
                   <BillingStat label="Suspended / Past Due" value={Number(billingOverview?.summary?.suspended ?? 0) + Number(billingOverview?.summary?.past_due ?? 0)} accent="rose" />
                 </div>
 
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 overflow-hidden">
-                  <div className="grid grid-cols-12 gap-2 px-4 py-3 text-[11px] font-bold uppercase tracking-wider text-slate-500 bg-slate-900/70 border-b border-slate-800">
-                    <div className="col-span-3">Restaurant</div>
-                    <div className="col-span-2">Plan</div>
-                    <div className="col-span-2">Status</div>
-                    <div className="col-span-2">Entitlements</div>
-                    <div className="col-span-3 text-right">Actions</div>
+                <div className="space-y-3">
+                  <div className="hidden md:grid grid-cols-12 gap-2 px-5 py-2.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground rounded-xl border border-border bg-muted/40">
+                    <div className="col-span-3 flex items-center gap-1.5"><Building2 className="w-3 h-3" /> Restaurant</div>
+                    <div className="col-span-2 flex items-center gap-1.5"><Crown className="w-3 h-3" /> Plan</div>
+                    <div className="col-span-2 flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3" /> Status</div>
+                    <div className="col-span-2 flex items-center gap-1.5"><Settings className="w-3 h-3" /> Entitlements</div>
+                    <div className="col-span-3 text-right flex items-center justify-end gap-1.5"><Zap className="w-3 h-3" /> Actions</div>
                   </div>
 
-                  <div className="divide-y divide-slate-800">
+                  <div className="space-y-2.5">
                     {(billingOverview?.tenants || []).filter((row) => {
                       const q = String(billingSearch || '').toLowerCase();
                       if (!q) return true;
@@ -1590,31 +1676,44 @@ export default function SuperAdminDashboard() {
                         String(row.contact_email || '').toLowerCase().includes(q)
                       );
                     }).map((row) => (
-                      <div key={row.id} className="grid grid-cols-12 gap-2 items-center px-4 py-4 hover:bg-slate-900/40 transition-colors">
-                        <div className="col-span-3">
-                          <div className="text-sm font-semibold text-white truncate">{row.name || row.slug}</div>
-                          <div className="text-xs text-slate-500 truncate">/{row.slug}</div>
+                      <div key={row.id} className="group grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-2 items-center px-4 md:px-5 py-4 md:py-4 rounded-2xl border border-border bg-card/80 hover:border-violet-500/30 hover:bg-muted/50 hover:shadow-lg hover:shadow-violet-500/5 transition-all duration-200">
+                        <div className="col-span-1 md:col-span-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500/20 to-cyan-500/20 border border-violet-500/20 flex items-center justify-center shrink-0">
+                              <Building2 className="w-5 h-5 text-violet-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-foreground truncate">{row.name || row.slug}</div>
+                              <div className="text-xs text-muted-foreground truncate">/{row.slug}</div>
+                            </div>
+                          </div>
                         </div>
-                        <div className="col-span-2">
+                        <div className="col-span-1 md:col-span-2">
+                          <div className="md:hidden text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Plan</div>
                           <PlanBadge plan={row.plan || 'trial'} />
                         </div>
-                        <div className="col-span-2">
+                        <div className="col-span-1 md:col-span-2">
+                          <div className="md:hidden text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Status</div>
                           <StatusBadge status={row.computed_status || row.billing_status || 'pending'} plan={row.plan} />
-                          <div className="text-[11px] text-slate-500 mt-1">
+                          <div className="text-[11px] text-muted-foreground mt-1.5">
                             {row.trial_ends_at ? `Trial ends ${new Date(row.trial_ends_at).toLocaleDateString()}` : row.subscription_current_period_end ? `Renews ${new Date(row.subscription_current_period_end).toLocaleDateString()}` : '—'}
                           </div>
                         </div>
-                        <div className="col-span-2 flex flex-wrap gap-1">
-                          <EntitlementChip label="QR" enabled={Boolean(row.can_generate_qr)} />
-                          <EntitlementChip label="Dual" enabled={Boolean(row.can_use_dual_phone_sessions)} />
-                          <EntitlementChip label="Export" enabled={Boolean(row.can_export_analytics)} />
-                          <EntitlementChip label="Tables" enabled={Boolean(row.max_tables)} value={row.max_tables} />
+                        <div className="col-span-1 md:col-span-2">
+                          <div className="md:hidden text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Entitlements</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            <EntitlementChip label="QR" enabled={Boolean(row.can_generate_qr)} />
+                            <EntitlementChip label="Dual" enabled={Boolean(row.can_use_dual_phone_sessions)} />
+                            <EntitlementChip label="Export" enabled={Boolean(row.can_export_analytics)} />
+                            <EntitlementChip label="Tables" enabled={Boolean(row.max_tables)} value={row.max_tables} />
+                          </div>
                         </div>
-                        <div className="col-span-3 flex items-center justify-end gap-2">
+                        <div className="col-span-1 md:col-span-3 flex items-center md:justify-end gap-2 pt-1 md:pt-0">
                           <button
                             onClick={() => openTenantBilling(row)}
-                            className="text-xs font-bold px-3 py-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 text-violet-200 transition-all"
+                            className="inline-flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 hover:border-violet-500/60 text-violet-200 transition-colors duration-200"
                           >
+                            <CreditCard className="w-3.5 h-3.5" />
                             Manage Billing
                           </button>
                         </div>
@@ -1624,37 +1723,47 @@ export default function SuperAdminDashboard() {
                 </div>
               </>
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 px-4 py-10 text-center text-sm text-slate-500">
+              <div className="rounded-2xl border border-dashed border-border bg-muted/60 px-4 py-10 text-center text-sm text-muted-foreground">
                 {billingLoading ? 'Loading billing overview…' : pageLoading ? 'Loading billing overview…' : 'Billing overview will appear here.'}
               </div>
             )}
           </section>
 
-          <section className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+          <section className="bg-card/60 border border-border rounded-3xl p-6 shadow-xl backdrop-blur-md">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
               <div>
-                <h2 className="text-xl font-bold">Payment Gateway Setup</h2>
-                <p className="text-xs text-slate-400 mt-1">Configure Stripe keys, mode, and the frontend base URL used for Checkout redirects and QR links.</p>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30">
+                    <Settings className="w-6 h-6 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-foreground">Payment Gateway Setup</h2>
+                    <p className="text-xs text-muted-foreground mt-1">Configure Stripe keys, mode, and the frontend base URL used for Checkout redirects and QR links.</p>
+                  </div>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => fetchData()}
-                  className="rounded-xl border border-slate-700/60 bg-slate-900/70 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-800/60"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-muted px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors duration-200"
                 >
+                  <RefreshCw className={`w-3.5 h-3.5 ${paymentGatewayLoading ? 'animate-spin' : ''}`} />
                   {paymentGatewayLoading ? 'Refreshing…' : 'Refresh'}
                 </button>
                 <button
                   onClick={verifyPaymentGateway}
                   disabled={paymentGatewayVerifying}
-                  className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 disabled:opacity-60 transition-colors duration-200"
                 >
+                  {paymentGatewayVerifying ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                   {paymentGatewayVerifying ? 'Verifying…' : 'Verify Connection'}
                 </button>
                 <button
                   onClick={savePaymentGateway}
                   disabled={paymentGatewaySaving}
-                  className="rounded-xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-violet-500/20 hover:brightness-110 disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-violet-500/20 hover:brightness-110 disabled:opacity-60 transition-all duration-200"
                 >
+                  {paymentGatewaySaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                   {paymentGatewaySaving ? 'Saving…' : 'Save'}
                 </button>
               </div>
@@ -1663,8 +1772,8 @@ export default function SuperAdminDashboard() {
             {pgBanner && (
               <div className={`mb-5 rounded-xl border px-4 py-3 text-sm ${
                 pgBanner.kind === 'success'
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-                  : 'border-rose-500/30 bg-rose-500/10 text-rose-200'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200'
+                  : 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200'
               }`}>
                 {pgBanner.message}
               </div>
@@ -1673,13 +1782,13 @@ export default function SuperAdminDashboard() {
             {(paymentGateway?.connectivity || pgBanner) && (
               <div className={`mb-5 rounded-2xl border p-4 ${
                 paymentGateway?.connectivity?.ok
-                  ? 'border-emerald-500/30 bg-emerald-500/10'
-                  : 'border-amber-500/30 bg-amber-500/10'
-              }`}>
+                  ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10'
+                  : 'border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10'
+              } transition-colors duration-300`}>
                 <div className="flex flex-wrap items-start gap-3 justify-between">
                   <div>
-                    <div className="text-sm font-semibold text-slate-100">Stripe connectivity</div>
-                    <div className={`text-xs mt-1 ${paymentGateway?.connectivity?.ok ? 'text-emerald-200' : 'text-amber-200'}`}>
+                    <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Stripe connectivity</div>
+                    <div className={`text-xs mt-1 ${paymentGateway?.connectivity?.ok ? 'text-emerald-700 dark:text-emerald-200' : 'text-amber-700 dark:text-amber-200'}`}>
                       {paymentGateway?.connectivity?.message || (
                         paymentGatewayLoading ? 'Checking connectivity…' : 'Save credentials and click Verify Connection.'
                       )}
@@ -1688,16 +1797,16 @@ export default function SuperAdminDashboard() {
                   <div className="flex flex-wrap gap-2">
                     <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${
                       pgForm.provider === 'stripe'
-                        ? 'border-violet-500/40 bg-violet-500/10 text-violet-200'
-                        : 'border-slate-600 bg-slate-800 text-slate-300'
-                    }`}>Provider: {pgForm.provider}</span>
+                        ? 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/40 dark:bg-violet-500/10 dark:text-violet-200'
+                        : 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                    } transition-colors duration-200`}>Provider: {pgForm.provider}</span>
                     <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${
                       pgForm.mode === 'live'
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                        : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                    }`}>Mode: {pgForm.mode}</span>
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200'
+                        : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200'
+                    } transition-colors duration-200`}>Mode: {pgForm.mode}</span>
                     {(paymentGateway?.settings?.sources || {}).stripe_secret_key && (
-                      <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full border border-slate-600 bg-slate-800 text-slate-300">
+                      <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full border border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 transition-colors duration-200">
                         Secret: {paymentGateway.settings.sources.stripe_secret_key === 'env' ? 'Env var' : paymentGateway.settings.sources.stripe_secret_key === 'db' ? 'Platform DB' : 'Default'}
                       </span>
                     )}
@@ -1708,7 +1817,7 @@ export default function SuperAdminDashboard() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Provider</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Provider</label>
                 <div className="flex gap-2">
                   {[
                     { key: 'stripe', label: 'Stripe' },
@@ -1718,10 +1827,10 @@ export default function SuperAdminDashboard() {
                       key={opt.key}
                       type="button"
                       onClick={() => setPgForm((p) => ({ ...p, provider: opt.key }))}
-                      className={`flex-1 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors ${
+                      className={`flex-1 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors duration-200 ${
                         pgForm.provider === opt.key
-                          ? 'border-violet-500/40 bg-violet-500/10 text-violet-100'
-                          : 'border-slate-700/60 bg-slate-900/70 text-slate-300 hover:bg-slate-800/60'
+                          ? 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/40 dark:bg-violet-500/10 dark:text-violet-100'
+                          : 'border-border bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                       }`}
                     >
                       {opt.label}
@@ -1731,7 +1840,7 @@ export default function SuperAdminDashboard() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Mode</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Mode</label>
                 <div className="flex gap-2">
                   {[
                     { key: 'test', label: 'Test' },
@@ -1741,10 +1850,10 @@ export default function SuperAdminDashboard() {
                       key={opt.key}
                       type="button"
                       onClick={() => setPgForm((p) => ({ ...p, mode: opt.key }))}
-                      className={`flex-1 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors ${
+                      className={`flex-1 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors duration-200 ${
                         pgForm.mode === opt.key
-                          ? (opt.key === 'live' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100' : 'border-amber-500/40 bg-amber-500/10 text-amber-100')
-                          : 'border-slate-700/60 bg-slate-900/70 text-slate-300 hover:bg-slate-800/60'
+                          ? (opt.key === 'live' ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100')
+                          : 'border-border bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                       }`}
                     >
                       {opt.label}
@@ -1791,7 +1900,7 @@ export default function SuperAdminDashboard() {
 
               <div className="md:col-span-2">
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Frontend Base URL</label>
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Frontend Base URL</label>
                   {(paymentGateway?.settings?.sources || {}).frontend_url && (
                     <SourcePill source={paymentGateway.settings.sources.frontend_url} />
                   )}
@@ -1801,16 +1910,16 @@ export default function SuperAdminDashboard() {
                   value={pgForm.frontend_url || ''}
                   onChange={(e) => setPgForm((p) => ({ ...p, frontend_url: e.target.value }))}
                   placeholder="https://tabletalk.app"
-                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
+                  className="w-full rounded-xl border border-border bg-input px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono transition-colors duration-200"
                 />
               </div>
 
               <div className="md:col-span-2">
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Webhook Endpoint URL (paste this into Stripe)</label>
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Webhook Endpoint URL (paste this into Stripe)</label>
                 </div>
                 <div className="flex gap-2">
-                  <div className="flex-1 min-w-0 rounded-xl border border-slate-700/60 bg-slate-950/80 px-4 py-3 text-sm font-mono text-slate-200 truncate">
+                  <div className="flex-1 min-w-0 rounded-xl border border-border bg-input px-4 py-3 text-sm font-mono text-foreground truncate">
                     {derivedWebhookEndpointUrl}
                   </div>
                   <button
@@ -1823,8 +1932,9 @@ export default function SuperAdminDashboard() {
                         setPgBanner({ kind: 'error', message: 'Unable to copy URL. Copy it manually.' });
                       }
                     }}
-                    className="rounded-xl border border-slate-700/60 bg-slate-900/70 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-800/60"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-muted px-4 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors duration-200"
                   >
+                    <Download className="w-3.5 h-3.5" />
                     Copy
                   </button>
                 </div>
@@ -1832,13 +1942,20 @@ export default function SuperAdminDashboard() {
             </div>
           </section>
 
-          <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+          <section className="bg-card/60 border border-border rounded-3xl p-6 shadow-xl backdrop-blur-md">
             <div className="flex items-center justify-between gap-4 mb-6">
               <div>
-                <h2 className="text-xl font-bold">Registered Restaurants</h2>
-                <p className="text-xs text-slate-400 mt-1">Pending restaurants are waiting for the invite link to be completed.</p>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/30">
+                    <Building2 className="w-6 h-6 text-cyan-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-foreground">Registered Restaurants</h2>
+                    <p className="text-xs text-muted-foreground mt-1">Pending restaurants are waiting for the invite link to be completed.</p>
+                  </div>
+                </div>
               </div>
-              {pageLoading && <span className="text-xs text-slate-500">Refreshing…</span>}
+              {pageLoading && <span className="text-xs text-muted-foreground">Refreshing…</span>}
             </div>
 
             {(tenantActionError || tenantActionSuccess) && (
@@ -1863,20 +1980,20 @@ export default function SuperAdminDashboard() {
               {tenants.map((tenant) => (
                 <div key={tenant.id}>
                   <div
-                    className={`grid grid-cols-12 grid-rows-1 gap-2 items-start px-4 py-3 rounded-xl border transition-all cursor-pointer ${
+                    className={`grid grid-cols-12 grid-rows-1 gap-2 items-start px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
                       expandedId === tenant.id
-                        ? 'bg-slate-800 border-purple-500/40'
-                        : 'bg-slate-900/40 border-slate-800 hover:border-slate-700'
+                        ? 'bg-muted border-violet-500/40'
+                        : 'bg-card/40 border-border hover:border-violet-500/30 hover:bg-muted/50'
                     }`}
                     onClick={() => setExpandedId(expandedId === tenant.id ? null : tenant.id)}
                   >
-                    <div className="col-span-2 font-semibold text-white truncate min-w-0 leading-tight pt-1.5">{tenant.name}</div>
-                    <div className="col-span-2 text-sm text-slate-400 truncate min-w-0 leading-tight pt-1.5">{tenant.manager_name || 'Awaiting onboarding'}</div>
-                    <div className="col-span-2 text-xs text-slate-500 truncate min-w-0 leading-tight pt-1.5">
-                      {tenant.contact_email ? <span className="text-slate-300">{tenant.contact_email}</span> : '—'}
-                      {tenant.contact_phone && <span className="ml-1 text-slate-500">· {tenant.contact_phone}</span>}
+                    <div className="col-span-2 font-semibold text-foreground truncate min-w-0 leading-tight pt-1.5">{tenant.name}</div>
+                    <div className="col-span-2 text-sm text-muted-foreground truncate min-w-0 leading-tight pt-1.5">{tenant.manager_name || 'Awaiting onboarding'}</div>
+                    <div className="col-span-2 text-xs text-muted-foreground truncate min-w-0 leading-tight pt-1.5">
+                      {tenant.contact_email ? <span className="text-foreground/80">{tenant.contact_email}</span> : '—'}
+                      {tenant.contact_phone && <span className="ml-1 text-muted-foreground">· {tenant.contact_phone}</span>}
                     </div>
-                    <div className="col-span-3 text-xs text-slate-500 truncate min-w-0 leading-tight pt-1.5">{tenant.address || 'No address yet'}</div>
+                    <div className="col-span-3 text-xs text-muted-foreground truncate min-w-0 leading-tight pt-1.5">{tenant.address || 'No address yet'}</div>
                     <div className="col-span-3 flex flex-col gap-2 min-w-0">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <PlanBadge plan={tenant.plan} />
@@ -1889,9 +2006,9 @@ export default function SuperAdminDashboard() {
                             openTenantBilling(tenant);
                           }}
                           title="Manage billing & plan"
-                          style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-                          className="text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-violet-500/35 bg-violet-500/10 hover:bg-violet-500/20 text-violet-300 transition-all whitespace-nowrap"
+                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-violet-500/35 bg-violet-500/10 hover:bg-violet-500/20 text-violet-300 transition-colors duration-200 whitespace-nowrap"
                         >
+                          <CreditCard className="w-3 h-3" />
                           Billing
                         </button>
                         <button
@@ -1900,13 +2017,13 @@ export default function SuperAdminDashboard() {
                             toggleBilling(tenant);
                           }}
                           title={(tenant.computed_status || tenant.billing_status) === 'active' ? 'Suspend tenant' : 'Activate tenant'}
-                          style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-                          className={`text-[11px] font-bold px-2.5 py-1.5 rounded-xl border transition-all whitespace-nowrap ${
+                          className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border transition-colors duration-200 whitespace-nowrap ${
                             (tenant.computed_status || tenant.billing_status) === 'active'
                               ? 'border-rose-500/30 hover:bg-rose-500/10 text-rose-400'
                               : 'border-emerald-500/30 hover:bg-emerald-500/10 text-emerald-400'
                           }`}
                         >
+                          {(tenant.computed_status || tenant.billing_status) === 'active' ? <Ban className="w-3 h-3" /> : <Check className="w-3 h-3" />}
                           {(tenant.computed_status || tenant.billing_status) === 'active' ? 'Suspend' : 'Activate'}
                         </button>
                         <button
@@ -1915,9 +2032,9 @@ export default function SuperAdminDashboard() {
                             openEdit(tenant);
                           }}
                           title="Edit restaurant"
-                          style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-                          className="text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-slate-600 hover:border-purple-500 hover:bg-purple-500/10 text-slate-400 hover:text-purple-300 transition-all whitespace-nowrap"
+                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-border hover:border-violet-500/50 hover:bg-violet-500/10 text-muted-foreground hover:text-violet-300 transition-colors duration-200 whitespace-nowrap"
                         >
+                          <Pencil className="w-3 h-3" />
                           Edit
                         </button>
                         <button
@@ -1927,9 +2044,9 @@ export default function SuperAdminDashboard() {
                           }}
                           disabled={tenant.slug === 'default' || tenantActionLoading}
                           title="Permanently remove tenant"
-                          style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-                          className="text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-rose-500/30 hover:bg-rose-500/10 text-rose-300 transition-all disabled:opacity-40 whitespace-nowrap"
+                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-rose-500/30 hover:bg-rose-500/10 text-rose-300 transition-colors duration-200 disabled:opacity-40 whitespace-nowrap"
                         >
+                          <Trash2 className="w-3 h-3" />
                           Delete
                         </button>
                       </div>
@@ -1978,42 +2095,152 @@ export default function SuperAdminDashboard() {
                 <div className="py-12 text-center text-slate-500 text-sm">No restaurants registered yet.</div>
               )}
             </div>
+          </section>
           </div>
+          <div>
+            <div className="bg-card/60 border border-border rounded-3xl p-6 shadow-xl backdrop-blur-md sticky top-6 space-y-6">
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="p-2 rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 border border-violet-500/30">
+                    <Plus className="w-6 h-6 text-violet-400" />
+                  </div>
+                  <h2 className="text-xl font-bold text-foreground">Create Subscription Invite</h2>
+                </div>
+                <p className="text-xs text-muted-foreground">Enter the restaurant name and email, then send the generated onboarding link by URL, email, or QR code.</p>
+              </div>
 
-          <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+              {inviteError && <Banner tone="error" message={inviteError} />}
+              {inviteSuccess && <Banner tone="success" message={inviteSuccess} />}
+
+              <form onSubmit={handleCreateInvite} className="space-y-3">
+                <FormField
+                  label="Restaurant Name *"
+                  placeholder="The French Bistro"
+                  value={inviteForm.name}
+                  onChange={(value) => setInviteForm((current) => ({ ...current, name: value }))}
+                />
+                <FormField
+                  label="Restaurant Email *"
+                  placeholder="owner@frenchbistro.com"
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(value) => setInviteForm((current) => ({ ...current, email: value }))}
+                />
+
+                <button
+                  type="submit"
+                  disabled={inviteLoading}
+                  className="inline-flex items-center justify-center gap-2 w-full bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 text-white font-bold py-3 px-4 rounded-xl transition-all duration-200 disabled:opacity-50 text-sm mt-2"
+                >
+                  {inviteLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+                  {inviteLoading ? 'Generating Invite...' : 'Generate Subscription Link'}
+                </button>
+              </form>
+
+              {generatedInvite && (
+                <div className="space-y-4 pt-4 border-t border-border">
+                  <div>
+                    <h3 className="text-sm font-bold text-foreground">Invite Ready</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Expires on {new Date(generatedInvite.invite.expires_at).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Subscription URL</label>
+                    <ReadOnlyBlock value={generatedInvite.invite.url} />
+                    <button
+                      type="button"
+                      onClick={() => copyText(generatedInvite.invite.url, 'Subscription URL copied to clipboard.')}
+                      className="mt-2 text-xs font-semibold text-violet-600 hover:text-violet-700 dark:text-purple-300 dark:hover:text-purple-200 transition-colors duration-200"
+                    >
+                      Copy URL
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Direct Email Link</label>
+                    <ReadOnlyBlock value={generatedInvite.invite.mailto_url} />
+                    <div className="flex gap-3 mt-2 text-xs font-semibold">
+                      <a
+                        href={generatedInvite.invite.mailto_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          const draftWindow = window.open(
+                            generatedInvite.invite.mailto_url,
+                            '_blank',
+                            'noopener,noreferrer'
+                          );
+
+                          if (!draftWindow) {
+                            window.location.href = generatedInvite.invite.mailto_url;
+                          }
+                        }}
+                        className="text-violet-600 hover:text-violet-700 dark:text-cyan-300 dark:hover:text-cyan-200 transition-colors duration-200"
+                      >
+                        Open Email Draft
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => copyText(generatedInvite.invite.email_body, 'Email message copied to clipboard.')}
+                        className="text-violet-600 hover:text-violet-700 dark:text-purple-300 dark:hover:text-purple-200 transition-colors duration-200"
+                      >
+                        Copy Email Text
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">QR Code</label>
+                    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white p-4 inline-flex shadow-sm transition-colors duration-300">
+                      <img src={generatedInvite.invite.qr_code_data_url} alt="Subscription QR code" className="w-48 h-48" />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === TAB_QUESTIONS && (
+        <div className="w-full">
+          <section className="bg-card border border-border rounded-3xl p-6 shadow-[0_4px_24px_rgba(15,23,42,0.03)] dark:bg-slate-900/60 dark:border-slate-800 dark:shadow-xl dark:backdrop-blur-md transition-colors duration-300">
             <div className="flex items-center justify-between gap-4 mb-6">
               <div>
-                <h2 className="text-xl font-bold">Global Question Library</h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  Structured by <span className="text-slate-300">Context → Question Type → Difficulty</span>. CSV headers supported: <span className="text-slate-300">question_text, answer_text, category, sub_category, difficulty, question_type, context, options, active, sort_order</span>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-foreground">Global Question Library</h2>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                  Structured by <span className="text-slate-800 dark:text-slate-300 font-medium">Context → Question Type → Difficulty</span>. CSV headers supported: <span className="text-slate-800 dark:text-slate-300 font-mono">question_text, answer_text, category, sub_category, difficulty, question_type, context, options, active, sort_order</span>
                 </p>
               </div>
-              <div className="text-xs text-slate-500">{globalQuestions.length} questions loaded</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">{globalQuestions.length} questions loaded</div>
             </div>
 
             {questionError && <Banner tone="error" message={questionError} />}
             {questionSuccess && <Banner tone="success" message={questionSuccess} />}
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 mb-6">
+            <div className="rounded-2xl border border-border bg-card/80 p-4 mb-6">
               <div className="flex flex-col lg:flex-row lg:items-center gap-4">
                 <div className="flex-1">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">CSV File</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">CSV File</label>
                   <input
                     type="file"
                     accept=".csv,text/csv"
                     onChange={(event) => setCsvFile(event.target.files?.[0] || null)}
-                    className="block w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-purple-500 file:px-4 file:py-2 file:font-semibold file:text-white hover:file:bg-purple-600"
+                    className="block w-full text-sm text-foreground/80 file:mr-4 file:rounded-xl file:border-0 file:bg-violet-500 file:px-4 file:py-2 file:font-semibold file:text-white hover:file:bg-violet-600 file:cursor-pointer cursor-pointer transition-colors duration-200"
                   />
-                  <div className="text-xs text-slate-500 mt-2">
+                  <div className="text-xs text-muted-foreground mt-2">
                     {csvFile ? `Selected: ${csvFile.name}` : 'Upload a CSV exported from Excel, Google Sheets, or another spreadsheet tool.'}
                   </div>
                 </div>
-                <label className="flex items-center gap-2 text-sm text-slate-300">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors duration-200 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={replaceQuestions}
                     onChange={(event) => setReplaceQuestions(event.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-purple-500 focus:ring-purple-500"
+                    className="rounded border-border bg-input text-violet-500 focus:ring-violet-500 focus:ring-offset-background transition-colors duration-200"
                   />
                   Replace existing global questions
                 </label>
@@ -2021,24 +2248,28 @@ export default function SuperAdminDashboard() {
                   type="button"
                   onClick={handleCsvImport}
                   disabled={questionLoading}
-                  className="rounded-2xl bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-50 transition-all duration-200"
                 >
+                  {questionLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                   {questionLoading ? 'Uploading...' : 'Upload CSV'}
                 </button>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 mb-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card/70 p-4 mb-6 space-y-4">
               <div className="flex flex-col xl:flex-row xl:items-center gap-4">
                 <div className="flex-1">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Search Questions</label>
-                  <input
-                    type="text"
-                    value={questionSearch}
-                    onChange={(event) => setQuestionSearch(event.target.value)}
-                    placeholder="Search question text, follow-up, options, context, type, or difficulty"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-all text-sm"
-                  />
+                  <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Search Questions</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={questionSearch}
+                      onChange={(event) => setQuestionSearch(event.target.value)}
+                      placeholder="Search question text, follow-up, options, context, type, or difficulty"
+                      className="w-full pl-10 bg-input border border-border rounded-xl px-4 py-3 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-violet-500 transition-colors duration-200 text-sm"
+                    />
+                  </div>
                 </div>
                 <div className="grid grid-cols-3 gap-3 xl:w-[360px]">
                   <QuestionStatCard label="Contexts" value={groupedQuestionData.stats.contexts} />
@@ -2076,11 +2307,11 @@ export default function SuperAdminDashboard() {
                 <DifficultyStatCard label="Deep" value={groupedQuestionData.stats.difficultyBreakdown.deep} tone="deep" />
               </div>
 
-              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80 px-4 py-3 transition-colors duration-300">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 flex-1 min-w-0">
                   <div className="min-w-0">
-                    <div className="text-sm font-semibold text-white">Question Actions</div>
-                    <div className="text-xs text-slate-500 mt-1">
+                    <div className="text-sm font-semibold text-slate-900 dark:text-white">Question Actions</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                       {selectedQuestionIds.length > 0
                         ? `${selectedQuestionIds.length} selected for bulk delete`
                         : `${groupedQuestionData.filteredQuestions.length} question(s) match the current filters.`}
@@ -2101,7 +2332,7 @@ export default function SuperAdminDashboard() {
                     type="button"
                     onClick={exportQuestionsCsv}
                     disabled={groupedQuestionData.filteredQuestions.length === 0}
-                    className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+                    className="rounded-xl border border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 disabled:opacity-40 transition-colors duration-200"
                   >
                     Export CSV
                   </button>
@@ -2109,7 +2340,7 @@ export default function SuperAdminDashboard() {
                     type="button"
                     onClick={() => setSelectedQuestionIds([])}
                     disabled={selectedQuestionIds.length === 0}
-                    className="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:border-slate-500 disabled:opacity-40"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-transparent px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 disabled:opacity-40 transition-colors duration-200"
                   >
                     Clear Selection
                   </button>
@@ -2117,7 +2348,7 @@ export default function SuperAdminDashboard() {
                     type="button"
                     onClick={handleBulkDeleteQuestions}
                     disabled={selectedQuestionIds.length === 0 || questionActionLoading}
-                    className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-40"
+                    className="rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/20 disabled:opacity-40 transition-colors duration-200"
                   >
                     {questionActionLoading ? 'Working...' : 'Bulk Delete'}
                   </button>
@@ -2132,50 +2363,94 @@ export default function SuperAdminDashboard() {
                 return (
                 <div
                   key={contextGroup.label}
-                  className={`rounded-3xl border overflow-hidden ${getContextSectionClasses(contextGroup.label)}`}
+                  className={`rounded-3xl border overflow-hidden ${getContextSectionClasses(contextGroup.label)} transition-colors duration-300`}
                 >
-                  <div className="px-5 py-4 border-b border-white/10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-3">
-                        <div className="text-lg font-bold text-white">{contextGroup.label}</div>
-                        <ContextPill label={contextGroup.label} />
+                  <div className="px-5 py-4 border-b border-slate-200/60 dark:border-white/10 flex flex-col gap-3 transition-colors duration-300">
+                    <div className="flex flex-wrap items-center justify-between gap-3 min-w-0">
+                      <div className="min-w-0 shrink-0">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <div className="text-lg font-bold text-slate-900 dark:text-white whitespace-nowrap">{contextGroup.label}</div>
+                          <ContextPill label={contextGroup.label} />
+                        </div>
+                        <div className="text-xs text-slate-600 dark:text-slate-200/80 mt-1">
+                          {contextGroup.types.length} question types · {contextGroup.questionCount} questions
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-200/80 mt-1">
-                        {contextGroup.types.length} question types · {contextGroup.questionCount} questions
-                      </div>
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-white/70 tracking-wide whitespace-nowrap shrink-0">
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                          contextSelected === contextGroup.questionCount && contextSelected > 0
+                            ? 'bg-indigo-500 dark:bg-violet-400'
+                            : contextSelected > 0
+                              ? 'bg-amber-500 dark:bg-amber-400'
+                              : 'bg-slate-400 dark:bg-slate-600'
+                        }`} />
+                        {contextSelected}/{contextGroup.questionCount} · Context
+                      </span>
                     </div>
-                    <SelectionCountBar
-                      label="Context"
-                      total={contextGroup.questionCount}
-                      selected={contextSelected}
-                      onSelectAll={() => selectQuestionIds(contextIds, 'add')}
-                      onClear={() => selectQuestionIds(contextIds, 'remove')}
-                      size="xs"
-                    />
+                    <div className="flex items-center gap-2 justify-end shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => selectQuestionIds(contextIds, 'add')}
+                        disabled={!contextGroup.questionCount}
+                        className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectQuestionIds(contextIds, 'remove')}
+                        disabled={contextSelected === 0}
+                        className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800/80"
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="p-4 space-y-4 bg-slate-950/30">
+                  <div className="p-4 space-y-4 bg-white/40 dark:bg-slate-950/30 transition-colors duration-300">
                     {contextGroup.types.map((typeGroup) => {
                       const typeIds = collectGroupIds(typeGroup);
                       const typeSelected = countSelectedInGroup(typeIds);
                       return (
-                      <div key={`${contextGroup.label}-${typeGroup.label}`} className="rounded-2xl border border-slate-800 bg-slate-950/80 overflow-hidden">
-                        <div className="px-4 py-3 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <div>
-                              <div className="text-sm font-bold text-slate-100">{formatQuestionType(typeGroup.label)}</div>
-                              <div className="text-xs text-slate-500 mt-0.5">{typeGroup.questionCount} questions</div>
+                      <div key={`${contextGroup.label}-${typeGroup.label}`} className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 overflow-hidden shadow-[0_2px_12px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
+                        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex flex-col gap-2 transition-colors duration-300">
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <div className="flex items-center gap-2 min-w-0 shrink-0 flex-wrap">
+                              <div>
+                                <div className="text-sm font-bold text-slate-800 dark:text-slate-100 whitespace-nowrap">{formatQuestionType(typeGroup.label)}</div>
+                                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{typeGroup.questionCount} questions</div>
+                              </div>
+                              <QuestionChip label={formatQuestionTypeCompact(typeGroup.label)} tone="accent" compact />
                             </div>
-                            <QuestionChip label={formatQuestionType(typeGroup.label)} tone="accent" />
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-white/70 tracking-wide whitespace-nowrap shrink-0">
+                              <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                                typeSelected === typeGroup.questionCount && typeSelected > 0
+                                  ? 'bg-indigo-500 dark:bg-violet-400'
+                                  : typeSelected > 0
+                                    ? 'bg-amber-500 dark:bg-amber-400'
+                                    : 'bg-slate-400 dark:bg-slate-600'
+                              }`} />
+                              {typeSelected}/{typeGroup.questionCount} · Type
+                            </span>
                           </div>
-                          <SelectionCountBar
-                            label="Type"
-                            total={typeGroup.questionCount}
-                            selected={typeSelected}
-                            onSelectAll={() => selectQuestionIds(typeIds, 'add')}
-                            onClear={() => selectQuestionIds(typeIds, 'remove')}
-                            size="xs"
-                          />
+                          <div className="flex items-center gap-2 justify-end shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => selectQuestionIds(typeIds, 'add')}
+                              disabled={!typeGroup.questionCount}
+                              className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
+                            >
+                              Select all
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => selectQuestionIds(typeIds, 'remove')}
+                              disabled={typeSelected === 0}
+                              className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800/80"
+                            >
+                              Clear
+                            </button>
+                          </div>
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 p-4">
@@ -2188,22 +2463,46 @@ export default function SuperAdminDashboard() {
                             return (
                               <div
                                 key={sectionKey}
-                                className={`rounded-2xl border min-h-[180px] ${getDifficultySectionClasses(difficulty)}`}
+                                className={`rounded-2xl border min-h-[180px] overflow-hidden ${getDifficultySectionClasses(difficulty)} transition-colors duration-300`}
                               >
-                                <div className="px-4 py-3 border-b border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                                  <div className="flex items-center gap-2">
-                                    <div className="text-sm font-semibold text-white">{formatDifficulty(difficulty)}</div>
-                                    <span className="text-xs text-white/80">{difficultyGroup ? difficultyGroup.questions.length : 0}</span>
+                                <div className="px-4 py-3 border-b border-slate-200/60 dark:border-white/10 flex flex-col gap-2 transition-colors duration-300">
+                                  <div className="flex items-center justify-between gap-2 min-w-0">
+                                    <div className="flex items-center gap-2 min-w-0 shrink-0">
+                                      <div className="text-sm font-bold text-slate-900 dark:text-white whitespace-nowrap">{formatDifficulty(difficulty)}</div>
+                                      <span className="text-xs font-semibold text-slate-500 dark:text-white/70 tabular-nums">{difficultyGroup ? difficultyGroup.questions.length : 0}</span>
+                                    </div>
+                                    {difficultyGroup && (
+                                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-white/70 tracking-wide whitespace-nowrap shrink-0">
+                                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                                          countSelectedInGroup(difficultyGroup.questions.map((q) => q.question_id)) === difficultyGroup.questions.length
+                                            ? 'bg-indigo-500 dark:bg-violet-400'
+                                            : countSelectedInGroup(difficultyGroup.questions.map((q) => q.question_id)) > 0
+                                              ? 'bg-amber-500 dark:bg-amber-400'
+                                              : 'bg-slate-400 dark:bg-slate-600'
+                                        }`} />
+                                        {countSelectedInGroup(difficultyGroup.questions.map((q) => q.question_id))}/{difficultyGroup.questions.length}
+                                      </span>
+                                    )}
                                   </div>
                                   {difficultyGroup && (
-                                    <SelectionCountBar
-                                      label="Bucket"
-                                      total={difficultyGroup.questions.length}
-                                      selected={countSelectedInGroup(difficultyGroup.questions.map((q) => q.question_id))}
-                                      onSelectAll={() => selectQuestionIds(difficultyGroup.questions.map((q) => q.question_id), 'add')}
-                                      onClear={() => selectQuestionIds(difficultyGroup.questions.map((q) => q.question_id), 'remove')}
-                                      size="xs"
-                                    />
+                                    <div className="flex items-center gap-2 justify-end shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => selectQuestionIds(difficultyGroup.questions.map((q) => q.question_id), 'add')}
+                                        disabled={difficultyGroup.questions.length === 0}
+                                        className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
+                                      >
+                                        Select all
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => selectQuestionIds(difficultyGroup.questions.map((q) => q.question_id), 'remove')}
+                                        disabled={countSelectedInGroup(difficultyGroup.questions.map((q) => q.question_id)) === 0}
+                                        className="inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:opacity-40 transition-colors duration-200 border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800/80"
+                                      >
+                                        Clear
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
 
@@ -2215,101 +2514,167 @@ export default function SuperAdminDashboard() {
                                       );
                                       const isExpanded = Boolean(expandedQuestions[question.question_id]);
                                       const isSelected = selectedQuestionIds.includes(question.question_id);
+                                      const qStatus =
+                                        question.flagged === true
+                                          ? 'flagged'
+                                          : question.active === false ||
+                                              (question.answer_text == null || String(question.answer_text).trim() === '')
+                                            ? 'draft'
+                                            : 'active';
+                                      const statusCfg =
+                                        qStatus === 'active'
+                                          ? {
+                                              label: 'Active',
+                                              classes:
+                                                'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:border-emerald-500/30',
+                                              Icon: CheckCircle2
+                                            }
+                                          : qStatus === 'draft'
+                                            ? {
+                                                label: 'Draft',
+                                                classes:
+                                                  'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:border-amber-500/30',
+                                                Icon: Clock
+                                              }
+                                            : {
+                                                label: 'Flagged',
+                                                classes:
+                                                  'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:border-rose-500/30',
+                                                Icon: AlertCircle
+                                              };
+                                      const StatusIcon = statusCfg.Icon;
 
                                       return (
                                         <div
                                           key={question.question_id}
-                                          className={`rounded-xl border px-3 py-3 shadow-sm transition-all ${
+                                          className={`rounded-xl border overflow-hidden transition-all duration-200 ${
                                             isSelected
-                                              ? 'border-purple-500/40 bg-purple-500/10'
-                                              : 'border-slate-800 bg-slate-950/90'
+                                              ? 'border-indigo-300 bg-indigo-50/80 dark:border-violet-500/40 dark:bg-violet-500/8'
+                                              : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/80 dark:hover:border-slate-700'
                                           }`}
                                         >
-                                          <div className="flex items-start justify-between gap-3">
-                                            <div className="flex items-start gap-3 min-w-0 flex-1">
-                                              <input
-                                                type="checkbox"
-                                                checked={isSelected}
-                                                onChange={() => toggleQuestionSelection(question.question_id)}
-                                                className="mt-1 rounded border-slate-700 bg-slate-900 text-purple-500 focus:ring-purple-500"
-                                              />
-                                              <button
-                                                type="button"
-                                                onClick={() => toggleQuestionExpanded(question.question_id)}
-                                                className="min-w-0 flex-1 text-left"
-                                              >
-                                                <div className="text-sm font-medium text-slate-100 leading-6 line-clamp-2">
-                                                  {question.question_text}
-                                                </div>
-                                              </button>
-                                            </div>
-                                            <div className="flex items-center gap-1.5 shrink-0">
-                                              <button
-                                                type="button"
-                                                onClick={() => openQuestionEditor(question)}
-                                                className="rounded-lg border border-cyan-500/30 px-2 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/10"
-                                              >
-                                                Edit
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() => handleDeleteQuestion(question.question_id)}
-                                                className="rounded-lg border border-rose-500/30 px-2 py-1 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/10"
-                                              >
-                                                Delete
-                                              </button>
-                                              <button
-                                                onClick={() => moveQuestion(question.question_id, -1)}
-                                                disabled={questionIndex <= 0}
-                                                className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded-lg text-slate-400 hover:text-white"
-                                              >
-                                                ▲
-                                              </button>
-                                              <button
-                                                onClick={() => moveQuestion(question.question_id, 1)}
-                                                disabled={questionIndex === -1 || questionIndex >= globalQuestions.length - 1}
-                                                className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded-lg text-slate-400 hover:text-white"
-                                              >
-                                                ▼
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() => toggleQuestionExpanded(question.question_id)}
-                                                className="rounded-lg border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 hover:border-slate-500"
-                                              >
-                                                {isExpanded ? 'Hide' : 'View'}
-                                              </button>
-                                            </div>
-                                          </div>
-
-                                          <div className="flex flex-wrap gap-2 mt-3">
-                                            <QuestionChip label={contextGroup.label} />
-                                            <QuestionChip label={formatQuestionType(typeGroup.label)} />
-                                            <QuestionChip label={formatDifficulty(difficulty)} tone={difficulty} />
-                                          </div>
-
-                                          {isExpanded && (
-                                            <>
-                                              <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-xs text-slate-400 leading-5">
-                                                Full Question: <span className="text-slate-200">{question.question_text}</span>
+                                          <div className="flex flex-col px-3.5 py-3 min-w-0">
+                                            <div className="flex items-center justify-between gap-2 min-w-0">
+                                              <div className="flex items-center gap-2 shrink-0 min-w-0">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isSelected}
+                                                  onChange={() => toggleQuestionSelection(question.question_id)}
+                                                  className="shrink-0 rounded border-slate-300 bg-white text-indigo-600 dark:border-slate-700 dark:bg-slate-900 dark:text-purple-500 focus:ring-indigo-500 dark:focus:ring-purple-500"
+                                                />
+                                                <span
+                                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] whitespace-nowrap ${statusCfg.classes}`}
+                                                >
+                                                  <StatusIcon size={10} />
+                                                  {statusCfg.label}
+                                                </span>
                                               </div>
-                                              {question.answer_text && (
-                                                <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-xs text-slate-400 leading-5">
-                                                  Follow-up / Tip: <span className="text-slate-300">{question.answer_text}</span>
+                                              <div className="flex items-center gap-0.5 shrink-0">
+                                                <button
+                                                  onClick={() => moveQuestion(question.question_id, -1)}
+                                                  disabled={questionIndex <= 0}
+                                                  aria-label="Move question up"
+                                                  className="hidden xl:inline-flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900/60 dark:hover:bg-slate-800 dark:hover:border-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-all w-6 h-6"
+                                                >
+                                                  <ChevronDown size={12} className="-rotate-90" />
+                                                </button>
+                                                <button
+                                                  onClick={() => moveQuestion(question.question_id, 1)}
+                                                  disabled={questionIndex === -1 || questionIndex >= globalQuestions.length - 1}
+                                                  aria-label="Move question down"
+                                                  className="hidden xl:inline-flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900/60 dark:hover:bg-slate-800 dark:hover:border-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-all w-6 h-6"
+                                                >
+                                                  <ChevronDown size={12} className="rotate-90" />
+                                                </button>
+                                                <div className="hidden xl:block w-px h-5 bg-slate-200 dark:bg-slate-800 mx-0.5" />
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openQuestionEditor(question)}
+                                                  aria-label="Edit question"
+                                                  title="Edit"
+                                                  className="inline-flex items-center justify-center rounded-md border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 dark:border-cyan-500/20 dark:bg-cyan-500/5 dark:hover:bg-cyan-500/10 w-7 h-7 text-cyan-700 dark:text-cyan-200 transition-all"
+                                                >
+                                                  <Pencil size={12} />
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleDeleteQuestion(question.question_id)}
+                                                  aria-label="Delete question"
+                                                  title="Delete"
+                                                  className="inline-flex items-center justify-center rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 dark:border-rose-500/20 dark:bg-rose-500/5 dark:hover:bg-rose-500/10 w-7 h-7 text-rose-700 dark:text-rose-200 transition-all"
+                                                >
+                                                  <Trash2 size={12} />
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => toggleQuestionExpanded(question.question_id)}
+                                                  aria-label={isExpanded ? 'Hide details' : 'View details'}
+                                                  title={isExpanded ? 'Hide' : 'More'}
+                                                  className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:bg-slate-800 dark:hover:border-slate-600 w-7 h-7 text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-all"
+                                                >
+                                                  <MoreHorizontal
+                                                    size={12}
+                                                    className={`transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+                                                  />
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleQuestionExpanded(question.question_id)}
+                                              className="w-full text-left mt-2.5 min-w-0"
+                                            >
+                                              <div className="text-sm font-medium text-slate-800 dark:text-slate-100 leading-[1.45] line-clamp-2 min-h-[2.1em]">
+                                                {question.question_text ? (
+                                                  question.question_text
+                                                ) : (
+                                                  <span className="text-slate-400 dark:text-slate-500 italic text-[13px]">No question text — click Edit to add</span>
+                                                )}
+                                              </div>
+                                            </button>
+
+                                            <div className="mt-2.5 flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-none">
+                                              <QuestionChip label={contextGroup.label} compact />
+                                              <QuestionChip label={formatQuestionTypeCompact(typeGroup.label)} tone="accent" compact />
+                                              <QuestionChip label={formatDifficulty(difficulty)} tone={difficulty} compact />
+                                            </div>
+                                          </div>
+
+                                          <AnimatePresence>
+                                            {isExpanded && (
+                                              <motion.div
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{ height: 'auto', opacity: 1 }}
+                                                exit={{ height: 0, opacity: 0 }}
+                                                className="overflow-hidden"
+                                              >
+                                                <div className="px-4 pb-4 pt-1 border-t border-slate-100 dark:border-slate-800/70 mt-0.5 space-y-2.5 transition-colors duration-300">
+                                                  <div className="rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/70 px-3.5 py-2.5 text-xs text-slate-600 dark:text-slate-400 leading-5 transition-colors duration-300">
+                                                    <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-500 mb-0.5">Full Question</span>
+                                                    <div className="text-slate-800 dark:text-slate-200 leading-6">{question.question_text}</div>
+                                                  </div>
+                                                  {question.answer_text && (
+                                                    <div className="rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/70 px-3.5 py-2.5 text-xs text-slate-600 dark:text-slate-400 leading-5 transition-colors duration-300">
+                                                      <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-500 mb-0.5">Follow-up / Tip</span>
+                                                      <div className="text-slate-800 dark:text-slate-300 leading-6">{question.answer_text}</div>
+                                                    </div>
+                                                  )}
+                                                  {getOptionsPreview(question.options) && (
+                                                    <div className="text-xs text-slate-500 dark:text-slate-500 leading-5 px-1">
+                                                      <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-500 mr-2">Options</span>
+                                                      <span className="text-slate-700 dark:text-slate-300">{getOptionsPreview(question.options)}</span>
+                                                    </div>
+                                                  )}
                                                 </div>
-                                              )}
-                                              {getOptionsPreview(question.options) && (
-                                                <div className="mt-3 text-xs text-slate-500 leading-5">
-                                                  Options: <span className="text-slate-300">{getOptionsPreview(question.options)}</span>
-                                                </div>
-                                              )}
-                                            </>
-                                          )}
+                                              </motion.div>
+                                            )}
+                                          </AnimatePresence>
                                         </div>
                                       );
                                     })
                                   ) : (
-                                    <div className="rounded-xl border border-dashed border-white/10 bg-slate-950/40 px-4 py-8 text-center text-xs text-slate-400">
+                                    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 dark:border-white/10 dark:bg-slate-950/40 px-4 py-8 text-center text-xs text-slate-500 dark:text-slate-400 transition-colors duration-300">
                                       No {formatDifficulty(difficulty).toLowerCase()} questions in this section.
                                     </div>
                                   )}
@@ -2318,7 +2683,7 @@ export default function SuperAdminDashboard() {
                                     <button
                                       type="button"
                                       onClick={() => handleShowMoreQuestions(sectionKey)}
-                                      className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-2 text-xs font-semibold text-slate-300 hover:border-slate-500"
+                                      className="w-full rounded-xl border border-slate-200 bg-white hover:border-slate-400 dark:border-slate-700 dark:bg-slate-950/80 px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 dark:hover:border-slate-500 transition-colors duration-200"
                                     >
                                       Show {Math.min(DEFAULT_SECTION_VISIBLE_COUNT, hiddenCount)} More
                                     </button>
@@ -2344,109 +2709,9 @@ export default function SuperAdminDashboard() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </div>
-
-        <div>
-          <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md sticky top-6 space-y-6">
-            <div>
-              <h2 className="text-xl font-bold mb-2">Create Subscription Invite</h2>
-              <p className="text-xs text-slate-400">Enter the restaurant name and email, then send the generated onboarding link by URL, email, or QR code.</p>
-            </div>
-
-            {inviteError && <Banner tone="error" message={inviteError} />}
-            {inviteSuccess && <Banner tone="success" message={inviteSuccess} />}
-
-            <form onSubmit={handleCreateInvite} className="space-y-3">
-              <FormField
-                label="Restaurant Name *"
-                placeholder="The French Bistro"
-                value={inviteForm.name}
-                onChange={(value) => setInviteForm((current) => ({ ...current, name: value }))}
-              />
-              <FormField
-                label="Restaurant Email *"
-                placeholder="owner@frenchbistro.com"
-                type="email"
-                value={inviteForm.email}
-                onChange={(value) => setInviteForm((current) => ({ ...current, email: value }))}
-              />
-
-              <button
-                type="submit"
-                disabled={inviteLoading}
-                className="w-full bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm mt-2"
-              >
-                {inviteLoading ? 'Generating Invite...' : 'Generate Subscription Link'}
-              </button>
-            </form>
-
-            {generatedInvite && (
-              <div className="space-y-4 pt-4 border-t border-slate-800">
-                <div>
-                  <h3 className="text-sm font-bold text-white">Invite Ready</h3>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Expires on {new Date(generatedInvite.invite.expires_at).toLocaleString()}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Subscription URL</label>
-                  <ReadOnlyBlock value={generatedInvite.invite.url} />
-                  <button
-                    type="button"
-                    onClick={() => copyText(generatedInvite.invite.url, 'Subscription URL copied to clipboard.')}
-                    className="mt-2 text-xs font-semibold text-purple-300 hover:text-purple-200"
-                  >
-                    Copy URL
-                  </button>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Direct Email Link</label>
-                  <ReadOnlyBlock value={generatedInvite.invite.mailto_url} />
-                  <div className="flex gap-3 mt-2 text-xs font-semibold">
-                    <a
-                      href={generatedInvite.invite.mailto_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        const draftWindow = window.open(
-                          generatedInvite.invite.mailto_url,
-                          '_blank',
-                          'noopener,noreferrer'
-                        );
-
-                        if (!draftWindow) {
-                          window.location.href = generatedInvite.invite.mailto_url;
-                        }
-                      }}
-                      className="text-cyan-300 hover:text-cyan-200"
-                    >
-                      Open Email Draft
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => copyText(generatedInvite.invite.email_body, 'Email message copied to clipboard.')}
-                      className="text-purple-300 hover:text-purple-200"
-                    >
-                      Copy Email Text
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">QR Code</label>
-                  <div className="rounded-2xl border border-slate-800 bg-white p-4 inline-flex">
-                    <img src={generatedInvite.invite.qr_code_data_url} alt="Subscription QR code" className="w-48 h-48" />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      )}
 
       <AnimatePresence>
         {editingQuestion && (
@@ -2639,299 +2904,551 @@ export default function SuperAdminDashboard() {
               {billingError && <Banner tone="error" message={billingError} />}
               {billingSuccess && <Banner tone="success" message={billingSuccess} />}
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
-                  <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Current Plan &amp; Entitlements</div>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <BillingStat label="Plan" value={formatPlanLabel(billingDetail.billing?.plan)} accent="violet" />
-                    <BillingStat label="Status" value={billingDetail.billing?.computed_status || billingDetail.billing?.billing_status} accent={billingDetail.billing?.computed_status === 'active' ? 'emerald' : billingDetail.billing?.computed_status === 'trialing' ? 'amber' : 'rose'} />
-                    <BillingStat label="Max Tables" value={billingDetail.billing?.max_tables ?? '—'} accent="cyan" />
-                    <BillingStat label="Monthly Sessions" value={billingDetail.billing?.max_monthly_sessions ?? '—'} accent="cyan" />
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-1.5">
-                    <EntitlementChip label="Generate QR" enabled={Boolean(billingDetail.billing?.can_generate_qr)} />
-                    <EntitlementChip label="Export Analytics" enabled={Boolean(billingDetail.billing?.can_export_analytics)} />
-                    <EntitlementChip label="Custom QR Brand" enabled={Boolean(billingDetail.billing?.can_use_custom_qr_branding)} />
-                    <EntitlementChip label="Dual-Phone" enabled={Boolean(billingDetail.billing?.can_use_dual_phone_sessions)} />
-                    <EntitlementChip label="Support" enabled={Boolean(billingDetail.billing?.can_access_support)} value={billingDetail.billing?.support_tier} />
-                  </div>
-                  <div className="mt-4 space-y-1 text-xs text-slate-400">
-                    {billingDetail.billing?.trial_ends_at && <div>Trial ends on: {new Date(billingDetail.billing.trial_ends_at).toLocaleString()}</div>}
-                    {billingDetail.billing?.subscription_started_at && <div>Subscription started: {new Date(billingDetail.billing.subscription_started_at).toLocaleDateString()}</div>}
-                    {billingDetail.billing?.subscription_current_period_end && <div>Renewal: {new Date(billingDetail.billing.subscription_current_period_end).toLocaleString()}</div>}
-                    {billingDetail.billing?.subscription_cancel_at_period_end && <div className="text-amber-300">Cancels at period end.</div>}
-                  </div>
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 p-5 mb-6">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Current Plan &amp; Entitlements</div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <BillingStat label="Plan" value={formatPlanLabel(billingDetail.billing?.plan)} accent="violet" />
+                  <BillingStat label="Status" value={billingDetail.billing?.computed_status || billingDetail.billing?.billing_status} accent={billingDetail.billing?.computed_status === 'active' ? 'emerald' : billingDetail.billing?.computed_status === 'trialing' ? 'amber' : 'rose'} />
+                  <BillingStat label="Max Tables" value={billingDetail.billing?.max_tables ?? '—'} accent="cyan" />
+                  <BillingStat label="Monthly Sessions" value={billingDetail.billing?.max_monthly_sessions ?? '—'} accent="cyan" />
                 </div>
-
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5 space-y-4">
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Change Plan</div>
-                    <div className="grid grid-cols-2 gap-2 mb-3">
-                      <SelectField label="Plan" value={billingPlanForm.plan} options={['trial', 'starter', 'premium', 'enterprise']} onChange={(v) => setBillingPlanForm((f) => ({ ...f, plan: v }))} formatter={formatPlanLabel} />
-                      <FormField label="Trial Days" value={billingPlanForm.trialDays} onChange={(v) => setBillingPlanForm((f) => ({ ...f, trialDays: v }))} type="number" placeholder="14" />
-                    </div>
-                    <FormField label="Stripe Price ID Override (optional)" value={billingPlanForm.stripePriceId} onChange={(v) => setBillingPlanForm((f) => ({ ...f, stripePriceId: v }))} placeholder="price_xxx" />
-                    <button
-                      type="button"
-                      onClick={handleSetPlan}
-                      disabled={billingActionLoading}
-                      className="mt-3 w-full rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white font-bold py-2.5 px-4 text-sm transition-all disabled:opacity-50"
-                    >
-                      {billingActionLoading ? 'Applying plan…' : `Assign ${formatPlanLabel(billingPlanForm.plan)} Plan`}
-                    </button>
-                  </div>
-
-                  <div className="border-t border-slate-800 pt-4">
-                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">Override Entitlements</div>
-                    <div className="grid grid-cols-2 gap-2 mb-3">
-                      <FormField label="Max Tables (blank = no change)" value={billingEntitlementsForm.max_tables} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, max_tables: v }))} type="number" placeholder="10" />
-                      <FormField label="Max Sessions / Mo" value={billingEntitlementsForm.max_monthly_sessions} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, max_monthly_sessions: v }))} type="number" placeholder="500" />
-                      <SelectField label="Can Generate QR?" value={billingEntitlementsForm.can_generate_qr} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_generate_qr: v }))} />
-                      <SelectField label="Dual-Phone?" value={billingEntitlementsForm.can_use_dual_phone_sessions} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_use_dual_phone_sessions: v }))} />
-                      <SelectField label="Export Analytics?" value={billingEntitlementsForm.can_export_analytics} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_export_analytics: v }))} />
-                      <SelectField label="Support Access?" value={billingEntitlementsForm.can_access_support} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_access_support: v }))} />
-                      <SelectField label="Support Tier" value={billingEntitlementsForm.support_tier} options={['', 'basic', 'standard', 'priority', 'dedicated']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, support_tier: v }))} />
-                      <SelectField label="Billing Status" value={billingEntitlementsForm.billing_status} options={['', 'active', 'suspended', 'pending', 'past_due', 'trialing', 'canceled']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, billing_status: v }))} />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleOverrideEntitlements}
-                      disabled={billingActionLoading}
-                      className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-200 font-bold py-2.5 px-4 text-sm transition-all disabled:opacity-50"
-                    >
-                      Apply Overrides
-                    </button>
-                  </div>
+                <div className="mt-4 flex flex-wrap gap-1.5">
+                  <EntitlementChip label="Generate QR" enabled={Boolean(billingDetail.billing?.can_generate_qr)} />
+                  <EntitlementChip label="Export Analytics" enabled={Boolean(billingDetail.billing?.can_export_analytics)} />
+                  <EntitlementChip label="Custom QR Brand" enabled={Boolean(billingDetail.billing?.can_use_custom_qr_branding)} />
+                  <EntitlementChip label="Dual-Phone" enabled={Boolean(billingDetail.billing?.can_use_dual_phone_sessions)} />
+                  <EntitlementChip label="Support" enabled={Boolean(billingDetail.billing?.can_access_support)} value={billingDetail.billing?.support_tier} />
+                </div>
+                <div className="mt-4 space-y-1 text-xs text-slate-400">
+                  {billingDetail.billing?.trial_ends_at && <div>Trial ends on: {new Date(billingDetail.billing.trial_ends_at).toLocaleString()}</div>}
+                  {billingDetail.billing?.subscription_started_at && <div>Subscription started: {new Date(billingDetail.billing.subscription_started_at).toLocaleDateString()}</div>}
+                  {billingDetail.billing?.subscription_current_period_end && <div>Renewal: {new Date(billingDetail.billing.subscription_current_period_end).toLocaleString()}</div>}
+                  {billingDetail.billing?.subscription_cancel_at_period_end && <div className="text-amber-300">Cancels at period end.</div>}
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5 mb-6">
-                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-amber-300 mb-2">Trial QR Provisioning</div>
-                    <div className="text-sm text-slate-300">
-                      During the trial period, tables and QR codes are provisioned here by Super Admin. The Restaurant Admin cannot self-serve QR registration unless explicitly entitled.
-                    </div>
-                  </div>
-                  <div className="text-right text-xs text-slate-500 max-w-xs">
-                    Provisioned tables receive the canonical scan URL and an audit trail entry in restaurant_tables linked to your admin user.
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Single Table</div>
-                    <FormField label="Table Number / Label" value={billingProvisionForm.single} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, single: v }))} placeholder="e.g. 12A, Bar-3" />
-                    <button
-                      type="button"
-                      onClick={handleProvisionSingleTrialQr}
-                      disabled={billingActionLoading}
-                      className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold py-2.5 transition-all disabled:opacity-50"
-                    >
-                      Provision 1 Trial QR
-                    </button>
-                  </div>
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Batch Range</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <FormField label="Start" value={billingProvisionForm.start} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, start: v }))} type="number" placeholder="1" />
-                      <FormField label="End" value={billingProvisionForm.end} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, end: v }))} type="number" placeholder="10" />
-                    </div>
-                    <FormField label="Label Pattern" value={billingProvisionForm.pattern} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, pattern: v }))} placeholder="Table {n}" />
-                    <button
-                      type="button"
-                      onClick={handleProvisionBatchTrialQrs}
-                      disabled={billingActionLoading}
-                      className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold py-2.5 transition-all disabled:opacity-50"
-                    >
-                      Provision Range
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5 mb-6">
-                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-violet-300 mb-2">Registered Tables / Print</div>
-                    <div className="text-sm text-slate-300">
-                      Print or download any provisioned table QR directly from Super Admin. Paper size below applies to all print actions on this tenant.
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 justify-start lg:justify-end">
-                    <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paper</span>
-                      <select
-                        value={saPrintPaperSize}
-                        onChange={(event) => setSaPrintPaperSize(event.target.value)}
-                        className="bg-transparent text-xs font-semibold text-slate-200 focus:outline-none"
-                      >
-                        <option value="letter">Letter</option>
-                        <option value="a4">A4</option>
-                        <option value="a5">A5</option>
-                      </select>
-                    </div>
-                    {(() => {
-                      const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
-                      const hasTables = tables.length > 0;
-                      return (
-                        <>
-                          <button
-                            type="button"
-                            onClick={handleSaPrintAllQr}
-                            disabled={!hasTables || saBulkPrinting}
-                            className="rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
-                          >
-                            <span>🖨️</span>
-                            {saBulkPrinting ? 'Opening…' : hasTables ? `Print All (${tables.length})` : 'Print All'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleSaDownloadAllPng}
-                            disabled={!hasTables || saBulkPrinting}
-                            className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
-                          >
-                            <span>⬇️</span>
-                            {saBulkPrinting ? 'Downloading…' : hasTables ? `Download All PNG (${tables.length})` : 'Download All PNG'}
-                          </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {(() => {
-                  const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
-                  if (tables.length === 0) {
-                    return (
-                      <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
-                        No tables have been provisioned for this tenant yet. Use the <span className="text-amber-300 font-semibold">Trial QR Provisioning</span> panel above to add the first table.
+              <div className="space-y-3 mb-6">
+                {/* Panel: Select Plan */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'plan' ? null : 'plan')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-violet-500/15 border border-violet-500/30 flex items-center justify-center text-violet-300">
+                        <Crown size={18} />
                       </div>
-                    );
-                  }
-                  return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                      {tables.map((t) => (
-                        <div
-                          key={t.id}
-                          className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3"
-                        >
-                          <div>
-                            <span className="text-xs font-bold tracking-wider text-violet-400 uppercase">Table Number</span>
-                            <h3 className="text-2xl font-black text-white mt-0.5">{t.table_number}</h3>
-                            <p className="text-[10px] text-slate-500 truncate mt-1" title={t.qr_code_url || ''}>
-                              {t.qr_code_url || '—'}
-                            </p>
-                            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                              {t.provisioned_by_super_admin_id ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                                  SA Provisioned
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 text-slate-300 border border-slate-500/30">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-                                  RA Registered
-                                </span>
-                              )}
-                              {t.created_at && (
-                                <span className="text-[10px] text-slate-500 font-medium">
-                                  {new Date(t.created_at).toLocaleDateString()}
-                                </span>
-                              )}
+                      <div>
+                        <div className="text-sm font-bold text-white">Select Plan</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Choose subscription tier and apply plan changes</div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'plan' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'plan' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
+                      <div className="flex flex-wrap items-center justify-center gap-2 py-1 rounded-xl bg-slate-900/60 border border-slate-800 p-1">
+                        {(['trial', 'starter', 'premium']).map((planKey) => {
+                          const active = billingPlanForm.plan === planKey;
+                          const Icon = planKey === 'trial' ? Clock : planKey === 'starter' ? Zap : Rocket;
+                          const activeClasses = active
+                            ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white shadow-lg shadow-violet-500/20 border-transparent'
+                            : 'text-slate-300 hover:text-white border-transparent hover:bg-slate-800/60';
+                          return (
+                            <button
+                              key={planKey}
+                              type="button"
+                              onClick={() => setBillingPlanForm((f) => ({ ...f, plan: planKey }))}
+                              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wider transition-all border ${activeClasses}`}
+                            >
+                              <Icon size={14} />
+                              {formatPlanLabel(planKey)}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        {([
+                          { key: 'trial', accent: 'amber', Icon: Clock, desc: '14-day evaluation, full feature access', price: '$0' },
+                          { key: 'starter', accent: 'cyan', Icon: Zap, desc: 'Up to 10 tables · 500 sessions/mo', price: '$49/mo' },
+                          { key: 'premium', accent: 'violet', Icon: Rocket, desc: 'Unlimited tables · priority support', price: '$149/mo' },
+                        ]).map(({ key, accent, Icon, desc, price }) => {
+                          const active = billingPlanForm.plan === key;
+                          const accentRing =
+                            accent === 'amber'
+                              ? 'border-amber-500/50 bg-amber-500/5 shadow-[0_0_0_1px_rgba(245,158,11,0.2)]'
+                              : accent === 'cyan'
+                                ? 'border-cyan-500/50 bg-cyan-500/5 shadow-[0_0_0_1px_rgba(34,211,238,0.2)]'
+                                : 'border-violet-500/50 bg-violet-500/5 shadow-[0_0_0_1px_rgba(168,85,247,0.2)]';
+                          const iconTint =
+                            accent === 'amber'
+                              ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
+                              : accent === 'cyan'
+                                ? 'text-cyan-300 bg-cyan-500/15 border-cyan-500/30'
+                                : 'text-violet-300 bg-violet-500/15 border-violet-500/30';
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => setBillingPlanForm((f) => ({ ...f, plan: key }))}
+                              className={`text-left rounded-2xl border p-4 transition-all ${
+                                active ? accentRing : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between">
+                                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${iconTint}`}>
+                                  <Icon size={18} />
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-lg font-extrabold text-white">{price}</div>
+                                </div>
+                              </div>
+                              <div className="mt-3 text-sm font-bold text-white">{formatPlanLabel(key)}</div>
+                              <div className="mt-1 text-xs text-slate-400 leading-5">{desc}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Trial Days</label>
+                          <div className="relative">
+                            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                              <Clock size={16} />
                             </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleSaDownloadSingleQr(t)}
-                              disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
-                              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold py-2 transition-all"
-                            >
-                              {saPrintingTableId === t.id ? '…' : 'Download PNG'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSaPrintSingleQr(t)}
-                              disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
-                              className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold py-2 transition-all flex items-center justify-center gap-1.5"
-                            >
-                              <span>🖨️</span>
-                              {saPrintingTableId === t.id ? 'Opening…' : 'Print QR'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setSaDeleteConfirmTable(t)}
-                              disabled={saDeletingTableId === t.id || saBulkPrinting || saPrintingTableId === t.id}
-                              title={`Delete ${String(t.table_number)} QR and table registration`}
-                              aria-label={`Delete table ${String(t.table_number)}`}
-                              className="shrink-0 rounded-xl border border-rose-900/60 bg-rose-950/30 hover:bg-rose-900/50 disabled:opacity-50 disabled:cursor-not-allowed text-rose-200 text-xs font-bold py-2 px-3 transition-all"
-                            >
-                              🗑
-                            </button>
+                            <input
+                              type="number"
+                              value={billingPlanForm.trialDays}
+                              onChange={(event) => setBillingPlanForm((f) => ({ ...f, trialDays: event.target.value }))}
+                              placeholder="14"
+                              className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-sm font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                            />
                           </div>
                         </div>
-                      ))}
+                        <div>
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Stripe Price ID Override (optional)</label>
+                          <div className="relative">
+                            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                              <FileText size={16} />
+                            </div>
+                            <input
+                              type="text"
+                              value={billingPlanForm.stripePriceId}
+                              onChange={(event) => setBillingPlanForm((f) => ({ ...f, stripePriceId: event.target.value }))}
+                              placeholder="price_xxx"
+                              className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 transition-all font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleSetPlan}
+                        disabled={billingActionLoading}
+                        className="w-full rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white font-bold py-3 px-4 text-sm transition-all disabled:opacity-50 shadow-lg shadow-violet-500/10"
+                      >
+                        {billingActionLoading ? 'Applying plan…' : `Assign ${formatPlanLabel(billingPlanForm.plan)} Plan`}
+                      </button>
                     </div>
-                  );
-                })()}
-
-                {saDeleteConfirmTable && (
-                  <Modal
-                    isOpen={Boolean(saDeleteConfirmTable)}
-                    onClose={() => !saDeletingTableId && setSaDeleteConfirmTable(null)}
-                    variant="danger"
-                    size="md"
-                    title={`Delete table ${String(saDeleteConfirmTable.table_number || saDeleteConfirmTable.id || '')}?`}
-                    subtitle="This removes the table registration and its QR code from this tenant. Any existing scans will stop working. This action cannot be undone."
-                    icon={<span className="text-3xl">🗑️</span>}
-                    actionLabel={saDeletingTableId ? 'Deleting…' : 'Yes, delete this table'}
-                    actionVariant="danger"
-                    actionLoading={Boolean(saDeletingTableId)}
-                    actionDisabled={Boolean(saDeletingTableId)}
-                    closeLabel={saDeletingTableId ? 'Deleting…' : 'Cancel'}
-                    closeVariant="secondary"
-                    closeDisabled={Boolean(saDeletingTableId)}
-                    onAction={handleSaDeleteTable}
-                  />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Invoices / Billing Events</div>
-                    <div className="text-xs text-slate-500 mt-1">Local invoice mirror synced from Stripe webhooks.</div>
-                  </div>
-                </div>
-                <div className="max-h-72 overflow-y-auto divide-y divide-slate-800 border border-slate-800 rounded-xl">
-                  {(billingDetail?.invoices || []).length === 0 && (
-                    <div className="px-4 py-8 text-center text-sm text-slate-500">No invoices yet for this tenant.</div>
                   )}
-                  {(billingDetail?.invoices || []).map((inv) => (
-                    <div key={inv.invoice_id || inv.id} className="grid grid-cols-12 gap-2 items-center px-4 py-3 text-xs">
-                      <div className="col-span-3 font-semibold text-white truncate">
-                        {inv.provider_invoice_number || inv.invoice_number || inv.invoice_id || `#${inv.id || '—'}`}
+                </div>
+
+                {/* Panel: Table & Session Limits Entitlements */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'entitlements-limits' ? null : 'entitlements-limits')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-300">
+                        <LayoutDashboard size={18} />
                       </div>
-                      <div className="col-span-2">
-                        <StatusBadge status={inv.status || 'pending'} />
-                      </div>
-                      <div className="col-span-2 text-slate-300">
-                        {inv.currency || 'USD'} {typeof inv.amount_cents === 'number' ? (inv.amount_cents / 100).toFixed(2) : inv.amount_total ?? '—'}
-                      </div>
-                      <div className="col-span-3 text-slate-500 truncate">
-                        {inv.hosted_invoice_url ? (
-                          <a href={inv.hosted_invoice_url} target="_blank" rel="noopener noreferrer" className="text-violet-300 hover:text-violet-200 underline">
-                            {inv.hosted_invoice_url.split('/')[2] || 'View invoice'}
-                          </a>
-                        ) : inv.invoice_pdf ? (
-                          <a href={inv.invoice_pdf} target="_blank" rel="noopener noreferrer" className="text-violet-300 hover:text-violet-200 underline">Invoice PDF</a>
-                        ) : (inv.stripe_subscription_id || '—')}
-                      </div>
-                      <div className="col-span-2 text-slate-500 text-right">
-                        {inv.paid_at || inv.period_end || inv.created_at ? new Date(inv.paid_at || inv.period_end || inv.created_at).toLocaleDateString() : '—'}
+                      <div>
+                        <div className="text-sm font-bold text-white">Table &amp; Session Limits</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Override max tables and monthly session caps</div>
                       </div>
                     </div>
-                  ))}
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'entitlements-limits' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'entitlements-limits' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Max Tables (blank = no change)</label>
+                        <div className="relative">
+                          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                            <Hash size={16} />
+                          </div>
+                          <input
+                            type="number"
+                            value={billingEntitlementsForm.max_tables}
+                            onChange={(event) => setBillingEntitlementsForm((f) => ({ ...f, max_tables: event.target.value }))}
+                            placeholder="10"
+                            className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-sm font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Max Sessions / Month</label>
+                        <div className="relative">
+                          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                            <Users size={16} />
+                          </div>
+                          <input
+                            type="number"
+                            value={billingEntitlementsForm.max_monthly_sessions}
+                            onChange={(event) => setBillingEntitlementsForm((f) => ({ ...f, max_monthly_sessions: event.target.value }))}
+                            placeholder="500"
+                            className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-sm font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Panel: Feature Flags */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'feature-flags' ? null : 'feature-flags')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-300">
+                        <Flag size={18} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold text-white">Feature Flags</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Toggle entitlement switches and support tier</div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'feature-flags' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'feature-flags' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <SelectField label="Can Generate QR?" value={billingEntitlementsForm.can_generate_qr} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_generate_qr: v }))} />
+                        <SelectField label="Dual-Phone?" value={billingEntitlementsForm.can_use_dual_phone_sessions} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_use_dual_phone_sessions: v }))} />
+                        <SelectField label="Export Analytics?" value={billingEntitlementsForm.can_export_analytics} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_export_analytics: v }))} />
+                        <SelectField label="Support Access?" value={billingEntitlementsForm.can_access_support} options={['', 'true', 'false']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, can_access_support: v }))} />
+                        <SelectField label="Support Tier" value={billingEntitlementsForm.support_tier} options={['', 'basic', 'standard', 'priority', 'dedicated']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, support_tier: v }))} />
+                        <SelectField label="Billing Status" value={billingEntitlementsForm.billing_status} options={['', 'active', 'suspended', 'pending', 'past_due', 'trialing', 'canceled']} onChange={(v) => setBillingEntitlementsForm((f) => ({ ...f, billing_status: v }))} />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleOverrideEntitlements}
+                        disabled={billingActionLoading}
+                        className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-200 font-bold py-3 px-4 text-sm transition-all disabled:opacity-50"
+                      >
+                        Apply Overrides
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Panel: Trial QR Provisioning */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'provisioning' ? null : 'provisioning')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-300">
+                        <QrCode size={18} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold text-white">Trial QR Provisioning</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Create single or batch table QR codes for trial tenants</div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'provisioning' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'provisioning' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
+                      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                        <div className="text-sm text-slate-300 leading-6">
+                          During the trial period, tables and QR codes are provisioned here by Super Admin. The Restaurant Admin cannot self-serve QR registration unless explicitly entitled.
+                        </div>
+                        <div className="text-xs text-slate-500 max-w-xs shrink-0 lg:text-right">
+                          Provisioned tables receive the canonical scan URL and an audit trail entry in restaurant_tables linked to your admin user.
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
+                          <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Single Table</div>
+                          <FormField label="Table Number / Label" value={billingProvisionForm.single} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, single: v }))} placeholder="e.g. 12A, Bar-3" />
+                          <button
+                            type="button"
+                            onClick={handleProvisionSingleTrialQr}
+                            disabled={billingActionLoading}
+                            className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold py-2.5 transition-all disabled:opacity-50"
+                          >
+                            Provision 1 Trial QR
+                          </button>
+                        </div>
+                        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
+                          <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Batch Range</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <FormField label="Start" value={billingProvisionForm.start} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, start: v }))} type="number" placeholder="1" />
+                            <FormField label="End" value={billingProvisionForm.end} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, end: v }))} type="number" placeholder="10" />
+                          </div>
+                          <FormField label="Label Pattern" value={billingProvisionForm.pattern} onChange={(v) => setBillingProvisionForm((f) => ({ ...f, pattern: v }))} placeholder="Table {n}" />
+                          <button
+                            type="button"
+                            onClick={handleProvisionBatchTrialQrs}
+                            disabled={billingActionLoading}
+                            className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold py-2.5 transition-all disabled:opacity-50"
+                          >
+                            Provision Range
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Panel: Registered Tables / Print */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'tables-print' ? null : 'tables-print')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-300">
+                        <Printer size={18} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold text-white">Registered Tables / Print</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Print or download provisioned table QR codes</div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'tables-print' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'tables-print' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
+                      <div className="flex flex-wrap items-center gap-2 justify-between">
+                        <div className="text-sm text-slate-300">
+                          Print or download any provisioned table QR directly from Super Admin. Paper size below applies to all print actions on this tenant.
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 justify-start">
+                          <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paper</span>
+                            <select
+                              value={saPrintPaperSize}
+                              onChange={(event) => setSaPrintPaperSize(event.target.value)}
+                              className="bg-transparent text-xs font-semibold text-slate-200 focus:outline-none"
+                            >
+                              <option value="letter">Letter</option>
+                              <option value="a4">A4</option>
+                              <option value="a5">A5</option>
+                            </select>
+                          </div>
+                          {(() => {
+                            const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+                            const hasTables = tables.length > 0;
+                            return (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={handleSaPrintAllQr}
+                                  disabled={!hasTables || saBulkPrinting}
+                                  className="rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
+                                >
+                                  <Printer size={14} />
+                                  {saBulkPrinting ? 'Opening…' : hasTables ? `Print All (${tables.length})` : 'Print All'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleSaDownloadAllPng}
+                                  disabled={!hasTables || saBulkPrinting}
+                                  className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
+                                >
+                                  <Download size={14} />
+                                  {saBulkPrinting ? 'Downloading…' : hasTables ? `Download All PNG (${tables.length})` : 'Download All PNG'}
+                                </button>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+                        if (tables.length === 0) {
+                          return (
+                            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
+                              No tables have been provisioned for this tenant yet. Use the <span className="text-amber-300 font-semibold">Trial QR Provisioning</span> panel above to add the first table.
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {tables.map((t) => (
+                              <div
+                                key={t.id}
+                                className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3"
+                              >
+                                <div>
+                                  <span className="text-xs font-bold tracking-wider text-violet-400 uppercase">Table Number</span>
+                                  <h3 className="text-2xl font-black text-white mt-0.5">{t.table_number}</h3>
+                                  <p className="text-[10px] text-slate-500 truncate mt-1" title={t.qr_code_url || ''}>
+                                    {t.qr_code_url || '—'}
+                                  </p>
+                                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                                    {t.provisioned_by_super_admin_id ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                        SA Provisioned
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 text-slate-300 border border-slate-500/30">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                                        RA Registered
+                                      </span>
+                                    )}
+                                    {t.created_at && (
+                                      <span className="text-[10px] text-slate-500 font-medium">
+                                        {new Date(t.created_at).toLocaleDateString()}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaDownloadSingleQr(t)}
+                                    disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
+                                    className="flex-1 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold py-2 transition-all flex items-center justify-center gap-1.5"
+                                  >
+                                    <Download size={13} />
+                                    {saPrintingTableId === t.id ? '…' : 'PNG'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaPrintSingleQr(t)}
+                                    disabled={saPrintingTableId === t.id || saBulkPrinting || saDeletingTableId === t.id}
+                                    className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold py-2 transition-all flex items-center justify-center gap-1.5"
+                                  >
+                                    <Printer size={13} />
+                                    {saPrintingTableId === t.id ? '…' : 'Print'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSaDeleteConfirmTable(t)}
+                                    disabled={saDeletingTableId === t.id || saBulkPrinting || saPrintingTableId === t.id}
+                                    title={`Delete ${String(t.table_number)} QR and table registration`}
+                                    aria-label={`Delete table ${String(t.table_number)}`}
+                                    className="shrink-0 rounded-xl border border-rose-900/60 bg-rose-950/30 hover:bg-rose-900/50 disabled:opacity-50 disabled:cursor-not-allowed text-rose-200 text-xs font-bold py-2 px-3 transition-all"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      {saDeleteConfirmTable && (
+                        <Modal
+                          isOpen={Boolean(saDeleteConfirmTable)}
+                          onClose={() => !saDeletingTableId && setSaDeleteConfirmTable(null)}
+                          variant="danger"
+                          size="md"
+                          title={`Delete table ${String(saDeleteConfirmTable.table_number || saDeleteConfirmTable.id || '')}?`}
+                          subtitle="This removes the table registration and its QR code from this tenant. Any existing scans will stop working. This action cannot be undone."
+                          icon={<Trash2 size={28} className="text-rose-300" />}
+                          actionLabel={saDeletingTableId ? 'Deleting…' : 'Yes, delete this table'}
+                          actionVariant="danger"
+                          actionLoading={Boolean(saDeletingTableId)}
+                          actionDisabled={Boolean(saDeletingTableId)}
+                          closeLabel={saDeletingTableId ? 'Deleting…' : 'Cancel'}
+                          closeVariant="secondary"
+                          closeDisabled={Boolean(saDeletingTableId)}
+                          onAction={handleSaDeleteTable}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Panel: Invoices */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPanel(openPanel === 'invoices' ? null : 'invoices')}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-slate-500/15 border border-slate-700 flex items-center justify-center text-slate-300">
+                        <FileText size={18} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold text-white">Invoices / Billing Events</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Local invoice mirror synced from Stripe webhooks</div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={20}
+                      className={`text-slate-400 transition-transform duration-200 ${openPanel === 'invoices' ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openPanel === 'invoices' && (
+                    <div className="px-5 pb-5 pt-1 border-t border-slate-800">
+                      <div className="max-h-80 overflow-y-auto divide-y divide-slate-800 border border-slate-800 rounded-xl">
+                        {(billingDetail?.invoices || []).length === 0 && (
+                          <div className="px-4 py-8 text-center text-sm text-slate-500">No invoices yet for this tenant.</div>
+                        )}
+                        {(billingDetail?.invoices || []).map((inv) => (
+                          <div key={inv.invoice_id || inv.id} className="grid grid-cols-12 gap-2 items-center px-4 py-3 text-xs">
+                            <div className="col-span-12 md:col-span-3 font-semibold text-white truncate">
+                              {inv.provider_invoice_number || inv.invoice_number || inv.invoice_id || `#${inv.id || '—'}`}
+                            </div>
+                            <div className="col-span-4 md:col-span-2">
+                              <StatusBadge status={inv.status || 'pending'} />
+                            </div>
+                            <div className="col-span-4 md:col-span-2 text-slate-300">
+                              {inv.currency || 'USD'} {typeof inv.amount_cents === 'number' ? (inv.amount_cents / 100).toFixed(2) : inv.amount_total ?? '—'}
+                            </div>
+                            <div className="col-span-8 md:col-span-3 text-slate-500 truncate order-last md:order-none">
+                              {inv.hosted_invoice_url ? (
+                                <a href={inv.hosted_invoice_url} target="_blank" rel="noopener noreferrer" className="text-violet-300 hover:text-violet-200 underline">
+                                  {inv.hosted_invoice_url.split('/')[2] || 'View invoice'}
+                                </a>
+                              ) : inv.invoice_pdf ? (
+                                <a href={inv.invoice_pdf} target="_blank" rel="noopener noreferrer" className="text-violet-300 hover:text-violet-200 underline">Invoice PDF</a>
+                              ) : (inv.stripe_subscription_id || '—')}
+                            </div>
+                            <div className="col-span-12 md:col-span-2 text-slate-500 md:text-right">
+                              {inv.paid_at || inv.period_end || inv.created_at ? new Date(inv.paid_at || inv.period_end || inv.created_at).toLocaleDateString() : '—'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2993,18 +3510,18 @@ function normalizeMetricsPayload(payload) {
 
 function MetricCard({ label, value, helper, accent }) {
   const accentClasses = accent === 'cyan'
-    ? 'border-cyan-500/20 from-cyan-500/15'
+    ? 'border-cyan-200 dark:border-cyan-500/20 from-cyan-50 dark:from-cyan-500/15 to-white dark:to-slate-950/80 text-cyan-700 dark:text-white'
     : accent === 'violet'
-      ? 'border-violet-500/20 from-violet-500/15'
+      ? 'border-violet-200 dark:border-violet-500/20 from-violet-50 dark:from-violet-500/15 to-white dark:to-slate-950/80 text-violet-700 dark:text-white'
       : accent === 'emerald'
-        ? 'border-emerald-500/20 from-emerald-500/15'
-        : 'border-amber-500/20 from-amber-500/15';
+        ? 'border-emerald-200 dark:border-emerald-500/20 from-emerald-50 dark:from-emerald-500/15 to-white dark:to-slate-950/80 text-emerald-700 dark:text-white'
+        : 'border-amber-200 dark:border-amber-500/20 from-amber-50 dark:from-amber-500/15 to-white dark:to-slate-950/80 text-amber-700 dark:text-white';
 
   return (
-    <div className={`rounded-3xl border bg-gradient-to-br ${accentClasses} to-slate-950/80 px-5 py-5 shadow-lg`}>
-      <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-slate-400">{label}</div>
-      <div className="mt-3 text-4xl font-extrabold tracking-tight text-white">{value}</div>
-      <div className="mt-2 text-sm text-slate-500">{helper}</div>
+    <div className={`rounded-3xl border bg-gradient-to-br ${accentClasses} px-5 py-5 shadow-[0_4px_20px_rgba(15,23,42,0.04)] dark:shadow-lg transition-colors duration-300`}>
+      <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-slate-600 dark:text-slate-400">{label}</div>
+      <div className="mt-3 text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white tabular-nums">{value}</div>
+      <div className="mt-2 text-sm text-slate-500 dark:text-slate-400">{helper}</div>
     </div>
   );
 }
@@ -3057,36 +3574,36 @@ function ContextMixRow({ label, count, total, rangeLabel }) {
   const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/70 p-4 shadow-[0_2px_10px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
       <div className="flex items-center justify-between gap-3 mb-2">
-        <span className="text-sm font-semibold text-slate-200">{label}</span>
-        <span className="text-xs font-bold text-slate-400">{count} sessions</span>
+        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span>
+        <span className="text-xs font-bold text-slate-600 dark:text-slate-400 tabular-nums">{count} sessions</span>
       </div>
-      <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+      <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-violet-400 to-amber-400"
+          className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-violet-500 to-amber-500 dark:from-cyan-400 dark:via-violet-400 dark:to-amber-400"
           style={{ width: `${percentage}%` }}
         />
       </div>
-      <div className="mt-2 text-xs text-slate-500">{percentage}% of the last {rangeLabel}</div>
+      <div className="mt-2 text-xs text-slate-500 dark:text-slate-500">{percentage}% of the last {rangeLabel}</div>
     </div>
   );
 }
 
 function LiveVenueCard({ restaurant }) {
   return (
-    <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4 shadow-lg">
+    <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 p-4 shadow-[0_4px_16px_rgba(15,23,42,0.04)] dark:shadow-lg transition-colors duration-300">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <h4 className="text-base font-bold text-white">{restaurant.name}</h4>
+            <h4 className="text-base font-bold text-slate-900 dark:text-white">{restaurant.name}</h4>
           </div>
-          <div className="text-xs text-slate-500 mt-1">/{restaurant.slug}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">/{restaurant.slug}</div>
         </div>
-        <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-right">
-          <div className="text-lg font-extrabold text-cyan-200">{restaurant.active_sessions}</div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/80">Live Sessions</div>
+        <div className="rounded-2xl border border-cyan-200 dark:border-cyan-500/20 bg-cyan-50 dark:bg-cyan-500/10 px-3 py-2 text-right shadow-sm dark:shadow-none">
+          <div className="text-lg font-extrabold text-cyan-700 dark:text-cyan-200 tabular-nums">{restaurant.active_sessions}</div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-600/80 dark:text-cyan-300/80">Live Sessions</div>
         </div>
       </div>
 
@@ -3178,7 +3695,7 @@ function MetricMini({ label, value }) {
 
 function RecentActivityRow({ event }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-slate-200">{formatMetricEventLabel(event.event_type)}</div>
@@ -3264,25 +3781,36 @@ function humanizeStatus(status) {
 
 function StatusBadge({ status, plan }) {
   const effectiveStatus = String(status || 'pending').toLowerCase().trim();
-  const base = effectiveStatus === 'active'
-    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-    : effectiveStatus === 'trialing'
-      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-      : effectiveStatus === 'pending'
-        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-        : effectiveStatus === 'past_due'
-          ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30'
-          : effectiveStatus === 'canceled' || effectiveStatus === 'cancel_at_period_end'
-            ? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
-            : effectiveStatus === 'suspended' || effectiveStatus === 'unpaid'
-              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-              : 'bg-violet-500/20 text-violet-200 border border-violet-500/30';
+  let icon = null;
+  let base = '';
+  if (effectiveStatus === 'active') {
+    icon = <Check className="w-3 h-3 shrink-0" />;
+    base = 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30';
+  } else if (effectiveStatus === 'trialing' || (plan === 'trial' && effectiveStatus === 'active')) {
+    icon = <Clock className="w-3 h-3 shrink-0" />;
+    base = 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30';
+  } else if (effectiveStatus === 'pending') {
+    icon = <Clock className="w-3 h-3 shrink-0" />;
+    base = 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30';
+  } else if (effectiveStatus === 'past_due') {
+    icon = <AlertTriangle className="w-3 h-3 shrink-0" />;
+    base = 'bg-orange-50 text-orange-700 border border-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:border-orange-500/30';
+  } else if (effectiveStatus === 'canceled' || effectiveStatus === 'cancel_at_period_end') {
+    icon = <XCircle className="w-3 h-3 shrink-0" />;
+    base = 'bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30';
+  } else if (effectiveStatus === 'suspended' || effectiveStatus === 'unpaid') {
+    icon = <Ban className="w-3 h-3 shrink-0" />;
+    base = 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30';
+  } else {
+    icon = <AlertCircle className="w-3 h-3 shrink-0" />;
+    base = 'bg-violet-50 text-violet-700 border border-violet-200 dark:bg-violet-500/15 dark:text-violet-200 dark:border-violet-500/30';
+  }
   const label = plan === 'trial' && effectiveStatus === 'active' ? 'Trialing' : humanizeStatus(effectiveStatus);
   return (
     <span
-      style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-      className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider ${base}`}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold uppercase tracking-wider ${base} transition-colors duration-200`}
     >
+      {icon}
       {label}
     </span>
   );
@@ -3290,29 +3818,32 @@ function StatusBadge({ status, plan }) {
 
 function PlanBadge({ plan }) {
   const configs = {
-    trial: { label: 'Trial', className: 'bg-amber-500/20 text-amber-300 border border-amber-500/30' },
-    starter: { label: 'Starter', className: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' },
-    premium: { label: 'Premium', className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30' },
-    enterprise: { label: 'Enterprise', className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' },
-    free: { label: 'Free', className: 'bg-slate-500/20 text-slate-300 border border-slate-500/30' },
-    pro: { label: 'Pro', className: 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' }
+    trial: { label: 'Trial', icon: Clock, className: 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30' },
+    starter: { label: 'Starter', icon: Zap, className: 'bg-cyan-50 text-cyan-700 border border-cyan-200 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-500/30' },
+    premium: { label: 'Premium', icon: Crown, className: 'bg-violet-50 text-violet-700 border border-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:border-violet-500/30' },
+    enterprise: { label: 'Enterprise', icon: Rocket, className: 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30' },
+    free: { label: 'Free', icon: Sparkles, className: 'bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30' },
+    pro: { label: 'Pro', icon: Crown, className: 'bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-500/15 dark:text-indigo-300 dark:border-indigo-500/30' }
   };
   const cfg = configs[plan] || configs.trial;
+  const IconComp = cfg.icon;
   return (
     <span
-      style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
-      className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-[0.18em] ${cfg.className}`}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-extrabold uppercase tracking-[0.18em] ${cfg.className} transition-colors duration-200`}
     >
+      <IconComp className="w-3 h-3 shrink-0" />
       {cfg.label}
     </span>
   );
 }
 
 function EntitlementChip({ label, enabled, value }) {
-  const cls = enabled ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/30' : 'bg-slate-500/15 text-slate-400 border border-slate-500/30';
+  const cls = enabled
+    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/12 dark:text-emerald-200 dark:border-emerald-500/25'
+    : 'bg-slate-50 text-slate-600 border border-slate-200 dark:bg-slate-500/12 dark:text-slate-400 dark:border-slate-500/25';
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-xl text-[11px] font-bold uppercase tracking-wider ${cls}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${enabled ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${cls} transition-colors duration-200`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${enabled ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-400 dark:bg-slate-500'}`} />
       {label}{value ? ` · ${value}` : ''}
     </span>
   );
@@ -3320,17 +3851,17 @@ function EntitlementChip({ label, enabled, value }) {
 
 function BillingStat({ label, value, accent = 'slate' }) {
   const accentMap = {
-    slate: 'from-slate-500/20 to-slate-400/10 border-slate-700 text-slate-100',
-    cyan: 'from-cyan-500/20 to-cyan-400/10 border-cyan-500/30 text-cyan-100',
-    violet: 'from-violet-500/20 to-violet-400/10 border-violet-500/30 text-violet-100',
-    emerald: 'from-emerald-500/20 to-emerald-400/10 border-emerald-500/30 text-emerald-100',
-    amber: 'from-amber-500/20 to-amber-400/10 border-amber-500/30 text-amber-100',
-    rose: 'from-rose-500/20 to-rose-400/10 border-rose-500/30 text-rose-100'
+    slate: 'from-slate-50 to-slate-100 dark:from-slate-500/20 dark:to-slate-400/10 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100',
+    cyan: 'from-cyan-50 to-cyan-100 dark:from-cyan-500/20 dark:to-cyan-400/10 border-cyan-200 dark:border-cyan-500/30 text-cyan-800 dark:text-cyan-100',
+    violet: 'from-violet-50 to-violet-100 dark:from-violet-500/20 dark:to-violet-400/10 border-violet-200 dark:border-violet-500/30 text-violet-800 dark:text-violet-100',
+    emerald: 'from-emerald-50 to-emerald-100 dark:from-emerald-500/20 dark:to-emerald-400/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-100',
+    amber: 'from-amber-50 to-amber-100 dark:from-amber-500/20 dark:to-amber-400/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-100',
+    rose: 'from-rose-50 to-rose-100 dark:from-rose-500/20 dark:to-rose-400/10 border-rose-200 dark:border-rose-500/30 text-rose-800 dark:text-rose-100'
   };
   return (
-    <div className={`rounded-2xl border bg-gradient-to-br ${accentMap[accent] || accentMap.slate} px-3 py-3`}>
-      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">{label}</div>
-      <div className="text-xl font-extrabold mt-1 leading-none">{value}</div>
+    <div className={`rounded-2xl border bg-gradient-to-br ${accentMap[accent] || accentMap.slate} px-3 py-3 shadow-[0_2px_10px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300`}>
+      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-600 dark:text-white/70">{label}</div>
+      <div className="text-xl font-extrabold mt-1 leading-none text-slate-900 dark:inherit tabular-nums">{value}</div>
     </div>
   );
 }
@@ -3338,13 +3869,13 @@ function BillingStat({ label, value, accent = 'slate' }) {
 function SourcePill({ source }) {
   const s = String(source || '').toLowerCase();
   const map = {
-    env: { label: 'Source: Env', className: 'bg-sky-500/15 text-sky-200 border border-sky-500/40' },
-    db: { label: 'Source: Platform DB', className: 'bg-violet-500/15 text-violet-200 border border-violet-500/40' },
-    default: { label: 'Source: Default', className: 'bg-slate-500/15 text-slate-300 border border-slate-600/60' }
+    env: { label: 'Source: Env', className: 'bg-sky-50 text-sky-700 border border-sky-200 dark:bg-sky-500/15 dark:text-sky-200 dark:border-sky-500/40' },
+    db: { label: 'Source: Platform DB', className: 'bg-violet-50 text-violet-700 border border-violet-200 dark:bg-violet-500/15 dark:text-violet-200 dark:border-violet-500/40' },
+    default: { label: 'Source: Default', className: 'bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-600/60' }
   };
   const cfg = map[s] || map.default;
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-[0.18em] ${cfg.className}`}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-[0.18em] ${cfg.className} transition-colors duration-200`}
       style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
     >
       {cfg.label}
@@ -3445,7 +3976,7 @@ function MaskedInputField({
   return (
     <div className="md:col-span-1">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-        <label className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</label>
+        <label className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">{label}</label>
         {source && <SourcePill source={source} />}
       </div>
       <div className="relative">
@@ -3461,7 +3992,7 @@ function MaskedInputField({
           onBlur={handleBlur}
           placeholder={placeholder}
           spellCheck={false}
-          className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 pr-[7.5rem] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20 font-mono"
+          className="w-full rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-950/80 pr-[7.5rem] px-4 py-3 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 dark:focus:border-violet-500/60 focus:ring-2 focus:ring-indigo-500/20 dark:focus:ring-2 dark:focus:ring-violet-500/20 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-colors duration-200"
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-1">
           <button
@@ -3469,7 +4000,7 @@ function MaskedInputField({
             title={revealed ? 'Hide' : 'Reveal (audited)'}
             onClick={triggerReveal}
             disabled={revealing}
-            className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-700 bg-slate-900/70 text-slate-300 hover:text-white hover:bg-slate-800/80 disabled:opacity-50"
+            className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/70 text-slate-700 dark:text-slate-300 hover:text-slate-900 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-slate-800/80 disabled:opacity-50 transition-colors duration-200"
             style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
           >
             {revealing
@@ -3482,10 +4013,10 @@ function MaskedInputField({
             type="button"
             title={copyState === 'copied' ? 'Copied!' : 'Copy (masked unless revealed)'}
             onClick={copyCurrent}
-            className={`inline-flex items-center justify-center h-9 px-2.5 rounded-lg border text-[10px] font-bold uppercase tracking-[0.18em] transition-colors ${
+            className={`inline-flex items-center justify-center h-9 px-2.5 rounded-lg border text-[10px] font-bold uppercase tracking-[0.18em] transition-colors duration-200 ${
               copyState === 'copied'
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
-                : 'border-slate-700 bg-slate-900/70 text-slate-300 hover:text-white hover:bg-slate-800/80'
+                ? 'border-emerald-200 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200'
+                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/70 text-slate-700 dark:text-slate-300 hover:text-slate-900 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-slate-800/80'
             }`}
             style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
           >
@@ -3506,8 +4037,8 @@ function SelectionCountBar({ label, total, selected, onSelectAll, onClear, size 
     : 'gap-2 text-xs';
   return (
     <div className={`flex items-center flex-wrap ${sizeClasses}`}>
-      <span className="inline-flex items-center gap-1.5 text-white/70 font-semibold tracking-wide whitespace-nowrap">
-        <span className={`inline-block w-2 h-2 rounded-full ${isFull ? 'bg-violet-400' : isPartial ? 'bg-amber-400' : 'bg-slate-600'}`} />
+      <span className="inline-flex items-center gap-1.5 text-slate-700 dark:text-white/70 font-semibold tracking-wide whitespace-nowrap">
+        <span className={`inline-block w-2 h-2 rounded-full ${isFull ? 'bg-indigo-500 dark:bg-violet-400' : isPartial ? 'bg-amber-500 dark:bg-amber-400' : 'bg-slate-400 dark:bg-slate-600'}`} />
         <span>
           {selected}/{total} selected{label ? ` · ${label}` : ''}
         </span>
@@ -3516,7 +4047,7 @@ function SelectionCountBar({ label, total, selected, onSelectAll, onClear, size 
         type="button"
         onClick={onSelectAll}
         disabled={!total}
-        className="inline-flex items-center rounded-lg border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.15em] text-violet-200 hover:bg-violet-500/20 disabled:opacity-40"
+        className="inline-flex items-center rounded-lg border border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-violet-100 dark:hover:bg-violet-500/20 disabled:opacity-40 transition-colors duration-200"
         style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
       >
         Select all
@@ -3525,7 +4056,7 @@ function SelectionCountBar({ label, total, selected, onSelectAll, onClear, size 
         type="button"
         onClick={onClear}
         disabled={!selected}
-        className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-300 hover:bg-slate-800/80 disabled:opacity-40"
+        className="inline-flex items-center rounded-lg border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.15em] hover:border-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/80 disabled:opacity-40 transition-colors duration-200"
         style={{ backgroundImage: 'none', WebkitBackgroundClip: 'border-box', backgroundClip: 'border-box', WebkitTextFillColor: 'currentcolor' }}
       >
         Clear
@@ -3542,13 +4073,13 @@ function formatPlanLabel(plan) {
 function FormField({ label, placeholder, value, onChange, type = 'text' }) {
   return (
     <div>
-      <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">{label}</label>
+      <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">{label}</label>
       <input
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-all text-sm"
+        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/10 transition-all text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
       />
     </div>
   );
@@ -3557,13 +4088,13 @@ function FormField({ label, placeholder, value, onChange, type = 'text' }) {
 function TextAreaField({ label, placeholder, value, onChange }) {
   return (
     <div>
-      <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">{label}</label>
+      <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">{label}</label>
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         rows={4}
-        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-all text-sm"
+        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/10 transition-all text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
       />
     </div>
   );
@@ -3572,11 +4103,11 @@ function TextAreaField({ label, placeholder, value, onChange }) {
 function SelectField({ label, value, options, onChange, formatter = (option) => option }) {
   return (
     <div>
-      <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">{label}</label>
+      <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">{label}</label>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-purple-500 transition-all text-sm"
+        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/10 transition-all text-sm"
       >
         {options.map((option) => (
           <option key={`${label}-${option}`} value={option}>
@@ -3590,7 +4121,7 @@ function SelectField({ label, value, options, onChange, formatter = (option) => 
 
 function ReadOnlyBlock({ value }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-xs text-slate-300 break-all">
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-4 py-3 text-xs text-slate-700 dark:text-slate-300 break-all shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:shadow-none">
       {value}
     </div>
   );
@@ -3598,26 +4129,30 @@ function ReadOnlyBlock({ value }) {
 
 function QuestionStatCard({ label, value }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-center">
-      <div className="text-lg font-bold text-white">{value}</div>
-      <div className="text-[11px] uppercase tracking-wider text-slate-500 mt-1">{label}</div>
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/70 px-3 py-3 text-center shadow-[0_2px_8px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
+      <div className="text-lg font-bold text-slate-900 dark:text-white tabular-nums">{value}</div>
+      <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-500 mt-1">{label}</div>
     </div>
   );
 }
 
-function QuestionChip({ label, tone = 'default' }) {
+function QuestionChip({ label, tone = 'default', compact = false }) {
   const classes = tone === 'accent'
-    ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200'
+    ? 'border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200'
     : tone === 'easy'
-      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200'
       : tone === 'medium'
-        ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
         : tone === 'deep'
-          ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
-          : 'border-slate-700 bg-slate-900 text-slate-300';
+          ? 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 dark:border-fuchsia-500/30 dark:bg-fuchsia-500/10 dark:text-fuchsia-200'
+          : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300';
+
+  const size = compact
+    ? 'px-2 py-0.5 text-[9px] tracking-[0.14em] whitespace-nowrap'
+    : 'px-2.5 py-1 text-[11px] tracking-wider';
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-wider ${classes}`}>
+    <span className={`inline-flex items-center rounded-full border ${size} uppercase ${classes} transition-colors duration-200`}>
       {label}
     </span>
   );
@@ -3626,7 +4161,7 @@ function QuestionChip({ label, tone = 'default' }) {
 function FilterGroup({ label, options, selected, onSelect, formatter = (value) => value }) {
   return (
     <div>
-      <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">{label}</div>
+      <div className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-2">{label}</div>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => {
           const active = option === selected;
@@ -3635,10 +4170,10 @@ function FilterGroup({ label, options, selected, onSelect, formatter = (value) =
               key={`${label}-${option}`}
               type="button"
               onClick={() => onSelect(option)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 ${
                 active
-                  ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
-                  : 'bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-600'
+                  ? 'bg-indigo-600 text-white shadow-[0_4px_12px_rgba(79,70,229,0.2)] dark:bg-purple-500 dark:shadow-lg dark:shadow-purple-500/20'
+                  : 'bg-slate-100 text-slate-700 border border-slate-200 hover:border-slate-400 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:border-slate-800 dark:hover:border-slate-600'
               }`}
             >
               {formatter(option)}
@@ -3653,8 +4188,8 @@ function FilterGroup({ label, options, selected, onSelect, formatter = (value) =
 function DifficultyStatCard({ label, value, tone }) {
   return (
     <div className={`rounded-xl border px-3 py-3 text-center ${getDifficultySectionClasses(tone)}`}>
-      <div className="text-lg font-bold text-white">{value}</div>
-      <div className="text-[11px] uppercase tracking-wider text-white/75 mt-1">{label}</div>
+      <div className="text-lg font-bold text-slate-900 dark:text-white tabular-nums">{value}</div>
+      <div className="text-[11px] uppercase tracking-wider text-slate-700 dark:text-white/75 mt-1">{label}</div>
     </div>
   );
 }
@@ -3678,6 +4213,26 @@ function formatQuestionType(value) {
   return value
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatQuestionTypeCompact(value) {
+  if (value === 'All') {
+    return 'All';
+  }
+  const normalized = String(value || '').toLowerCase();
+  if (!normalized || normalized === 'open-ended' || normalized === 'open_ended' || normalized === 'open') {
+    return 'Open';
+  }
+  if (normalized.includes('multiple')) {
+    return 'MCQ';
+  }
+  if (normalized === 'would-you-rather' || normalized === 'would_you_rather' || normalized.includes('rather')) {
+    return 'WYR';
+  }
+  if (normalized === 'this-or-that' || normalized === 'this_or_that' || normalized.includes('this')) {
+    return 'TOT';
+  }
+  return formatQuestionType(value).slice(0, 6);
 }
 
 function formatDifficulty(value) {
@@ -3816,39 +4371,39 @@ function getQuestionTypeRank(type) {
 
 function getContextSectionClasses(context) {
   if (context === 'Exploring') {
-    return 'border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 via-slate-950 to-slate-950';
+    return 'border-cyan-200 dark:border-cyan-500/20 bg-gradient-to-br from-cyan-50 via-white to-white dark:from-cyan-500/10 dark:via-slate-950 dark:to-slate-950';
   }
   if (context === 'Established') {
-    return 'border-violet-500/20 bg-gradient-to-br from-violet-500/10 via-slate-950 to-slate-950';
+    return 'border-violet-200 dark:border-violet-500/20 bg-gradient-to-br from-violet-50 via-white to-white dark:from-violet-500/10 dark:via-slate-950 dark:to-slate-950';
   }
   if (context === 'Mature') {
-    return 'border-amber-500/20 bg-gradient-to-br from-amber-500/10 via-slate-950 to-slate-950';
+    return 'border-amber-200 dark:border-amber-500/20 bg-gradient-to-br from-amber-50 via-white to-white dark:from-amber-500/10 dark:via-slate-950 dark:to-slate-950';
   }
-  return 'border-slate-800 bg-slate-950';
+  return 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950';
 }
 
 function getContextPillClasses(context) {
   if (context === 'Exploring') {
-    return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200';
+    return 'border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200';
   }
   if (context === 'Established') {
-    return 'border-violet-500/30 bg-violet-500/10 text-violet-200';
+    return 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200';
   }
   if (context === 'Mature') {
-    return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200';
   }
-  return 'border-slate-700 bg-slate-900 text-slate-300';
+  return 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300';
 }
 
 function getDifficultySectionClasses(difficulty) {
   if (difficulty === 'easy') {
-    return 'border-emerald-500/20 bg-gradient-to-b from-emerald-500/10 to-slate-950';
+    return 'border-emerald-200 dark:border-emerald-500/20 bg-gradient-to-b from-emerald-50 to-white dark:from-emerald-500/10 dark:to-slate-950';
   }
   if (difficulty === 'medium') {
-    return 'border-amber-500/20 bg-gradient-to-b from-amber-500/10 to-slate-950';
+    return 'border-amber-200 dark:border-amber-500/20 bg-gradient-to-b from-amber-50 to-white dark:from-amber-500/10 dark:to-slate-950';
   }
   if (difficulty === 'deep') {
-    return 'border-fuchsia-500/20 bg-gradient-to-b from-fuchsia-500/10 to-slate-950';
+    return 'border-fuchsia-200 dark:border-fuchsia-500/20 bg-gradient-to-b from-fuchsia-50 to-white dark:from-fuchsia-500/10 dark:to-slate-950';
   }
-  return 'border-slate-800 bg-slate-950';
+  return 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950';
 }

@@ -2,10 +2,103 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  :root,
+  .theme-light {
+    --color-bg-bg: 248 250 252;
+    --color-bg-card: 255 255 255;
+    --color-bg-muted: 241 245 249;
+    --color-bg-input: 241 245 249;
+    --color-border-default: 226 232 240;
+    --color-border-strong: 203 213 225;
+    --color-text-primary: 15 23 42;
+    --color-text-secondary: 51 65 85;
+    --color-text-muted: 100 116 139;
+    --color-accent-primary: 79 70 229;
+    --color-accent-secondary: 14 165 233;
+    --color-accent-success: 16 185 129;
+    --color-accent-warning: 217 119 6;
+    --color-accent-danger: 220 38 38;
+    --color-surface-code: 241 245 249;
+    --color-text-code: 30 41 59;
+  }
+
+  .theme-dark {
+    --color-bg-bg: 2 6 23;
+    --color-bg-card: 15 23 42;
+    --color-bg-muted: 30 41 59;
+    --color-bg-input: 2 6 23;
+    --color-border-default: 30 41 59;
+    --color-border-strong: 51 65 85;
+    --color-text-primary: 241 245 249;
+    --color-text-secondary: 203 213 225;
+    --color-text-muted: 148 163 184;
+    --color-accent-primary: 99 102 241;
+    --color-accent-secondary: 56 189 248;
+    --color-accent-success: 74 222 128;
+    --color-accent-warning: 250 204 21;
+    --color-accent-danger: 248 113 113;
+    --color-surface-code: 2 6 23;
+    --color-text-code: 226 232 240;
+  }
+
+  .theme-midnight {
+    --color-bg-bg: 9 9 17;
+    --color-bg-card: 24 24 40;
+    --color-bg-muted: 30 30 54;
+    --color-bg-input: 9 9 17;
+    --color-border-default: 49 46 129;
+    --color-border-strong: 71 85 105;
+    --color-text-primary: 241 245 249;
+    --color-text-secondary: 203 213 225;
+    --color-text-muted: 148 163 184;
+    --color-accent-primary: 129 140 248;
+    --color-accent-secondary: 125 211 252;
+    --color-accent-success: 74 222 128;
+    --color-accent-warning: 250 204 21;
+    --color-accent-danger: 252 165 165;
+    --color-surface-code: 15 15 30;
+    --color-text-code: 226 232 240;
+  }
+}
+
+@layer utilities {
+  .theme-light {
+    background-color: rgb(var(--color-bg-bg));
+    color: rgb(var(--color-text-primary));
+  }
+
+  .theme-dark {
+    background-color: rgb(var(--color-bg-bg));
+    color: rgb(var(--color-text-primary));
+  }
+
+  .theme-midnight {
+    background:
+      radial-gradient(ellipse at top left, rgb(30 27 75 / 0.4) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom right, rgb(49 46 129 / 0.3) 0%, transparent 50%),
+      rgb(var(--color-bg-bg));
+    color: rgb(var(--color-text-primary));
+  }
+}
+
 html {
   scroll-behavior: smooth;
 }
 
 body {
-  @apply bg-gray-50 text-gray-900 font-sans antialiased;
+  @apply font-sans antialiased;
+  background-color: rgb(var(--color-bg-bg));
+  color: rgb(var(--color-text-primary));
+  transition: background-color 300ms ease, color 300ms ease;
 }
