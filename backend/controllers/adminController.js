@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const db = require('../db');
-const { signToken } = require('../middleware/authMiddleware');
+const { signToken, applyLoginRateLimit, resetLoginRateLimit, TOKEN_TTL } = require('../middleware/authMiddleware');
 const QRCode = require('qrcode');
 const deckService = require('../services/deckService');
 const billingService = require('../services/billingService');
@@ -89,11 +89,11 @@ function getMetricsRangeConfig(rangeKey) {
 }
 
 function buildInviteEmail(restaurantName, inviteEmail, inviteUrl) {
-  const subject = 'Complete your Table-Talk restaurant subscription';
+  const subject = 'Complete your Catalyst restaurant subscription';
   const bodyText = [
     `Hi ${restaurantName},`,
     '',
-    'Your Table-Talk restaurant subscription is ready to complete.',
+    'Your Catalyst restaurant subscription is ready to complete.',
     'Use the secure link below to finish the onboarding form and create your restaurant admin login:',
     '',
     inviteUrl,
@@ -101,7 +101,7 @@ function buildInviteEmail(restaurantName, inviteEmail, inviteUrl) {
     'If you are opening this on a mobile device, you can also scan the provided QR code.',
     '',
     'Thanks,',
-    'Table-Talk'
+    'Catalyst'
   ].join('\n');
 
   const mailtoUrl = `mailto:${encodeURIComponent(inviteEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`;
@@ -336,14 +336,41 @@ async function resolveRestaurantLocation({ address, latitude, longitude, shouldG
 
 /**
  * POST /api/admin/login
- * Public admin login endpoint.
+ * Public admin login endpoint — rate-limited per-email and per-IP.
+ * Always returns the same generic response on wrong email or wrong password
+ * to prevent user enumeration.
  */
 async function login(req, res) {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  const emailIn = typeof req.body?.email === 'string' ? req.body.email : '';
+  const passwordIn = typeof req.body?.password === 'string' ? req.body.password : '';
+  const email = emailIn.trim().toLowerCase();
+  const password = passwordIn;
+
+  // Rate limit check runs even for malformed requests to prevent probing.
+  const clientIp = String(
+    req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
+    req.headers['x-real-ip']?.toString() ||
+    req.socket?.remoteAddress ||
+    req.ip ||
+    'unknown'
+  );
+  const limit = applyLoginRateLimit(email, clientIp);
+  if (limit.blocked) {
+    const retrySeconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+    res.setHeader('Retry-After', retrySeconds);
+    return res.status(429).json({
+      error: `Too many login attempts. Try again in ${retrySeconds} seconds.`,
+      retry_after_seconds: retrySeconds
+    });
   }
 
+  if (!email || !password) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  // Timing-safe response: use a fixed work budget so that a "user not found" vs
+  // "wrong password" take about the same wall-clock time.
+  let user = null;
   try {
     const userResult = await db.query(
       `SELECT u.*, r.name as restaurant_name, r.slug as restaurant_slug 
@@ -352,40 +379,53 @@ async function login(req, res) {
        WHERE u.email = $1`,
       [email]
     );
-
-    if (userResult.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+    if (userResult.rows.length > 0) {
+      user = userResult.rows[0];
     }
+  } catch (err) {
+    console.error('Login lookup error:', err);
+  }
 
-    const user = userResult.rows[0];
-    const isCorrect = verifyPassword(password, user.password_hash);
-    if (!isCorrect) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+  const candidateHash = user?.password_hash
+    ? user.password_hash
+    : 'salt123.1000.' + crypto.pbkdf2Sync('__invalid__', 'salt123', 1000, 64, 'sha512').toString('hex');
+  const isCorrect = user ? verifyPassword(password, candidateHash) : verifyPassword('__invalid__', candidateHash);
 
-    // Sign token
-    const token = signToken({
+  if (!user || !isCorrect) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  // Sign token with role-based TTL (8 hours for both SA/RA)
+  const token = signToken({
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    restaurant_id: user.restaurant_id
+  });
+
+  // Record last successful login + reset rate limit counters for this user/ip
+  try {
+    await db.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+  } catch (_err) {
+    // Non-fatal — login still succeeds even if we couldn't record timestamp
+  }
+  resetLoginRateLimit(email, clientIp);
+
+  const tokenRole = String(user.role || 'DEFAULT').toUpperCase();
+  const expiresInSeconds = TOKEN_TTL[tokenRole] || TOKEN_TTL.DEFAULT;
+
+  res.json({
+    token,
+    expires_in_seconds: expiresInSeconds,
+    user: {
       id: user.id,
       email: user.email,
       role: user.role,
-      restaurant_id: user.restaurant_id
-    });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        restaurant_id: user.restaurant_id,
-        restaurant_name: user.restaurant_name,
-        restaurant_slug: user.restaurant_slug
-      }
-    });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+      restaurant_id: user.restaurant_id,
+      restaurant_name: user.restaurant_name,
+      restaurant_slug: user.restaurant_slug
+    }
+  });
 }
 
 function hashPasswordResetToken(token) {
@@ -433,6 +473,37 @@ async function requestPasswordReset(req, res) {
   } catch (err) {
     console.error('Password reset request error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+async function validateResetToken(req, res) {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!token) {
+    return res.status(400).json({ ok: false, error: 'Token is required' });
+  }
+  const tokenHash = hashPasswordResetToken(token);
+  try {
+    const userResult = await db.query(
+      `SELECT id, password_reset_expires_at
+       FROM users
+       WHERE password_reset_token_hash = $1
+         AND password_reset_used_at IS NULL
+         AND password_reset_expires_at IS NOT NULL
+       LIMIT 1`,
+      [tokenHash]
+    );
+    if (!userResult.rows.length) {
+      return res.status(400).json({ ok: false, error: 'Invalid or expired reset link' });
+    }
+    const row = userResult.rows[0];
+    if (new Date(row.password_reset_expires_at).getTime() < Date.now()) {
+      return res.status(410).json({ ok: false, error: 'This reset link has expired' });
+    }
+    const minutesLeft = Math.max(0, Math.round((new Date(row.password_reset_expires_at).getTime() - Date.now()) / 60000));
+    return res.json({ ok: true, expires_at: row.password_reset_expires_at, minutes_left: minutesLeft });
+  } catch (err) {
+    console.error('Validate reset token error:', err);
+    return res.status(500).json({ ok: false, error: 'Internal server error' });
   }
 }
 
@@ -1761,6 +1832,7 @@ async function regenerateTableQr(req, res) {
 module.exports = {
   login,
   requestPasswordReset,
+  validateResetToken,
   geocodeRestaurantAddress,
   resetPassword,
   getTenants,

@@ -75,7 +75,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-white font-sans text-gray-900 selection:bg-blue-100 selection:text-blue-900 flex flex-col">
+    <div className="min-h-screen bg-[#F3EDE1] text-[#35332E] selection:bg-[#35332E]/10 selection:text-[#35332E] flex flex-col">
       <Navbar />
 
       <main className="flex-1 pt-32 pb-16 flex flex-col justify-center">
@@ -86,16 +86,22 @@ export default function Home() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
           >
-            <span className="inline-block px-4 py-1.5 rounded-full bg-blue-50 text-blue-600 text-xs font-bold tracking-wide uppercase mb-8 border border-blue-100">
-              Table-Talk MVP 1.2
+            <motion.img
+              initial={{ opacity: 0, scale: 0.85, y: -10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.7, ease: "easeOut" }}
+              src="/catalyst-logo.png"
+              alt="Catalyst"
+              className="w-28 h-28 md:w-32 md:h-32 mx-auto object-contain drop-shadow-lg mb-6"
+            />
+            <span className="inline-block px-4 py-1.5 rounded-full bg-[#35332E]/5 text-[#35332E] text-xs font-semibold tracking-wide uppercase mb-8 border border-[#35332E]/10">
+              Catalyst
             </span>
-            <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-[1.1] mb-6">
+            <h1 className="text-5xl md:text-7xl font-bold tracking-tight leading-[1.1] mb-6 text-[#35332E]">
               Connect Deeper <br/>
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
-                At The Table
-              </span>
+              <span className="text-[#35332E]">At The Table</span>
             </h1>
-            <p className="text-xl text-gray-500 leading-relaxed max-w-xl mx-auto mb-12">
+            <p className="text-xl text-[#6E6A60] leading-relaxed max-w-xl mx-auto mb-12">
               Scan the QR code at your table to unlock curated conversation starters designed for meaningful connection.
             </p>
           </motion.div>
@@ -109,47 +115,46 @@ export default function Home() {
           >
             <Button
               onClick={() => setShowScanner(true)}
-              variant="black"
+              variant="ink"
               size="xl"
               icon={<span className="text-xl">📷</span>}
-              className="shadow-xl shadow-gray-200 hover:shadow-2xl transition-all px-12 py-5 text-lg"
+              className="shadow-xl shadow-[#35332E]/10 hover:shadow-2xl transition-all px-12 py-5 text-lg"
             >
               Scan QR Code
             </Button>
             {scanError && (
-              <div className="max-w-xl rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 shadow-sm">
+              <div className="max-w-xl rounded-2xl border border-[#35332E]/15 bg-[#35332E]/5 px-4 py-3 text-sm font-medium text-[#35332E]">
                 {scanError}
               </div>
             )}
           </motion.div>
 
           {/* Mini How-It-Works Row */}
-          <motion.div 
+          <motion.div
             id="how-it-works"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.6 }}
-            className="mt-20 pt-16 border-t border-gray-100 flex flex-col md:flex-row justify-center items-center md:items-start gap-12 scroll-mt-32 relative"
+            className="mt-20 pt-16 border-t border-[#35332E]/10 flex flex-col md:flex-row justify-center items-center md:items-start gap-12 scroll-mt-32 relative"
           >
-             {/* Connecting Line (Desktop) */}
-             <div className="hidden md:block absolute top-[5.5rem] left-[20%] right-[20%] h-0.5 bg-gradient-to-r from-transparent via-gray-200 to-transparent -z-10"></div>
+             <div className="hidden md:block absolute top-[5.5rem] left-[20%] right-[20%] h-0.5 bg-gradient-to-r from-transparent via-[#35332E]/15 to-transparent -z-10"></div>
 
              {[
                { icon: "📷", title: "Scan", desc: "Use your camera to join instantly" },
                { icon: "🌱", title: "Context", desc: "Choose your relationship vibe" },
                { icon: "💬", title: "Talk", desc: "Answer curated questions together" }
              ].map((step, i) => (
-               <motion.div 
+               <motion.div
                  key={i}
                  className="flex flex-col items-center text-center group cursor-default"
                  whileHover={{ y: -5 }}
                  transition={{ type: "spring", stiffness: 300 }}
                >
-                 <div className="w-16 h-16 rounded-2xl bg-white border border-gray-100 shadow-sm group-hover:shadow-md group-hover:border-blue-100 flex items-center justify-center text-3xl mb-4 transition-all duration-300 relative z-10">
+                 <div className="w-16 h-16 rounded-2xl bg-white/60 border border-[#35332E]/10 shadow-sm group-hover:shadow-md group-hover:border-[#35332E]/20 flex items-center justify-center text-3xl mb-4 transition-all duration-300 relative z-10">
                    {step.icon}
                  </div>
-                 <h3 className="font-bold text-gray-900 mb-1">{step.title}</h3>
-                 <p className="text-xs font-medium text-gray-400 max-w-[120px]">{step.desc}</p>
+                 <h3 className="font-semibold text-[#35332E] mb-1">{step.title}</h3>
+                 <p className="text-xs font-medium text-[#6E6A60] max-w-[120px]">{step.desc}</p>
                </motion.div>
              ))}
           </motion.div>
@@ -163,8 +168,8 @@ export default function Home() {
 
       {/* Scanner Overlay */}
       {showScanner && (
-        <QRScanner 
-          onScan={handleScanSuccess} 
+        <QRScanner
+          onScan={handleScanSuccess}
           onClose={() => setShowScanner(false)}
         />
       )}

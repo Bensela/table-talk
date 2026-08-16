@@ -309,22 +309,21 @@ export default function WelcomeScreen() {
   // Subscription Error: Service Suspended
   if (subscriptionError === 'suspended') {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden font-sans">
-        <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ type: 'spring', duration: 0.8 }}
-          className="max-w-md w-full backdrop-blur-xl bg-slate-900/60 border border-slate-800/80 rounded-3xl p-8 md:p-10 shadow-2xl relative z-10"
+          className="max-w-md w-full bg-white/70 border border-[#35332E]/10 rounded-3xl p-8 md:p-10 shadow-xl relative z-10"
         >
-          <div className="w-20 h-20 bg-amber-500/10 border border-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl">🛠️</div>
-          <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl bg-[#35332E]/10">🛠️</div>
+          <h1 className="text-3xl font-bold tracking-tight text-[#35332E] mb-4 leading-tight">
             Service Temporarily Unavailable
           </h1>
-          <p className="text-slate-400 text-base leading-relaxed mb-8">
+          <p className="text-[#6E6A60] text-base leading-relaxed mb-8">
             This restaurant's subscription is inactive or suspended. Please contact the restaurant or try again later.
           </p>
-          <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-slate-800 text-slate-300 hover:bg-slate-800">
+          <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-[#35332E]/20 text-[#35332E] hover:bg-[#35332E]/5">
             Go Home
           </Button>
         </motion.div>
@@ -335,22 +334,21 @@ export default function WelcomeScreen() {
   // Subscription Error: Invalid / Unregistered
   if (subscriptionError === 'invalid') {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden font-sans">
-        <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-rose-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ type: 'spring', duration: 0.8 }}
-          className="max-w-md w-full backdrop-blur-xl bg-slate-900/60 border border-slate-800/80 rounded-3xl p-8 md:p-10 shadow-2xl relative z-10"
+          className="max-w-md w-full bg-white/70 border border-[#35332E]/10 rounded-3xl p-8 md:p-10 shadow-xl relative z-10"
         >
-          <div className="w-20 h-20 bg-rose-500/10 border border-rose-500/20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl">⚠️</div>
-          <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl bg-[#35332E]/10">⚠️</div>
+          <h1 className="text-3xl font-bold tracking-tight text-[#35332E] mb-4 leading-tight">
             Invalid QR Code
           </h1>
-          <p className="text-slate-400 text-base leading-relaxed mb-8">
+          <p className="text-[#6E6A60] text-base leading-relaxed mb-8">
             This QR code is invalid, expired, or the table is not registered with any active restaurant. Please scan a valid QR code.
           </p>
-          <Button onClick={() => navigate('/')} variant="primary" fullWidth className="bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/20">
+          <Button onClick={() => navigate('/')} variant="ink" fullWidth className="shadow-lg">
             Scan Again / Home
           </Button>
         </motion.div>
@@ -361,57 +359,48 @@ export default function WelcomeScreen() {
   // Waiting UI for Phone B
   if (waitingForA) {
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 font-sans text-center relative overflow-hidden">
-         {/* Background Ambience */}
-         <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
-         
-         <div className="relative z-10">
-             <div className="mb-8 relative mx-auto w-24 h-24">
-                 <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center animate-pulse border border-blue-100">
-                    <span className="text-4xl">⏳</span>
-                 </div>
-                 {/* Ping animation */}
-                 <div className="absolute top-0 left-0 w-24 h-24 bg-blue-400 rounded-full opacity-20 animate-ping"></div>
-             </div>
-             
-             <h2 className="text-2xl font-extrabold text-gray-900 mb-4 tracking-tight">
-                Waiting for Partner
-             </h2>
-             <p className="text-gray-500 max-w-xs mx-auto mb-10 leading-relaxed">
-                Partner will select Context and Mode to start session.
-             </p>
-             
-             <div className="space-y-4">
-                 <div className="flex justify-center gap-2">
-                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></span>
-                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
-                 </div>
-                 
-                 <button 
-                    onClick={() => setWaitingForA(false)}
-                    className="text-sm font-bold text-gray-400 hover:text-gray-600 transition-colors uppercase tracking-widest mt-8"
-                 >
-                    Cancel
-                 </button>
-             </div>
-         </div>
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+        <div className="relative z-10">
+          <div className="mb-8 relative mx-auto w-24 h-24">
+            <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center animate-pulse border border-[#35332E]/10">
+               <span className="text-4xl">⏳</span>
+            </div>
+            <div className="absolute top-0 left-0 w-24 h-24 bg-[#35332E] rounded-full opacity-10 animate-ping"></div>
+          </div>
+
+          <h2 className="text-2xl font-bold text-[#35332E] mb-4 tracking-tight">
+            Waiting for Partner
+          </h2>
+          <p className="text-[#6E6A60] max-w-xs mx-auto mb-10 leading-relaxed">
+            Partner will select Context and Mode to start session.
+          </p>
+
+          <div className="space-y-4">
+            <div className="flex justify-center gap-2">
+              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></span>
+              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
+            </div>
+
+            <button
+               onClick={() => setWaitingForA(false)}
+               className="text-sm font-semibold text-[#6E6A60] hover:text-[#35332E] transition-colors uppercase tracking-widest mt-8"
+            >
+               Cancel
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // Format table token for display
-  const displayTable = tableToken 
-    ? tableToken.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-    : 'Table Talk';
-
   // Show loading spinner only if we are actively checking/resolving
   if (status) {
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 font-sans">
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6">
         <div className="animate-pulse text-center">
-          <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-500 font-medium">{status}</p>
+          <div className="w-16 h-16 border-4 border-[#35332E] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-[#6E6A60] font-medium">{status}</p>
         </div>
       </div>
     );
@@ -419,63 +408,57 @@ export default function WelcomeScreen() {
 
   // Otherwise, show the Welcome Screen
   return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">
-      
-      {/* Blocked Error Modal (Matches Image Spec) */}
+    <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 relative overflow-hidden selection:bg-[#35332E]/10 selection:text-[#35332E]">
+
+      {/* Blocked Error Modal */}
       <AnimatePresence>
         {blockedError && (
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-            {/* Dimmed Background */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-gray-900/60 backdrop-blur-sm"
+              className="absolute inset-0 bg-[#35332E]/60 backdrop-blur-sm"
               onClick={() => {
                   setBlockedError(null);
                   navigate('/');
               }}
             />
-            {/* Modal Content */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative bg-[#2f2f3a] w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden p-6"
+              className="relative bg-[#F3EDE1] w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden p-6 border border-[#35332E]/10"
             >
-              {/* Header */}
               <div className="flex items-center gap-2 mb-4">
-                <svg className="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <svg className="w-5 h-5 text-[#35332E]" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                 </svg>
-                <span className="text-gray-300 font-medium text-sm tracking-wide">
-                  Table Talk
+                <span className="text-[#35332E] font-semibold text-sm tracking-wide">
+                  Catalyst
                 </span>
               </div>
-              
-              {/* Body Text */}
-              <p className="text-gray-300 text-[15px] leading-relaxed mb-6">
+
+              <p className="text-[#35332E] text-[15px] leading-relaxed mb-6">
                 {blockedError}
               </p>
 
-              {/* Auto-redirect progress bar */}
-              <div className="w-full bg-gray-700 h-1 rounded-full overflow-hidden mb-6">
-                  <motion.div 
+              <div className="w-full bg-[#35332E]/10 h-1 rounded-full overflow-hidden mb-6">
+                  <motion.div
                     initial={{ width: "0%" }}
                     animate={{ width: "100%" }}
                     transition={{ duration: 3, ease: "linear" }}
-                    className="h-full bg-[#06b6d4]"
+                    className="h-full bg-[#35332E]"
                   />
               </div>
-              
-              {/* Footer / Action */}
+
               <div className="flex justify-end">
                 <button
                   onClick={() => {
                       setBlockedError(null);
                       navigate('/');
                   }}
-                  className="bg-[#06b6d4] hover:bg-[#0891b2] text-gray-900 font-bold px-6 py-2 rounded-lg shadow-md transition-colors"
+                  className="bg-[#35332E] hover:bg-[#26241F] text-[#F3EDE1] font-semibold px-6 py-2 rounded-xl shadow-md transition-colors"
                 >
                   OK
                 </button>
@@ -485,84 +468,73 @@ export default function WelcomeScreen() {
         )}
       </AnimatePresence>
 
-      {/* Background Ambience */}
-      <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
-      <div className="absolute bottom-[-20%] right-[-20%] w-[500px] h-[500px] bg-purple-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
-
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95 }}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
+        transition={{ duration: 0.7, ease: "easeOut" }}
         className="max-w-md w-full text-center relative z-10"
       >
-        {/* Table Badge */}
-        {tableToken && (
-          <motion.div 
-            initial={{ y: -20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="inline-flex items-center gap-2 px-4 py-1.5 bg-gray-900 text-white rounded-full text-xs font-bold uppercase tracking-widest mb-12 shadow-xl shadow-gray-200"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            Connected to {displayTable}
-          </motion.div>
-        )}
-
-        {/* Logo / Header Section */}
-        <div className="space-y-6 mb-12">
+        {/* Droplet Logo */}
+        <div className="mb-12">
           <motion.div
-            initial={{ scale: 0.8, opacity: 0, rotate: -10 }}
-            animate={{ scale: 1, opacity: 1, rotate: 0 }}
-            transition={{ delay: 0.2, duration: 0.6, type: "spring" }}
-            className="w-24 h-24 bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl mx-auto flex items-center justify-center shadow-2xl shadow-blue-200 text-5xl mb-8"
+            initial={{ scale: 0.85, opacity: 0, y: 10 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            transition={{ delay: 0.1, duration: 0.7, type: "spring" }}
+            className="w-36 h-36 mx-auto flex items-center justify-center"
           >
-            💬
+            <img src="/catalyst-logo.png" alt="Catalyst" className="w-full h-full object-contain drop-shadow-lg" />
           </motion.div>
-          
-          <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 tracking-tight leading-tight">
-            Welcome to <br/>
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
-              Table Talk
-            </span>
-          </h1>
         </div>
 
-        {/* Main Message */}
-        <motion.div 
+        {/* Heading Hierarchy */}
+        <div className="space-y-3 mb-8">
+          <h1 className="text-4xl md:text-5xl font-bold text-[#35332E] tracking-tight leading-[1.05]">
+            Welcome to
+          </h1>
+          <h1 className="text-5xl md:text-6xl font-bold text-[#35332E] tracking-tight leading-[1.05]">
+            Catalyst
+          </h1>
+          <p className="text-lg md:text-xl text-[#35332E] font-medium italic mt-4">
+            Starts a conversation. Gets out of your way.
+          </p>
+        </div>
+
+        {/* Body Copy */}
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.8 }}
-          className="space-y-8"
+          transition={{ delay: 0.25, duration: 0.6 }}
+          className="space-y-6"
         >
-          <p className="text-xl text-gray-500 leading-relaxed font-medium">
-            Table Talk offers thoughtful questions designed to spark meaningful conversation between two people.
+          <p className="text-[17px] text-[#35332E] leading-relaxed">
+            Catalyst offers questions for two people. Explore new topics together … and stay curious.
           </p>
-          <p className="text-lg text-gray-900 font-medium italic">
-            Explore new topics together... and stay curious.
+          <p className="text-base text-[#6E6A60] leading-relaxed">
+            Stay as long as the food takes. Or stop anytime.
           </p>
         </motion.div>
 
-        {/* Action Button */}
+        {/* Continue CTA */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6, duration: 0.5 }}
+          transition={{ delay: 0.4, duration: 0.5 }}
           className="pt-12"
         >
-          <Button 
+          <Button
             onClick={handleContinue}
             disabled={checking}
-            variant="primary"
+            variant="ink"
             size="xl"
             fullWidth
-            className="shadow-xl shadow-blue-500/20 hover:shadow-2xl hover:shadow-blue-500/30 transition-all text-lg"
+            className="shadow-xl shadow-[#35332E]/10 hover:shadow-2xl hover:shadow-[#35332E]/15 transition-all text-lg"
             icon={!checking && <span className="group-hover:translate-x-1 transition-transform">→</span>}
           >
             {checking ? 'Connecting...' : 'Continue'}
           </Button>
-          
-          <p className="mt-8 text-xs font-bold text-gray-300 uppercase tracking-widest">
-            Anonymous Session • No Data Stored
+
+          <p className="mt-10 text-xs text-[#6E6A60] tracking-[0.2em] uppercase font-medium">
+            Anonymous Session · No Data Stored
           </p>
         </motion.div>
       </motion.div>

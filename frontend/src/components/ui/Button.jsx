@@ -3,9 +3,10 @@ import { motion } from 'framer-motion';
 
 /**
  * Reusable Button Component
- * 
+ *
  * Variants:
  * - primary: Blue background, white text (Call to Action)
+ * - ink: Brand ink #35332E fill, cream text. Holds to #26241F when pressed.
  * - black: Black background, white text (High contrast, often used in game)
  * - secondary: Gray background, dark text (Alternative actions)
  * - outline: Transparent background, border (Low emphasis)
@@ -26,10 +27,11 @@ export default function Button({
   type = 'button',
   ...props
 }) {
-  const baseStyles = "inline-flex items-center justify-center font-bold rounded-xl transition-all duration-200 focus:outline-none focus:ring-4 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100";
-  
+  const baseStyles = "inline-flex items-center justify-center font-semibold rounded-xl transition-all duration-150 focus:outline-none focus:ring-4 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100";
+
   const variants = {
     primary: "bg-[#007AFF] text-white hover:bg-blue-600 shadow-lg shadow-blue-500/30 active:shadow-blue-500/20 focus:ring-blue-500/40",
+    ink: "bg-[#35332E] text-[#F3EDE1] hover:bg-[#2e2c27] active:bg-[#26241F] shadow-lg shadow-[#35332E]/15 active:shadow-[#35332E]/8 focus:ring-[#35332E]/20",
     black: "bg-gray-900 text-white hover:bg-gray-800 shadow-lg shadow-gray-900/20 active:shadow-gray-900/10 focus:ring-gray-900/30",
     secondary: "bg-gray-100 text-gray-900 hover:bg-gray-200 focus:ring-gray-200/50",
     outline: "bg-transparent border-2 border-gray-200 text-gray-900 hover:border-gray-900 hover:bg-gray-50 focus:ring-gray-200/50",

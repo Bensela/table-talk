@@ -23,7 +23,7 @@ export default function LegacyQrBlocked() {
           Legacy QR Code No Longer Supported
         </h1>
         <p className="text-slate-400 leading-7 mb-4">
-          Table-Talk now uses tenant-specific QR codes for each subscribed restaurant and table.
+          Catalyst now uses tenant-specific QR codes for each subscribed restaurant and table.
           Older direct QR codes cannot open the app anymore.
         </p>
         <p className="text-slate-500 text-sm leading-6 mb-8">

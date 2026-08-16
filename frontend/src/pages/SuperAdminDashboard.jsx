@@ -396,7 +396,7 @@ export default function SuperAdminDashboard() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `table-talk-metrics-${metricsRange}.${extension}`;
+    link.download = `catalyst-metrics-${metricsRange}.${extension}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -426,7 +426,7 @@ export default function SuperAdminDashboard() {
     const content = lines.map(toCsvLine).join('\n');
     downloadTextFile(
       content,
-      `table-talk-questions-print-${questionsToExport.length}-${new Date().toISOString().slice(0, 10)}.csv`,
+      `catalyst-questions-print-${questionsToExport.length}-${new Date().toISOString().slice(0, 10)}.csv`,
       'text/csv;charset=utf-8;'
     );
 
@@ -711,7 +711,7 @@ export default function SuperAdminDashboard() {
   };
 
   const buildSaPrintQrCardHtml = (restaurantName, entries, { paperSize }) => {
-    const safeName = String(restaurantName || 'Table Talk').replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
+    const safeName = String(restaurantName || 'Catalyst').replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
     const paperSizeCss = paperSize === 'a4' ? 'A4' : paperSize === 'a5' ? 'A5' : 'Letter';
     const cols = paperSize === 'a5' ? 1 : 2;
     const gapMm = 8;
@@ -821,7 +821,7 @@ export default function SuperAdminDashboard() {
         throw new Error('QR code data is missing');
       }
       const html = buildSaPrintQrCardHtml(
-        billingDetail.billing?.name || billingDetail.tenant?.name || 'Table Talk',
+        billingDetail.billing?.name || billingDetail.tenant?.name || 'Catalyst',
         [data[0]],
         { paperSize: saPrintPaperSize }
       );
@@ -853,7 +853,7 @@ export default function SuperAdminDashboard() {
       const data = await res.json();
       if (!Array.isArray(data) || !data.length) throw new Error('No QR codes returned');
       const html = buildSaPrintQrCardHtml(
-        billingDetail.billing?.name || billingDetail.tenant?.name || 'Table Talk',
+        billingDetail.billing?.name || billingDetail.tenant?.name || 'Catalyst',
         data,
         { paperSize: saPrintPaperSize }
       );
@@ -1454,7 +1454,7 @@ export default function SuperAdminDashboard() {
                     <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Real-Time Usage Command Center</h2>
                   </div>
                   <p className="text-sm text-slate-600 dark:text-slate-400 mt-2 max-w-2xl">
-                    Monitor live sessions, QR scans, restaurant activity, and where Table-Talk is being used across active tenant locations.
+                    Monitor live sessions, QR scans, restaurant activity, and where Catalyst is being used across active tenant locations.
                   </p>
                 </div>
                 <div className="flex flex-col items-start lg:items-end gap-3">

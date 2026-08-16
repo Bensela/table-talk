@@ -1,3 +1,5 @@
+@import url('https://fonts.font.im/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -15,22 +17,23 @@
 @layer base {
   :root,
   .theme-light {
-    --color-bg-bg: 248 250 252;
+    --color-bg-bg: 243 237 225;
     --color-bg-card: 255 255 255;
-    --color-bg-muted: 241 245 249;
-    --color-bg-input: 241 245 249;
-    --color-border-default: 226 232 240;
-    --color-border-strong: 203 213 225;
-    --color-text-primary: 15 23 42;
-    --color-text-secondary: 51 65 85;
-    --color-text-muted: 100 116 139;
-    --color-accent-primary: 79 70 229;
-    --color-accent-secondary: 14 165 233;
+    --color-bg-muted: 235 228 213;
+    --color-bg-input: 235 228 213;
+    --color-border-default: 213 203 181;
+    --color-border-strong: 174 161 136;
+    --color-text-primary: 53 51 46;
+    --color-text-secondary: 86 81 70;
+    --color-text-muted: 110 106 96;
+    --color-accent-primary: 53 51 46;
+    --color-accent-secondary: 53 51 46;
+    --color-accent-pressed: 38 36 31;
     --color-accent-success: 16 185 129;
     --color-accent-warning: 217 119 6;
     --color-accent-danger: 220 38 38;
-    --color-surface-code: 241 245 249;
-    --color-text-code: 30 41 59;
+    --color-surface-code: 235 228 213;
+    --color-text-code: 53 51 46;
   }
 
   .theme-dark {
@@ -45,6 +48,7 @@
     --color-text-muted: 148 163 184;
     --color-accent-primary: 99 102 241;
     --color-accent-secondary: 56 189 248;
+    --color-accent-pressed: 38 36 31;
     --color-accent-success: 74 222 128;
     --color-accent-warning: 250 204 21;
     --color-accent-danger: 248 113 113;
@@ -64,6 +68,7 @@
     --color-text-muted: 148 163 184;
     --color-accent-primary: 129 140 248;
     --color-accent-secondary: 125 211 252;
+    --color-accent-pressed: 38 36 31;
     --color-accent-success: 74 222 128;
     --color-accent-warning: 250 204 21;
     --color-accent-danger: 252 165 165;
@@ -72,10 +77,35 @@
   }
 }
 
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: "Noto Serif SC", "TeX Gyre Pagella", "Book Antiqua", "Palatino Linotype", Palatino, Georgia, serif;
+    font-feature-settings: "liga", "kern";
+  }
+
+  body {
+    @apply antialiased;
+    font-family: "Noto Serif SC", "TeX Gyre Pagella", "Book Antiqua", "Palatino Linotype", Palatino, Georgia, serif;
+    background-color: #F3EDE1;
+    color: #35332E;
+    transition: background-color 300ms ease, color 300ms ease;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Noto Serif SC", "TeX Gyre Pagella", "Book Antiqua", "Palatino Linotype", Palatino, Georgia, serif;
+    letter-spacing: -0.01em;
+  }
+
+  button, input, textarea, select {
+    font-family: inherit;
+  }
+}
+
 @layer utilities {
   .theme-light {
-    background-color: rgb(var(--color-bg-bg));
-    color: rgb(var(--color-text-primary));
+    background-color: #F3EDE1;
+    color: #35332E;
   }
 
   .theme-dark {
@@ -90,15 +120,11 @@
       rgb(var(--color-bg-bg));
     color: rgb(var(--color-text-primary));
   }
-}
 
-html {
-  scroll-behavior: smooth;
-}
-
-body {
-  @apply font-sans antialiased;
-  background-color: rgb(var(--color-bg-bg));
-  color: rgb(var(--color-text-primary));
-  transition: background-color 300ms ease, color 300ms ease;
+  .bg-brand-cream { background-color: #F3EDE1; }
+  .text-brand-ink { color: #35332E; }
+  .text-brand-muted { color: #6E6A60; }
+  .bg-brand-ink { background-color: #35332E; }
+  .bg-brand-ink-pressed { background-color: #26241F; }
+  .border-brand-line { border-color: rgba(53, 51, 46, 0.12); }
 }

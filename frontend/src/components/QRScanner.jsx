@@ -224,7 +224,7 @@ export default function QRScanner({ onScan, onClose, onError }) {
         {/* Footer */}
         <div className="p-4 bg-gray-50 text-center">
            <p className="text-sm text-gray-600">
-             Point camera at a Table-Talk QR code
+             Point camera at a Catalyst QR code
            </p>
         </div>
       </div>

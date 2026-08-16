@@ -1,10 +1,21 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { apiFetch } from '../api';
+import { apiFetch, setAdminAuth } from '../api';
+
+function getReturnToFromSearch(searchParams, fallback) {
+  const candidate = searchParams.get('returnTo');
+  if (!candidate || typeof candidate !== 'string') return fallback;
+  // Safety: only allow relative URLs (no open redirects to other origins)
+  if (!/^\/(?!\/|\\)/.test(candidate)) return fallback;
+  // Block obvious attack strings
+  if (/[<>\s]/.test(candidate) || /javascript:/i.test(candidate)) return fallback;
+  return candidate;
+}
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [view, setView] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -15,15 +26,76 @@ export default function Login() {
   const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
   const [resetLink, setResetLink] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetTokenStatus, setResetTokenStatus] = useState('unknown');
+  const [resetTokenError, setResetTokenError] = useState('');
+  const [invalidRedirectCountdown, setInvalidRedirectCountdown] = useState(null);
+  const invalidCountdownRef = useRef(null);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('reset');
-    if (token) {
-      setView('reset');
-      setResetToken(token);
+  const clearInvalidCountdown = useCallback(() => {
+    if (invalidCountdownRef.current) {
+      clearInterval(invalidCountdownRef.current);
+      invalidCountdownRef.current = null;
     }
   }, []);
+
+  const startInvalidCountdown = useCallback((seconds) => {
+    clearInvalidCountdown();
+    const total = Math.max(1, Math.floor(Number(seconds) || 5));
+    setInvalidRedirectCountdown(total);
+    invalidCountdownRef.current = setInterval(() => {
+      setInvalidRedirectCountdown((prev) => {
+        if (prev == null) return null;
+        const next = prev - 1;
+        if (next <= 0) {
+          clearInvalidCountdown();
+          const loginTarget = searchParams.get('expiredReturn') ?
+            `/admin/login?returnTo=${encodeURIComponent(searchParams.get('expiredReturn') || '/admin')}` :
+            '/admin/login';
+          navigate(loginTarget, { replace: true });
+          return 0;
+        }
+        return next;
+      });
+    }, 1000);
+  }, [clearInvalidCountdown, navigate, searchParams]);
+
+  useEffect(() => () => clearInvalidCountdown(), [clearInvalidCountdown]);
+
+  useEffect(() => {
+    async function validateResetTokenFromUrl() {
+      const token = searchParams.get('reset');
+      if (!token) {
+        return;
+      }
+      setView('reset');
+      setResetToken(token);
+      setResetTokenStatus('checking');
+      setResetTokenError('');
+      clearInvalidCountdown();
+      try {
+        const response = await apiFetch('/admin/validate-reset-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const rawText = await response.text();
+        let data = {};
+        try { data = rawText ? JSON.parse(rawText) : {}; } catch {}
+        if (response.ok && data?.ok) {
+          setResetTokenStatus('valid');
+        } else {
+          setResetTokenStatus('invalid');
+          setResetTokenError(data?.error || 'Invalid or expired reset link');
+          if (response.status === 410 || /expired/i.test(data?.error || '')) {
+            startInvalidCountdown(5);
+          }
+        }
+      } catch (err) {
+        setResetTokenStatus('unknown');
+      }
+    }
+    validateResetTokenFromUrl();
+  }, [searchParams, clearInvalidCountdown, startInvalidCountdown]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -48,19 +120,20 @@ export default function Login() {
       }
 
       if (!response.ok) {
+        if (response.status === 429) {
+          const retrySec = data?.retry_after_seconds ? Number(data.retry_after_seconds) : null;
+          throw new Error(data?.error || (retrySec ? `Too many attempts. Try again in ${retrySec}s.` : 'Too many login attempts.'));
+        }
         throw new Error(data.error || `Login failed (${response.status})`);
       }
 
       // Store token and user details in localStorage
-      localStorage.setItem('adminToken', data.token);
-      localStorage.setItem('adminUser', JSON.stringify(data.user));
+      setAdminAuth({ token: data.token, user: data.user });
 
-      // Redirect depending on user role
-      if (data.user.role === 'SUPER_ADMIN') {
-        navigate('/admin');
-      } else if (data.user.role === 'RESTAURANT_ADMIN') {
-        navigate('/dashboard');
-      }
+      // Honor ?returnTo= (safe relative paths only) then fall back to role-based defaults.
+      const roleDefault = data.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
+      const returnTo = getReturnToFromSearch(searchParams, roleDefault);
+      navigate(returnTo, { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -175,9 +248,13 @@ export default function Login() {
           <div className="absolute -bottom-16 -right-16 w-32 h-32 bg-indigo-500/30 rounded-full blur-3xl" />
 
           <div className="text-center mb-8 relative">
-            <span className="text-4xl">🔑</span>
-            <h1 className="text-3xl font-extrabold text-white mt-4 tracking-tight">Admin Portal</h1>
-            <p className="text-purple-200 text-sm mt-2">Sign in to manage your Table-Talk experience</p>
+            <img src="/catalyst-logo.png" alt="Catalyst" className="w-20 h-20 mx-auto object-contain drop-shadow-lg mb-2" />
+            <h1 className="text-3xl font-extrabold text-white mt-4 tracking-tight">
+              {view === 'login' ? 'Admin Portal' : view === 'forgot' ? 'Reset Your Password' : 'Set a New Password'}
+            </h1>
+            {view === 'login' && <p className="text-purple-200 text-sm mt-2">Sign in to manage your Catalyst experience</p>}
+            {view === 'forgot' && <p className="text-purple-200 text-sm mt-2">Enter your email and we&apos;ll generate a secure reset link</p>}
+            {view === 'reset' && resetTokenStatus === 'valid' && <p className="text-purple-200 text-sm mt-2">Choose a strong new password for your account</p>}
           </div>
 
           <form
@@ -253,40 +330,113 @@ export default function Login() {
                     type="text"
                     required
                     value={resetToken}
-                    onChange={(e) => setResetToken(e.target.value)}
+                    onChange={(e) => { setResetToken(e.target.value); setResetTokenStatus('unknown'); setResetTokenError(''); }}
                     placeholder="Paste token"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all"
+                    disabled={resetTokenStatus === 'checking'}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all disabled:opacity-60"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-purple-200 mb-2">New Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={resetPassword}
-                    onChange={(e) => setResetPassword(e.target.value)}
-                    placeholder="At least 8 characters"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-purple-200 mb-2">Confirm Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={resetPasswordConfirm}
-                    onChange={(e) => setResetPasswordConfirm(e.target.value)}
-                    placeholder="Repeat password"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all"
-                  />
-                </div>
+
+                {resetTokenStatus === 'checking' && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 flex items-center gap-3">
+                    <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    <span className="text-sm text-purple-100">Validating reset link...</span>
+                  </div>
+                )}
+
+                {resetTokenStatus === 'invalid' && (
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-full bg-rose-500/20 flex items-center justify-center flex-shrink-0 text-lg">⚠️</div>
+                        <div className="flex-1">
+                          <div className="font-semibold text-rose-100 text-sm">
+                            {resetTokenError || 'Invalid or expired reset link'}
+                          </div>
+                          <div className="text-xs text-rose-200/70 mt-1 leading-relaxed">
+                            For security, password reset links expire 30 minutes after they are created. Request a new reset link to continue.
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setView('forgot');
+                                setError('');
+                                setSuccess('');
+                                setResetLink('');
+                                setResetTokenStatus('unknown');
+                                setResetTokenError('');
+                              }}
+                              className="rounded-xl bg-rose-500/80 hover:bg-rose-500 text-white text-xs font-bold px-4 py-2 transition-colors"
+                            >
+                              Request New Reset Link
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setView('login');
+                                setError('');
+                                setSuccess('');
+                                setResetLink('');
+                                setResetTokenStatus('unknown');
+                                setResetTokenError('');
+                              }}
+                              className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-purple-100 text-xs font-bold px-4 py-2 transition-colors"
+                            >
+                              Back to Sign In
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    {invalidRedirectCountdown != null && invalidRedirectCountdown > 0 && (
+                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200 flex items-center justify-between">
+                        <span>Automatically returning to sign in in {invalidRedirectCountdown} second{invalidRedirectCountdown === 1 ? '' : 's'}...</span>
+                        <button
+                          type="button"
+                          onClick={() => { clearInvalidCountdown(); setInvalidRedirectCountdown(null); }}
+                          className="ml-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1 font-bold text-amber-100 text-[11px] flex-shrink-0"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {resetTokenStatus === 'valid' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-purple-200 mb-2">New Password</label>
+                      <input
+                        type="password"
+                        required
+                        value={resetPassword}
+                        onChange={(e) => setResetPassword(e.target.value)}
+                        placeholder="At least 8 characters"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-purple-200 mb-2">Confirm Password</label>
+                      <input
+                        type="password"
+                        required
+                        value={resetPasswordConfirm}
+                        onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                        placeholder="Repeat password"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 transition-all"
+                      />
+                    </div>
+                  </>
+                )}
               </>
             )}
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white font-bold py-3.5 px-4 rounded-xl transition-all hover:shadow-lg hover:shadow-purple-500/20 active:scale-[0.99] disabled:opacity-50"
+              disabled={loading || (view === 'reset' && (resetTokenStatus === 'checking' || resetTokenStatus === 'invalid'))}
+              className="w-full bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white font-bold py-3.5 px-4 rounded-xl transition-all hover:shadow-lg hover:shadow-purple-500/20 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading
                 ? 'Working...'
@@ -294,7 +444,9 @@ export default function Login() {
                   ? 'Sign In'
                   : view === 'forgot'
                     ? 'Send Reset Link'
-                    : 'Reset Password'}
+                    : resetTokenStatus === 'invalid'
+                      ? 'Link Is Invalid'
+                      : 'Reset Password'}
             </button>
 
             {view === 'forgot' && (

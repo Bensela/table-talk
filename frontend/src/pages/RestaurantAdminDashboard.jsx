@@ -383,7 +383,7 @@ export default function RestaurantAdminDashboard() {
           ? 'A5'
           : 'Letter';
 
-      const restaurantName = profile?.name || 'Table Talk';
+      const restaurantName = profile?.name || 'Catalyst';
       const printWindow = window.open('', '_blank');
       const html = `
       <html>

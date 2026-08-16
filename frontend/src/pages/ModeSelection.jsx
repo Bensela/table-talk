@@ -270,89 +270,78 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
 
   // --- RENDER VIEWS ---
 
-  return (
-    <div className="min-h-screen bg-white flex flex-col p-6 relative overflow-hidden font-sans selection:bg-blue-100 selection:text-blue-900">
-      
-      {/* Background Ambience */}
-      <div className="absolute top-[-20%] right-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
-      <div className="absolute bottom-[-20%] left-[-20%] w-[500px] h-[500px] bg-purple-50/60 rounded-full blur-3xl pointer-events-none opacity-60" />
+  const modes = [
+    {
+      id: 'single-phone',
+      title: 'Single-Phone Mode',
+      description: 'Share one screen. Read each question out loud.',
+      onClick: handleSinglePhone
+    },
+    {
+      id: 'dual-phone',
+      title: 'Dual-Phone Mode',
+      description: 'Each of you follows on your own screen.',
+      onClick: handleStartDual
+    }
+  ];
 
-      <header className="mb-8 mt-4 text-center relative z-10 max-w-md mx-auto">
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
+  return (
+    <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 relative overflow-hidden selection:bg-[#35332E]/10 selection:text-[#35332E]">
+
+      <header className="mb-12 mt-10 text-left relative z-10 max-w-md mx-auto w-full">
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="inline-flex items-center justify-center gap-2 px-3 py-1 bg-gray-50 rounded-full border border-gray-100 mb-6"
+          className="mb-6"
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
-          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Step 2 of 2</span>
+          <span className="text-xs font-semibold text-[#6E6A60] uppercase tracking-[0.18em]">Step 2 of 2</span>
         </motion.div>
-        
-        <motion.h1 
-          initial={{ opacity: 0, scale: 0.95 }}
+
+        <motion.h1
+          initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
-          className="text-4xl font-extrabold text-gray-900 tracking-tight mb-4"
+          transition={{ duration: 0.5, delay: 0.08 }}
+          className="text-4xl md:text-5xl font-bold text-[#35332E] tracking-tight leading-[1.1]"
         >
-          Choose Mode
+          How are you playing?
         </motion.h1>
-        
-        <motion.p 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.2 }}
-          className="text-gray-500 text-lg leading-relaxed"
-        >
-          Decide how you want to interact with the device(s).
-        </motion.p>
       </header>
 
       <main className="flex-1 flex flex-col justify-start max-w-md mx-auto w-full relative z-10 pb-8">
-        <motion.div 
+        <motion.div
           variants={container}
           initial="hidden"
           animate="show"
           className="flex flex-col gap-4"
         >
-          {/* Option 1: Single-Phone */}
-          <motion.div variants={item}>
-            <SelectionCard
-              title="Single-Phone Mode"
-              description="One device shared between you."
-              icon="📱"
-              onClick={handleSinglePhone}
+          {modes.map((m) => (
+            <motion.button
+              key={m.id}
+              variants={item}
+              onClick={m.onClick}
               disabled={loading}
-              className="hover:border-blue-200 hover:shadow-xl hover:shadow-blue-500/5 py-6"
-            />
-          </motion.div>
-
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center" aria-hidden="true">
-              <div className="w-full border-t border-gray-200"></div>
-            </div>
-            <div className="relative flex justify-center">
-              <span className="bg-white px-3 text-xs font-bold text-gray-400 uppercase tracking-widest">OR DUAL MODE</span>
-            </div>
-          </div>
-
-          {/* Option 2: Start Dual-Phone */}
-          <motion.div variants={item}>
-            <SelectionCard
-              title="Start Dual-Phone Session"
-              description="Create a new session for two devices."
-              icon="📱📱"
-              onClick={handleStartDual}
-              disabled={loading}
-              className="hover:border-purple-200 hover:shadow-xl hover:shadow-purple-500/5 py-6"
-            />
-          </motion.div>
+              whileHover={!loading ? { scale: 1.015, y: -1 } : {}}
+              whileTap={!loading ? { scale: 0.99 } : {}}
+              className="group relative w-full text-left p-7 rounded-2xl border transition-all duration-150 bg-[#FBF7EF] border-[#DCD3C2] hover:bg-[#35332E] hover:border-[#35332E] active:bg-[#26241F] active:border-[#26241F] shadow-sm hover:shadow-xl hover:shadow-[#35332E]/8 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-4 focus:ring-[#35332E]/10"
+            >
+              <h3 className={`text-2xl font-semibold transition-colors text-[#35332E] group-hover:text-[#F3EDE1] group-active:text-[#F3EDE1]`}>
+                {m.title}
+              </h3>
+              {m.description && (
+                <p className={`mt-3 text-base leading-relaxed transition-colors text-[#6E6A60] group-hover:text-[#F3EDE1]/85 group-active:text-[#F3EDE1]/85`}>
+                  {m.description}
+                </p>
+              )}
+            </motion.button>
+          ))}
         </motion.div>
       </main>
       
       {loading && (
-        <div className="fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-[#F3EDE1]/80 backdrop-blur-sm flex items-center justify-center z-50">
            <div className="flex flex-col items-center gap-4">
-             <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+             <div className="animate-spin rounded-full h-12 w-12 border-4 border-[#35332E] border-t-transparent"></div>
              <p className="text-gray-500 font-bold animate-pulse">Starting Session...</p>
            </div>
         </div>

@@ -8,6 +8,7 @@ const { authenticateToken, requireRole, verifyTenantAccess } = require('../middl
 // Public Login Endpoint
 router.post('/login', adminController.login);
 router.post('/forgot-password', adminController.requestPasswordReset);
+router.post('/validate-reset-token', adminController.validateResetToken);
 router.post('/reset-password', adminController.resetPassword);
 router.post('/geocode-address', authenticateToken, requireRole(['SUPER_ADMIN', 'RESTAURANT_ADMIN']), adminController.geocodeRestaurantAddress);
 

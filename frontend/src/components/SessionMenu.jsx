@@ -227,26 +227,41 @@ export default function SessionMenu({
     }
   };
 
-  // Helper for Context display
-  const getContextColor = (ctx) => {
+  // Helper for Context display. Internal DB IDs stay Exploring/Established/Mature;
+  // user-facing labels never force the couple to define their relationship.
+  const contextDisplay = (ctx) => {
     switch (ctx) {
-      case 'Exploring': return 'text-blue-600 bg-blue-50 border-blue-200';
-      case 'Established': return 'text-purple-600 bg-purple-50 border-purple-200';
-      case 'Mature': return 'text-rose-600 bg-rose-50 border-rose-200';
-      default: return 'text-gray-600 bg-gray-50 border-gray-200';
+      case 'Exploring': return 'Keep it light';
+      case 'Established': return 'Go deeper';
+      case 'Mature': return 'Stay awhile';
+      default: return ctx || '—';
     }
   };
 
+  const getContextStyle = (ctx) => {
+    switch (ctx) {
+      case 'Exploring': return 'text-[#35332E] bg-[#FBF7EF] border-[#DCD3C2]';
+      case 'Established': return 'text-[#35332E] bg-[#FBF7EF] border-[#DCD3C2]';
+      case 'Mature': return 'text-[#35332E] bg-[#FBF7EF] border-[#DCD3C2]';
+      default: return 'text-[#6E6A60] bg-[#FBF7EF] border-[#DCD3C2]';
+    }
+  };
+
+  const contextOptions = [
+    { id: 'Exploring', label: 'Keep it light' },
+    { id: 'Established', label: 'Go deeper' }
+  ];
+
   return (
     <>
-      <div 
+      <div
         className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
         onClick={() => setIsOpen(true)}
       >
-        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 hover:bg-gray-200 transition-colors">
-          <span className="text-xl">☰</span>
+        <div className="w-10 h-10 rounded-full bg-[#FBF7EF] border border-[#DCD3C2] flex items-center justify-center text-[#35332E] hover:bg-[#35332E] hover:text-[#F3EDE1] hover:border-[#35332E] transition-colors">
+          <span className="text-lg font-bold">☰</span>
         </div>
-        <span className="text-sm font-bold text-gray-900 tracking-wider hidden sm:block">MENU</span>
+        <span className="text-sm font-semibold text-[#35332E] tracking-wider hidden sm:block">MENU</span>
       </div>
 
       {createPortal(
@@ -258,74 +273,64 @@ export default function SessionMenu({
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={() => setIsOpen(false)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                className="absolute inset-0 bg-[#35332E]/55 backdrop-blur-sm"
               />
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="relative bg-white w-full max-w-sm rounded-3xl shadow-xl overflow-hidden flex flex-col"
+                className="relative bg-[#F3EDE1] w-full max-w-sm rounded-3xl shadow-xl overflow-hidden flex flex-col border border-[#DCD3C2]"
               >
-                 {/* Clean Card Header */}
-                 <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-white relative z-10">
-                   <div>
-                     <h3 className="text-lg font-bold text-gray-900">Session Settings</h3>
-                     <div className="flex items-center gap-2 mt-1">
-                       <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${getContextColor(currentContext)}`}>
-                         {currentContext}
-                       </span>
-                       <span className="text-xs text-gray-400">•</span>
-                       <span className="text-xs text-gray-500 font-medium">
-                         {currentMode === 'dual-phone' ? 'Dual Phone' : 'Single Phone'}
-                       </span>
-                     </div>
-                   </div>
-                   <button 
+                 {/* Header */}
+                 <div className="px-6 pt-6 pb-4 flex items-start justify-between bg-[#F3EDE1] relative z-10 gap-4">
+                   <h3 className="text-2xl font-semibold text-[#35332E] pt-2 leading-none">Session Settings</h3>
+                   <button
                      onClick={() => setIsOpen(false)}
-                     className="w-8 h-8 rounded-full bg-gray-50 hover:bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors"
+                     aria-label="Close menu"
+                     className="flex-shrink-0 flex items-center justify-center w-[44px] h-[44px] min-w-[44px] min-h-[44px] rounded-2xl bg-transparent border border-[#DCD3C2] hover:border-[#35332E]/30 hover:bg-[#FBF7EF] text-[#6E6A60] hover:text-[#35332E] transition-colors"
                    >
-                     ✕
+                     <span className="text-xl font-bold leading-none">×</span>
                    </button>
                  </div>
-                 
+
                  {loading ? (
                    <div className="py-12 flex flex-col items-center justify-center">
-                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3"></div>
-                     <p className="text-gray-500 text-sm font-medium">Updating session...</p>
+                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#35332E] mb-3"></div>
+                     <p className="text-[#6E6A60] text-sm font-medium">Updating session...</p>
                    </div>
                  ) : (
-                   <div className="p-6 space-y-6 relative z-10 text-left bg-white">
-                     
-                     {/* Section A: Maturity (Chips) */}
+                   <div className="px-6 pb-6 space-y-7 relative z-10 text-left bg-[#F3EDE1]">
+
+                     {/* Section A: QUESTION TYPE */}
                      <div>
-                       <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Relationship Maturity</p>
-                       <div className="flex flex-wrap gap-2">
-                        {['Exploring', 'Established'].map((m) => {
-                          const isActive = currentContext === m;
+                       <p className="text-xs font-semibold text-[#6E6A60] uppercase tracking-[0.18em] mb-3">Question Type</p>
+                       <div className="grid grid-cols-2 gap-3">
+                        {contextOptions.map((m) => {
+                          const isActive = currentContext === m.id;
                           return (
                              <button
-                               key={m}
-                               onClick={() => handleQuickSwitch({ context: m })}
-                               className={`px-4 py-2 rounded-full text-sm font-medium border transition-all ${
+                               key={m.id}
+                               onClick={() => handleQuickSwitch({ context: m.id })}
+                               className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all ${
                                  isActive
-                                   ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                   : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0 shadow-sm'
+                                   : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
                                }`}
                              >
-                               {m}
+                               {m.label}
                              </button>
                            );
                          })}
                        </div>
                      </div>
 
-                     {/* Section B: Mode (Cards) */}
+                     {/* Section B: SESSION APPROACH */}
                      <div>
-                       <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Session Approach</p>
+                       <p className="text-xs font-semibold text-[#6E6A60] uppercase tracking-[0.18em] mb-3">Session Approach</p>
                        <div className="grid grid-cols-2 gap-3">
                          {[
-                           { id: 'single-phone', label: 'Single Phone', icon: '📱' }, 
-                           { id: 'dual-phone', label: 'Dual Phone', icon: '📱📱' }
+                           { id: 'single-phone', label: 'Single-Phone Mode' },
+                           { id: 'dual-phone', label: 'Dual-Phone Mode' }
                          ].map((m) => {
                            const isActive = currentMode === m.id;
                            return (
@@ -333,7 +338,6 @@ export default function SessionMenu({
                                key={m.id}
                                onClick={() => {
                                  if (m.id === 'dual-phone' && currentMode === 'single-phone') {
-                                   // Try to quick switch if dual mode data is present locally (resuming)
                                    const dualData = getDualSession(tableToken);
                                    if (dualData && dualData.sessionId) {
                                       handleQuickSwitch({ mode: m.id });
@@ -341,46 +345,39 @@ export default function SessionMenu({
                                       handleUpgradeToDual();
                                    }
                                  } else if (m.id === 'single-phone' && currentMode === 'dual-phone') {
-                                   // Not fully supported to downgrade without dropping partner, 
-                                   // but fallback to quick switch if they really want to.
                                    handleQuickSwitch({ mode: m.id });
                                  } else {
                                    handleQuickSwitch({ mode: m.id });
                                  }
                                }}
-                               className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
-                                 isActive 
-                                   ? 'bg-gray-900 border-gray-900 text-white shadow-md' 
-                                   : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+                               className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all ${
+                                 isActive
+                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0 shadow-sm'
+                                   : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
                                }`}
                              >
-                               <div className="text-xl mb-1">{m.icon}</div>
-                               <div className="text-xs font-bold uppercase tracking-wide opacity-90">{m.label}</div>
-                               {isActive && (
-                                 <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]" />
-                               )}
+                               {m.label}
                              </button>
                            );
                          })}
                        </div>
                      </div>
 
-                     {/* Section C: Actions */}
-                     <div className="pt-6 border-t border-gray-100 flex flex-col gap-3">
-                       <Button 
+                     {/* Actions */}
+                     <div className="pt-5 flex flex-col gap-5">
+                       <Button
                          onClick={() => setIsOpen(false)}
-                         variant="primary"
+                         variant="ink"
                          fullWidth
-                         className="py-3 text-base"
+                         className="py-3.5 text-base font-semibold rounded-2xl"
                        >
                          Resume Current Session
                        </Button>
 
-                       <button 
+                       <button
                          onClick={handleRestart}
-                         className="w-full py-3 text-sm font-medium text-red-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors flex items-center justify-center gap-2"
+                         className="w-full py-2 text-base font-semibold text-[#35332E] underline bg-transparent border-0 rounded-none hover:opacity-80 transition-opacity"
                        >
-                         <span className="text-lg">🔄</span>
                          Start Fresh (Reset All)
                        </button>
                      </div>
