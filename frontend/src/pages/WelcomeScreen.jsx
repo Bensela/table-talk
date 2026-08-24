@@ -24,8 +24,10 @@ export default function WelcomeScreen() {
   const [subscriptionError, setSubscriptionError] = useState(null); // 'suspended' | 'invalid' | 'geofence_denied'
   const [geofenceInfo, setGeofenceInfo] = useState(null);
   const [lastLocationAccuracyM, setLastLocationAccuracyM] = useState(null);
+  const [initialValidationPending, setInitialValidationPending] = useState(true);
   const setupCompletedRef = useRef(false);
   const validatedRef = useRef(false);
+  const validationStartedRef = useRef(false);
   const renderedRef = useRef(false);
   const gpsUpgradeAttemptedRef = useRef(false);
 
@@ -82,6 +84,7 @@ export default function WelcomeScreen() {
       setSubscriptionError(null);
       setChecking(false);
       setStatus(null);
+      setInitialValidationPending(false);
     } catch (err) {
       setChecking(false);
       setStatus(null);
@@ -167,6 +170,7 @@ export default function WelcomeScreen() {
       });
       setGeofenceInfo(null);
       validatedRef.current = true;
+      setInitialValidationPending(false);
       return true;
     } catch (err2) {
       firePublic({
@@ -195,6 +199,32 @@ export default function WelcomeScreen() {
     }
   }
 
+  // ── Route-param change hard reset ─────────────────────────────────────────────
+  // React Router v6 reuses the same WelcomeScreen instance whenever the user
+  // navigates between two URLs that match /r/:restaurantSlug/t/:tableToken
+  // (e.g. scan Bistro QR then scan a lambda / unregistered QR without going
+  // through Home first). Without this reset the prior slug's state bleeds
+  // across: subscriptionError stays 'geofence_denied', geofenceInfo keeps the
+  // old restaurant name+distance, validatedRef / validationStartedRef block
+  // re-validation so the new slug never runs handshake and never bounces to
+  // the "Invalid QR Code" error page when it should.
+  useEffect(() => {
+    validationStartedRef.current = false;
+    validatedRef.current = false;
+    renderedRef.current = false;
+    gpsUpgradeAttemptedRef.current = false;
+    setupCompletedRef.current = false;
+    setSubscriptionError(null);
+    setGeofenceInfo(null);
+    setLastLocationAccuracyM(null);
+    setInitialValidationPending(true);
+    setWaitingForA(false);
+    setBlockedError(null);
+    setChecking(false);
+    setSetupStatus('available');
+    setStatus(null);
+  }, [restaurantSlug, tableToken]);
+
   // Save the resolved restaurant slug to session state on mount / update
   useEffect(() => {
     if (!activeRestaurantSlug) {
@@ -204,7 +234,7 @@ export default function WelcomeScreen() {
     sessionStorage.setItem('restaurant_slug', activeRestaurantSlug);
   }, [activeRestaurantSlug]);
 
-  // Funnel event: Welcome screen rendered (once per mount)
+  // Funnel event: Welcome screen rendered (fires per new QR / reset)
   useEffect(() => {
     if (renderedRef.current || !activeRestaurantSlug || !tableToken) return;
     renderedRef.current = true;
@@ -220,12 +250,14 @@ export default function WelcomeScreen() {
   }, [activeRestaurantSlug, tableToken, firePublic]);
 
   // ── Subscription & Table Validation ────────────────────────────────────────────
-  // Runs once after socket connects to validate restaurant is active and table registered.
+  // Runs ASAP to fail fast BEFORE the user can see or interact with the
+  // Welcome screen. Restaurant status + geofence are confirmed first.
   useEffect(() => {
-    if (!tableToken || !activeRestaurantSlug || validatedRef.current) return;
+    if (!tableToken || !activeRestaurantSlug || validationStartedRef.current) return;
 
     async function validate() {
-      validatedRef.current = true;
+      validationStartedRef.current = true;
+      setStatus('Checking restaurant & location…');
       try {
         // Best-effort two-stage geolocation: coarse first, upgrade to
         // high-accuracy only if coarse returned a fix worse than ~250m.
@@ -265,6 +297,9 @@ export default function WelcomeScreen() {
         // eslint-disable-next-line no-unused-vars
         const _h = result;
         // Valid — proceed normally
+        validatedRef.current = true;
+        setStatus(null);
+        setInitialValidationPending(false);
       } catch (err) {
         if (err.response?.status === 403) {
           if (err.response.data && err.response.data.geofence_code === 'OUTSIDE_RADIUS') {
@@ -291,6 +326,7 @@ export default function WelcomeScreen() {
               setStatus(null);
               if (upgraded) {
                 // handshake inside the helper succeeded; clear error flow
+                setInitialValidationPending(false);
                 return;
               }
               // still outside after GPS upgrade → show block
@@ -314,6 +350,8 @@ export default function WelcomeScreen() {
                   upgraded_gps: true
                 }
               });
+              validatedRef.current = true;
+              setInitialValidationPending(false);
               return;
             }
             setGeofenceInfo({
@@ -334,22 +372,27 @@ export default function WelcomeScreen() {
                 configured_radius_m: err.response.data.configured_radius_m
               }
             });
+            validatedRef.current = true;
+            setInitialValidationPending(false);
             return;
           }
           setSubscriptionError('suspended');
         } else {
           setSubscriptionError('invalid');
         }
+        validatedRef.current = true;
+        setStatus(null);
+        setInitialValidationPending(false);
       }
     }
 
-    // Validate as soon as socket is connected so we fail fast
-    if (isConnected) {
-      validate();
-    } else if (socket) {
-      const onConnect = () => validate();
-      socket.on('connect', onConnect);
-      return () => socket.off('connect', onConnect);
+    // Kick off validation immediately (handshake is pure REST — no socket
+    // dependency). Also register on-connect in case socket-ready timing
+    // helps any downstream listeners we already had.
+    validate();
+    if (socket && !isConnected) {
+      const onConnect = () => { /* no-op: validate already started above */ };
+      socket.once('connect', onConnect);
     }
   }, [isConnected, socket, tableToken, activeRestaurantSlug, firePublic]);
 
@@ -367,6 +410,7 @@ export default function WelcomeScreen() {
     if (upgraded) {
       setChecking(false);
       setStatus(null);
+      setInitialValidationPending(false);
       return;
     }
 
@@ -390,6 +434,7 @@ export default function WelcomeScreen() {
       setGeofenceInfo(null);
       setChecking(false);
       setStatus(null);
+      setInitialValidationPending(false);
     } catch (err) {
       setChecking(false);
       setStatus(null);
@@ -401,7 +446,10 @@ export default function WelcomeScreen() {
             setChecking(true);
             const finalPass = await upgradeToGpsAndRetryHandshake({ context: 'retry-fallback' });
             setChecking(false);
-            if (finalPass) return;
+            if (finalPass) {
+              setInitialValidationPending(false);
+              return;
+            }
           }
           setGeofenceInfo({
             distance_m: err.response.data.distance_m,
@@ -412,12 +460,14 @@ export default function WelcomeScreen() {
             radius_overridden: err.response.data.radius_overridden === true
           });
           setSubscriptionError('geofence_denied');
+          setInitialValidationPending(false);
           return;
         }
         setSubscriptionError('suspended');
       } else {
         setSubscriptionError('invalid');
       }
+      setInitialValidationPending(false);
     }
   };
 
@@ -540,6 +590,11 @@ export default function WelcomeScreen() {
   }, [isConnected, socket, tableToken, navigate]);
 
   const handleContinue = async () => {
+    // Defense-in-depth: do not let the user proceed until the initial
+    // geofence + restaurant validation has completed. The loading gate
+    // already prevents this button from rendering during pending, but
+    // guard here anyway for fast-click / race cases.
+    if (initialValidationPending) return;
     setChecking(true);
     setStatus('Connecting...');
 
@@ -847,13 +902,17 @@ export default function WelcomeScreen() {
     );
   }
 
-  // Show loading spinner only if we are actively checking/resolving
-  if (status) {
+  // Loading gate: show spinner until first-pass geofence + restaurant
+  // handshake completes (success OR error). The Welcome content (including
+  // the Continue button) never renders before validation is resolved so the
+  // user cannot click-through and create a session before geofence rejects.
+  if ((initialValidationPending && !subscriptionError) || status) {
+    const spinnerText = status || 'Checking restaurant & location…';
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6">
         <div className="animate-pulse text-center">
           <div className="w-16 h-16 border-4 border-[#35332E] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-[#6E6A60] font-medium">{status}</p>
+          <p className="text-[#6E6A60] font-medium">{spinnerText}</p>
         </div>
       </div>
     );
