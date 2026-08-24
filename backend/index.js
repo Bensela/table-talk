@@ -585,9 +585,15 @@ io.on('connection', (socket) => {
         event_data: { reason: 'dual_mutual_fresh', dual_group_id: row.dual_group_id || null }
       });
     } else {
-      if (row?.mode === 'dual-phone' && row?.dual_status === 'paired') {
+      // Single-sided Start Fresh: always lock the session into 'waiting' state for any
+      // in-progress dual-phone session that hasn't ended. Previously required dual_status
+      // to be exactly 'paired', which could be skipped if a single→dual upgraded session
+      // raced with the partner join (e.g. upgrade reload + partner resolveSession both
+      // writing dual_status), leaving Start Fresh with no "Waiting for Partner" UI
+      // on the partner device even though both phones were actively playing together.
+      if (row?.mode === 'dual-phone' && row?.dual_status !== 'ended') {
         await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [sessionId]);
-        io.to(sessionId).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh' });
+        io.to(sessionId).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone' });
         await insertAnalyticsEvent({
           session_id: sessionId,
           participant_id: participantId,

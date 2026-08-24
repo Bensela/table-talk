@@ -158,6 +158,10 @@ export default function SessionGame() {
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [dualStatus, setDualStatus] = useState(null);
   const [waitingCause, setWaitingCause] = useState('initial');
+  const waitingCauseRef = useRef('initial');
+  useEffect(() => {
+      waitingCauseRef.current = waitingCause;
+  }, [waitingCause]);
   const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
   const [context, setContext] = useState('Exploring');
@@ -325,9 +329,19 @@ export default function SessionGame() {
         
         // Use a callback to get current dualStatus without putting it in dependency array
         setDualStatus(prev => {
-             // Only show notification if we are explicitly waiting or transitioning states
-             // This prevents the notification from firing on every reconnect/fetch
+             // If we are already in a Start Fresh waiting state, do NOT overwrite it
+             // with 'paired' — partner_requested_fresh has already locked the UI to
+             // Waiting. This fixes a race where: X presses Start Fresh (emits
+             // partner_requested_fresh → waiting), then X's socket disconnects due
+             // to redirect, causing Y's socket to briefly reconnect/rejoin, which
+             // fires dual_partner_joined again. Without this guard, the second event
+             // would flip dualStatus back to 'paired' and clear waitingCause, so the
+             // "Waiting for Partner" Start Fresh screen never renders on Y.
              if (prev === 'waiting') {
+                  const wc = waitingCauseRef.current;
+                  if (wc === 'partner_fresh' || wc === 'partner_single') {
+                      return prev; // preserve waiting state - do not overwrite
+                  }
                   const message = hasPartnerJoinedRef.current 
                       ? "Partner returned to Dual Mode!" 
                       : "Partner joined the session!";
@@ -345,7 +359,12 @@ export default function SessionGame() {
              return 'paired';
         });
         
-        setWaitingCause('initial');
+        // Similarly: only reset waitingCause to 'initial' if we are NOT in a
+        // Start Fresh / partner-single waiting state.
+        setWaitingCause(prev => {
+            if (prev === 'partner_fresh' || prev === 'partner_single') return prev;
+            return 'initial';
+        });
         setHasPartnerJoined(true);
         
         // Fetch question to ensure we're synced
@@ -617,6 +636,10 @@ export default function SessionGame() {
 
     // Listen for partner fresh intent
     const onPartnerRequestedFresh = () => {
+        // Force both mode + waiting state so the Waiting render branch at the
+        // bottom of the component (dualStatus === 'waiting' && mode === 'dual-phone')
+        // is satisfied even if a prior single→dual upgrade left mode stale locally.
+        setMode('dual-phone');
         setWaitingCause('partner_fresh');
         setDualStatus('waiting');
         setFeedbackMessage("Partner started fresh. Waiting for them...");

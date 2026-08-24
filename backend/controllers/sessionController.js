@@ -1207,10 +1207,17 @@ const freshIntent = async (req, res) => {
     } else {
         try {
           const s = await db.query(`SELECT mode, dual_status FROM sessions WHERE session_id = $1`, [session_id]);
-          if (s.rows[0]?.mode === 'dual-phone' && s.rows[0]?.dual_status === 'paired') {
+          // Always reflect the waiting state in DB + broadcast it for single-sided Start Fresh.
+          // Previously this only ran when dual_status === 'paired', which could be skipped
+          // if a single-phone session upgraded to dual-phone had stale/in-flight paired status
+          // (e.g. upgrade reload + partner join racing), causing the "Waiting for Partner" screen
+          // to never appear on the partner device even though Start Fresh was clearly pressed.
+          // Now we flip dual_status to 'waiting' whenever mode is dual-phone and the session
+          // isn't already ended.
+          if (s.rows[0]?.mode === 'dual-phone' && s.rows[0]?.dual_status !== 'ended') {
             await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [session_id]);
             if (io) {
-              io.to(session_id).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh' });
+              io.to(session_id).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone' });
             }
           }
         } catch (e) {}
