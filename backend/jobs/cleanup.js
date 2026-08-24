@@ -1,12 +1,10 @@
 const cron = require('node-cron');
 const db = require('../db');
+const { insertAnalyticsEvent, EVENT_TYPES } = require('../services/analyticsService');
 
 async function logAnalyticsEvent(event_type, event_data) {
   try {
-    await db.query(`
-      INSERT INTO analytics_events (event_type, event_data)
-      VALUES ($1, $2)
-    `, [event_type, event_data]);
+    await insertAnalyticsEvent({ event_type, event_data });
   } catch (err) {
     console.error('[CLEANUP] Failed to log analytics event:', err);
   }
@@ -32,10 +30,14 @@ function notifySessionTermination(sessionRows) {
   }
 }
 
-async function cleanupSessions() {
+async function cleanupSessions(source = 'scheduled_cron') {
   console.log('[CLEANUP] Starting session cleanup job...');
-
+  const jobStart = Date.now();
   try {
+    await insertAnalyticsEvent({
+      event_type: EVENT_TYPES.CLEANUP_JOB_STARTED,
+      event_data: { source, scheduled: source === 'scheduled_cron' }
+    }).catch(() => null);
     // Rule 1: Expire waiting dual sessions after 30 minutes
     const expiredWaiting = await db.query(`
       UPDATE sessions
@@ -46,11 +48,20 @@ async function cleanupSessions() {
         AND mode = 'dual-phone'
         AND created_at <= NOW() - INTERVAL '30 minutes'
         AND expires_at > NOW()
-      RETURNING session_id, table_token
+      RETURNING session_id, table_token, restaurant_id
     `);
     if (expiredWaiting && expiredWaiting.rowCount > 0) {
         console.log(`[CLEANUP] Expired ${expiredWaiting.rowCount} waiting dual sessions`);
         notifySessionTermination(expiredWaiting.rows);
+        for (const row of expiredWaiting.rows) {
+          await insertAnalyticsEvent({
+            session_id: row.session_id,
+            restaurant_id: row.restaurant_id || null,
+            table_token: row.table_token || null,
+            event_type: 'session_end',
+            event_data: { reason: 'dual_waiting_timeout_partner_never_joined', source: 'cleanup_job' }
+          });
+        }
     }
 
     // Rule 2: Clear unconfirmed Start Fresh intents after 5 minutes
@@ -65,10 +76,19 @@ async function cleanupSessions() {
         )
       AND fresh_intent_at <= NOW() - INTERVAL '5 minutes'
       AND dual_status != 'ended'
-      RETURNING session_id, table_token
+      RETURNING session_id, table_token, restaurant_id
     `);
     if (expiredFreshIntents && expiredFreshIntents.rowCount > 0) {
         console.log(`[CLEANUP] Cleared unconfirmed Start Fresh intents for ${expiredFreshIntents.rowCount} sessions`);
+        for (const row of expiredFreshIntents.rows) {
+          await insertAnalyticsEvent({
+            session_id: row.session_id,
+            restaurant_id: row.restaurant_id || null,
+            table_token: row.table_token || null,
+            event_type: 'start_fresh_cancelled_timeout',
+            event_data: { reason: 'unconfirmed_single_side_fresh_timeout', source: 'cleanup_job' }
+          });
+        }
     }
 
     // Rule 3: Extend sessions at midnight only if an active phone is present
@@ -89,6 +109,23 @@ async function cleanupSessions() {
     }
     
     // Rule 4: Hard delete sessions expired (midnight cleanup)
+    // First capture the rows we're about to delete so we can emit session_end events
+    const sessionsToDelete = await db.query(`
+      SELECT session_id, restaurant_id, table_token
+      FROM sessions
+      WHERE expires_at < NOW()
+    `);
+    if (sessionsToDelete && sessionsToDelete.rowCount > 0) {
+      for (const row of sessionsToDelete.rows) {
+        await insertAnalyticsEvent({
+          session_id: row.session_id,
+          restaurant_id: row.restaurant_id || null,
+          table_token: row.table_token || null,
+          event_type: 'session_end',
+          event_data: { reason: 'session_timeout_midnight_cleanup', source: 'cleanup_job' }
+        });
+      }
+    }
     // First delete dependent dual_groups to avoid foreign key violations
     await db.query(`
       DELETE FROM dual_groups
@@ -110,24 +147,43 @@ async function cleanupSessions() {
     const dSessionsCount = deletedSessions ? deletedSessions.rowCount : 0;
     const eFreshCount = expiredFreshIntents ? expiredFreshIntents.rowCount : 0;
     const eSessionsCount = extendedSessions ? extendedSessions.rowCount : 0;
+    const durationMs = Math.max(0, Date.now() - jobStart);
 
-    if (eWaitingCount > 0 || dSessionsCount > 0 || eFreshCount > 0 || eSessionsCount > 0) {
-        await logAnalyticsEvent('cleanup_job_completed', {
-            expired_waiting: eWaitingCount,
-            deleted_sessions: dSessionsCount,
-            expired_fresh: eFreshCount,
-            extended_sessions: eSessionsCount
-        });
-    }
+    await insertAnalyticsEvent({
+      event_type: EVENT_TYPES.CLEANUP_JOB_COMPLETED,
+      event_data: {
+        source,
+        scheduled: source === 'scheduled_cron',
+        duration_ms: durationMs,
+        expired_waiting: eWaitingCount,
+        deleted_sessions: dSessionsCount,
+        expired_fresh: eFreshCount,
+        extended_sessions: eSessionsCount
+      }
+    }).catch(() => null);
 
   } catch (err) {
     console.error('[CLEANUP] Error during cleanup:', err);
+    const durationMs = Math.max(0, Date.now() - jobStart);
+    try {
+      await insertAnalyticsEvent({
+        event_type: EVENT_TYPES.CLEANUP_JOB_ERROR,
+        event_data: {
+          source,
+          scheduled: source === 'scheduled_cron',
+          duration_ms: durationMs,
+          message: err && err.message ? String(err.message).slice(0, 800) : String(err || '').slice(0, 800),
+          stack: err && err.stack ? String(err.stack).slice(0, 2000) : null,
+          code: err && err.code ? String(err.code) : null
+        }
+      });
+    } catch (_) { /* swallow analytics failure */ }
   }
 }
 
 // Schedule: every minute so 5-minute rules do not drift by another full cron interval
 if (process.env.NODE_ENV !== 'test') {
-  cron.schedule('* * * * *', cleanupSessions);
+  cron.schedule('* * * * *', () => cleanupSessions('scheduled_cron'));
 }
 
 module.exports = { cleanupSessions };

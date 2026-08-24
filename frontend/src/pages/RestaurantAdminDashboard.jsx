@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { CreditCard } from 'lucide-react';
 import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
@@ -10,13 +11,10 @@ export default function RestaurantAdminDashboard() {
   const [profile, setProfile] = useState(null);
   const [profileEdit, setProfileEdit] = useState(false);
   const [editForm, setEditForm] = useState({});
-  const [tableNumber, setTableNumber] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   const [addressLookup, setAddressLookup] = useState({ loading: false, error: '', resolvedAddress: '' });
-  const [printPaperSize, setPrintPaperSize] = useState('letter');
-  const [printingTableId, setPrintingTableId] = useState(null);
   const printAreaRef = useRef(null);
   const addressLookupRequestRef = useRef(0);
 
@@ -29,12 +27,6 @@ export default function RestaurantAdminDashboard() {
   const [invoices, setInvoices] = useState([]);
   const [paymentGateway, setPaymentGateway] = useState(null);
   const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
-
-  // QR generation state
-  const [qrModal, setQrModal] = useState(false);
-  const [qrResults, setQrResults] = useState([]); // [{ id, table_number, url, qr }]
-  const [selectedTables, setSelectedTables] = useState([]); // selected table IDs
-  const [generatingQr, setGeneratingQr] = useState(false);
 
   useEffect(() => {
     if (!checking) {
@@ -156,7 +148,8 @@ export default function RestaurantAdminDashboard() {
       }
       if (plansRes.ok) {
         const plansData = await plansRes.json();
-        setPlans(Array.isArray(plansData?.plans) ? plansData.plans : []);
+        const rawPlans = Array.isArray(plansData?.plans) ? plansData.plans : [];
+        setPlans(rawPlans.map((p) => normalizePlanShape(p)).filter(Boolean));
         if (plansData?.billing_provider) {
           setBillingProvider(plansData.billing_provider);
         }
@@ -182,32 +175,6 @@ export default function RestaurantAdminDashboard() {
       }
     } catch (err) {
       console.error(err);
-    }
-  };
-
-  const handleRegisterTable = async (e) => {
-    e.preventDefault();
-    setError('');
-    setSuccess('');
-    setLoading(true);
-
-    try {
-      const res = await apiFetch('/tenant/tables', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ table_number: tableNumber })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to register table');
-
-      setSuccess(`Table ${data.table_number} registered!`);
-      setTableNumber('');
-      fetchData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -312,194 +279,6 @@ export default function RestaurantAdminDashboard() {
       setBillingError(err.message);
     } finally {
       setBillingActionLoading(false);
-    }
-  };
-
-  // ── QR Code Generation ──────────────────────────────────────────────────────────
-  const openQrModal = () => {
-    setQrResults([]);
-    setSelectedTables(tables.map(t => t.id));
-    setQrModal(true);
-  };
-
-  const toggleTableSelection = (id) => {
-    setSelectedTables(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    );
-  };
-
-  const generateQrCodes = async () => {
-    if (selectedTables.length === 0) return;
-    setGeneratingQr(true);
-    try {
-      const selectedNumbers = tables
-        .filter(t => selectedTables.includes(t.id))
-        .map(t => t.table_number);
-
-      const res = await apiFetch('/tenant/qr', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ tables: selectedNumbers })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to generate QR codes');
-      setQrResults(data);
-    } catch (err) { setError(err.message); }
-    finally { setGeneratingQr(false); }
-  };
-
-  const downloadQr = (result) => {
-    const link = document.createElement('a');
-    link.href = result.qr;
-    link.download = `qr-table-${result.table_number}.png`;
-    link.click();
-  };
-
-  const handlePrint = async (table) => {
-    setError('');
-    setSuccess('');
-    setPrintingTableId(table.id);
-
-    try {
-      const res = await apiFetch('/tenant/qr', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ tables: [table.table_number] })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate QR code');
-      }
-
-      const qrEntry = Array.isArray(data) ? data[0] : null;
-      if (!qrEntry?.qr) {
-        throw new Error('QR code data is missing');
-      }
-
-      const paperSizeCss = printPaperSize === 'a4'
-        ? 'A4'
-        : printPaperSize === 'a5'
-          ? 'A5'
-          : 'Letter';
-
-      const restaurantName = profile?.name || 'Catalyst';
-      const printWindow = window.open('', '_blank');
-      const html = `
-      <html>
-        <head>
-          <title>Print QR - Table ${table.table_number}</title>
-          <style>
-            @page {
-              size: ${paperSizeCss};
-              margin: 14mm;
-            }
-            @media print {
-              body {
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-              }
-            }
-            body {
-              font-family: system-ui, -apple-system, sans-serif;
-              margin: 0;
-              padding: 0;
-              color: #1e293b;
-              background: #ffffff;
-              display: flex;
-              justify-content: center;
-              align-items: center;
-              min-height: 100vh;
-            }
-            .card {
-              max-width: 320px;
-              margin: 0 auto;
-              border: 2px dashed rgba(148, 163, 184, 0.8);
-              border-radius: 24px;
-              padding: 32px;
-              box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-            }
-            .restaurant {
-              font-size: 14px;
-              font-weight: 800;
-              color: #0f172a;
-              text-transform: uppercase;
-              letter-spacing: 0.14em;
-              margin-bottom: 14px;
-            }
-            .logo {
-              font-size: 24px;
-              font-weight: 800;
-              margin-bottom: 24px;
-              letter-spacing: -0.025em;
-            }
-            .logo span {
-              color: #6366f1;
-            }
-            .qr-frame {
-              width: 200px;
-              height: 200px;
-              background: #f8fafc;
-              border: 1px solid #e2e8f0;
-              margin: 0 auto 24px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              border-radius: 16px;
-              position: relative;
-              overflow: hidden;
-            }
-            .qr-frame img {
-              width: 100%;
-              height: 100%;
-              object-fit: cover;
-            }
-            .table-label {
-              font-size: 14px;
-              font-weight: 700;
-              text-transform: uppercase;
-              letter-spacing: 0.1em;
-              color: #64748b;
-              margin-bottom: 4px;
-            }
-            .table-number {
-              font-size: 32px;
-              font-weight: 900;
-              margin-bottom: 16px;
-            }
-            .instruction {
-              font-size: 12px;
-              color: #94a3b8;
-              line-height: 1.5;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="restaurant">${restaurantName}</div>
-            <div class="logo">Table<span>-Talk</span></div>
-            <div class="qr-frame">
-              <img src="${qrEntry.qr}" alt="QR code for table ${table.table_number}" />
-            </div>
-            <div class="table-label">Table</div>
-            <div class="table-number">${table.table_number}</div>
-            <div class="instruction">
-              Scan with your phone camera to join<br/>
-              the conversational game at this table.
-            </div>
-          </div>
-          <script>
-            window.onload = function() { window.print(); window.close(); }
-          </script>
-        </body>
-      </html>
-    `;
-      printWindow.document.write(html);
-      printWindow.document.close();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPrintingTableId(null);
     }
   };
 
@@ -644,7 +423,7 @@ export default function RestaurantAdminDashboard() {
           {isTrial && !canGenerateQr && (
             <div className="mb-6 rounded-2xl border border-amber-500/40 bg-[linear-gradient(135deg,rgba(251,191,36,0.14),rgba(251,146,60,0.06))] p-5">
               <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
-                <div>
+                <div className="flex-1">
                   <h3 className="text-base font-extrabold text-amber-200">You are in your trial period.</h3>
                   <p className="text-sm text-slate-300 mt-1.5 max-w-2xl">
                     Trial QR codes and tables are generated and delivered by the Catalyst Super Admin team. If you haven&apos;t received them yet, contact your onboarding contact or support.
@@ -656,27 +435,44 @@ export default function RestaurantAdminDashboard() {
                   )}
                 </div>
                 <div className="flex flex-col gap-2 w-full lg:w-64 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleCheckout('starter')}
-                    disabled={billingActionLoading || billingProvider !== 'stripe'}
-                    className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
-                  >
-                    Upgrade to Starter
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCheckout('premium')}
-                    disabled={billingActionLoading || billingProvider !== 'stripe'}
-                    className="rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
-                  >
-                    Upgrade to Premium
-                  </button>
-                  {billingProvider !== 'stripe' && (
-                    <div className="text-[11px] text-slate-400">
-                      Manual billing mode — contact support to process your upgrade.
-                    </div>
-                  )}
+                  {(() => {
+                    const fallbackB = [
+                      { key: 'starter', monthly_amount_cents: 7900 },
+                      { key: 'premium', monthly_amount_cents: 24900 }
+                    ];
+                    const planListB = plans.length > 0 ? plans : fallbackB;
+                    const starterB = normalizePlanShape(planListB.find((p) => (p.key || '').toLowerCase() === 'starter'));
+                    const premiumB = normalizePlanShape(planListB.find((p) => (p.key || '').toLowerCase() === 'premium'));
+                    return (
+                      <>
+                        {starterB && billingProvider === 'stripe' && (
+                          <button
+                            type="button"
+                            onClick={() => handleCheckout('starter')}
+                            disabled={billingActionLoading}
+                            className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
+                          >
+                            Upgrade to Starter · {formatPlanPrice(starterB)}
+                          </button>
+                        )}
+                        {premiumB && billingProvider === 'stripe' && (
+                          <button
+                            type="button"
+                            onClick={() => handleCheckout('premium')}
+                            disabled={billingActionLoading}
+                            className="rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-40"
+                          >
+                            Upgrade to Premium · {formatPlanPrice(premiumB)}
+                          </button>
+                        )}
+                        {billingProvider !== 'stripe' && (
+                          <div className="text-[11px] text-slate-400">
+                            Manual billing mode — contact support to process your upgrade.
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -690,6 +486,146 @@ export default function RestaurantAdminDashboard() {
               </div>
             </div>
           )}
+
+          {(() => {
+            const fallbackProfilePlans = [
+              { key: 'trial', name: 'Trial', monthly_amount_cents: 0, interval: 'trial' },
+              { key: 'starter', name: 'Starter', monthly_amount_cents: 7900, interval: 'month' },
+              { key: 'premium', name: 'Premium', monthly_amount_cents: 24900, interval: 'month' },
+              { key: 'enterprise', name: 'Enterprise', monthly_amount_cents: 0, interval: 'month' }
+            ];
+            const planListP = plans.length > 0 ? plans : fallbackProfilePlans;
+            const activePlan = normalizePlanShape(planListP.find((p) => (p.key || '').toLowerCase() === String(currentPlan || '').toLowerCase()));
+            const nextUpgrade = !isTrial && billingProvider === 'stripe'
+              ? (currentPlan === 'starter' ? normalizePlanShape(planListP.find((p) => p.key === 'premium')) : null)
+              : (isTrial && billingProvider === 'stripe' ? normalizePlanShape(planListP.find((p) => p.key === 'starter')) : null);
+            const planAccentColor = {
+              trial: 'from-amber-500/20 to-orange-500/10 border-amber-500/30 text-amber-200',
+              starter: 'from-cyan-500/20 to-blue-500/10 border-cyan-500/30 text-cyan-200',
+              premium: 'from-violet-500/20 to-fuchsia-500/10 border-violet-500/30 text-violet-200',
+              enterprise: 'from-emerald-500/20 to-teal-500/10 border-emerald-500/30 text-emerald-200'
+            }[String(currentPlan || 'trial')] || 'from-cyan-500/20 to-blue-500/10 border-cyan-500/30 text-cyan-200';
+            return (
+              <div className="mb-6 rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-950/90 to-slate-900/60 p-6 backdrop-blur-md">
+                <div className="flex flex-wrap items-start justify-between gap-5 mb-5">
+                  <div className="flex items-start gap-4">
+                    <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${planAccentColor.split(' ').slice(0, 2).join(' ')} border ${planAccentColor.split(' ')[2]} flex items-center justify-center shrink-0`}>
+                      <CreditCard className="w-7 h-7 text-white/90" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-extrabold uppercase tracking-[0.24em] text-slate-500 mb-1">My Subscription</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-2xl font-extrabold text-white tracking-tight">
+                          {activePlan?.name || formatPlanLabel(currentPlan)} Plan
+                        </h3>
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-[0.18em] border ${
+                          computedBillingStatus === 'active'
+                            ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30'
+                            : computedBillingStatus === 'trialing'
+                              ? 'bg-amber-500/15 text-amber-200 border-amber-500/30'
+                              : computedBillingStatus === 'past_due' || computedBillingStatus === 'unpaid'
+                                ? 'bg-rose-500/15 text-rose-200 border-rose-500/30'
+                                : computedBillingStatus === 'suspended'
+                                  ? 'bg-rose-500/15 text-rose-200 border-rose-500/30'
+                                  : 'bg-slate-700/50 text-slate-300 border-slate-600'
+                        }`}>
+                          {formatStatusLabel(computedBillingStatus)}
+                        </span>
+                      </div>
+                      <div className="text-sm text-slate-400 mt-1.5 max-w-xl">
+                        {profile?.name || 'Your restaurant'} · Billing via {billingProvider === 'stripe' ? 'Stripe Checkout' : 'Manual invoicing'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-1.5">Recurring Price</div>
+                    <div className="text-3xl font-black text-white tracking-tight">
+                      {activePlan ? formatPlanPrice(activePlan) : '—'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {activePlan?.interval === 'trial' ? 'Complimentary trial access' : activePlan?.interval === 'year' ? 'Billed annually' : activePlan?.interval === 'one_time' ? 'One-time purchase' : 'Billed monthly · Cancel anytime'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-slate-500 mb-1.5">Plan Tier</div>
+                    <div className="text-lg font-bold text-white">{activePlan?.name || formatPlanLabel(currentPlan)}</div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {currentPlan === 'trial' ? 'Evaluation access' : currentPlan === 'starter' ? 'For smaller venues' : currentPlan === 'premium' ? 'For high-volume venues' : 'Custom enterprise terms'}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-slate-500 mb-1.5">Next Billing</div>
+                    <div className="text-lg font-bold text-white">
+                      {profile?.subscription_current_period_end
+                        ? new Date(profile.subscription_current_period_end).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                        : profile?.trial_ends_at
+                          ? new Date(profile.trial_ends_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                          : 'Contact support'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {profile?.subscription_cancel_at_period_end ? 'Cancels on next renewal' : profile?.trial_ends_at ? 'Trial ends on this date' : 'Your subscription renews here'}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-slate-500 mb-1.5">Tables Capacity</div>
+                    <div className="text-lg font-bold text-white">
+                      {typeof profile?.max_tables === 'number' ? `${profile.max_tables} tables` : 'Unlimited'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {typeof profile?.max_monthly_sessions === 'number' ? `${profile.max_monthly_sessions.toLocaleString()} sessions/mo cap` : 'Unlimited sessions per month'}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-slate-500 mb-1.5">Support Tier</div>
+                    <div className="text-lg font-bold text-white">{profile?.support_tier || 'Standard'}</div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {Boolean(profile?.can_access_support) ? 'Access to ticketing & chat support' : 'Self-serve resources only'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-800">
+                  <div className="text-xs text-slate-400">
+                    {isTrial
+                      ? (billingProvider === 'stripe' ? 'Upgrade to keep Table-Talk active after your trial ends. No card required for trial access.' : 'Contact your onboarding contact to activate paid billing.')
+                      : (profile?.stripe_subscription_id ? 'Changes to plan pricing and entitlements set by the platform take effect at your next renewal.' : 'Complete a checkout to link Stripe billing and manage your subscription.')}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {nextUpgrade && billingProvider === 'stripe' && (
+                      <button
+                        type="button"
+                        onClick={() => handleCheckout(nextUpgrade.key)}
+                        disabled={billingActionLoading}
+                        className="rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-50 shadow-lg shadow-violet-500/20"
+                      >
+                        {isTrial ? `Upgrade to ${nextUpgrade.name || 'Starter'} · ${formatPlanPrice(nextUpgrade)}` : `Upgrade to ${nextUpgrade.name || 'Premium'} · ${formatPlanPrice(nextUpgrade)}`}
+                      </button>
+                    )}
+                    {profile?.stripe_customer_id && billingProvider === 'stripe' && (
+                      <button
+                        type="button"
+                        onClick={handleManageBilling}
+                        disabled={billingActionLoading}
+                        className="rounded-xl border border-slate-700 bg-slate-900/70 hover:bg-slate-800 text-slate-200 text-sm font-bold py-2.5 px-4 transition-all disabled:opacity-50"
+                      >
+                        Manage Billing (Stripe)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => fetchData()}
+                      className="rounded-xl border border-slate-800 bg-slate-900/40 hover:bg-slate-800/70 text-slate-300 text-xs font-bold uppercase tracking-[0.18em] py-2.5 px-3.5 transition-all"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-1 2xl:grid-cols-[1.1fr_0.9fr] gap-6 mb-6">
             <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
@@ -723,58 +659,95 @@ export default function RestaurantAdminDashboard() {
                 </div>
               </div>
               <div className="space-y-3">
-                {(plans.length ? plans : [{ key: 'starter', name: 'Starter', tagline: 'Core venues', monthly_amount: 4900, currency: 'USD', interval: 'month', features: ['Unlimited single-phone sessions', 'Up to 20 tables', 'Analytics dashboard'], defaults: {} }, { key: 'premium', name: 'Premium', tagline: 'Growing venues', monthly_amount: 14900, currency: 'USD', interval: 'month', features: ['Everything in Starter', 'Dual-phone sessions', 'Custom QR branding'], defaults: {} }]).map((plan) => (
-                  <div key={plan.key} className={`rounded-2xl border p-4 transition-all ${
-                    currentPlan === plan.key ? 'border-violet-500/50 bg-violet-500/5' : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
-                  }`}>
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-[0.18em] border ${
-                            plan.key === 'starter'
-                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
-                              : plan.key === 'premium'
-                                ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
-                                : plan.key === 'enterprise'
-                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                {(() => {
+                  const fallback = [
+                    {
+                      key: 'starter',
+                      name: 'Starter',
+                      tagline: 'Perfect for small venues getting started with Catalyst table conversations.',
+                      monthly_amount_cents: 7900,
+                      currency: 'USD',
+                      interval: 'month',
+                      features: ['Up to 20 tables', 'Up to 5,000 sessions/month', 'Single & Dual phone modes', 'Restaurant admin can generate standard QR codes', 'CSV analytics export', 'Standard email support'],
+                      defaults: { max_tables: 20, max_monthly_sessions: 5000 }
+                    },
+                    {
+                      key: 'premium',
+                      name: 'Premium',
+                      tagline: 'Full-featured for larger restaurants, multi-locations, and branded QR prints.',
+                      monthly_amount_cents: 24900,
+                      currency: 'USD',
+                      interval: 'month',
+                      features: ['Up to 200 tables', 'Unlimited sessions/month', 'Custom QR branding (print-ready logos & themes)', 'Priority email + chat support', 'Advanced analytics exports', 'Dual phone + smart reconnect'],
+                      defaults: { max_tables: 200, max_monthly_sessions: null }
+                    }
+                  ];
+                  const plansList = plans.length > 0 ? plans : fallback;
+                  const planMap = new Map(plansList.map((raw) => {
+                    const p = normalizePlanShape(raw);
+                    return p ? [p.key, p] : null;
+                  }).filter(Boolean));
+                  const starter = planMap.get('starter');
+                  const premium = planMap.get('premium');
+                  return (
+                    <>
+                      {plansList.map((raw) => {
+                        const plan = normalizePlanShape(raw);
+                        if (!plan) return null;
+                        return (
+                          <div key={plan.key} className={`rounded-2xl border p-4 transition-all ${
+                            currentPlan === plan.key ? 'border-violet-500/50 bg-violet-500/5' : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
                           }`}>
-                            {plan.name}
-                          </span>
-                          {currentPlan === plan.key && (
-                            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Current</span>
-                          )}
-                        </div>
-                        <div className="text-xs text-slate-400">{plan.tagline || ''}</div>
-                        <div className="mt-2 text-sm text-slate-300 line-clamp-2">
-                          {Array.isArray(plan.features) ? plan.features.slice(0, 3).join(' · ') : ''}
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-end gap-2 shrink-0">
-                        <div className="text-right">
-                          <div className="text-xl font-extrabold text-white">
-                            {(plan?.currency || 'USD')} {typeof plan?.monthly_amount === 'number'
-                              ? (plan.monthly_amount / 100).toFixed(2)
-                              : plan?.monthly_amount ?? '—'}
+                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-[0.18em] border ${
+                                    plan.key === 'starter'
+                                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                      : plan.key === 'premium'
+                                        ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+                                        : plan.key === 'enterprise'
+                                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                          : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                  }`}>
+                                    {plan.name}
+                                  </span>
+                                  {currentPlan === plan.key && (
+                                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Current</span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-400">{plan.tagline || plan.description || ''}</div>
+                                <div className="mt-2 text-sm text-slate-300 line-clamp-2">
+                                  {Array.isArray(plan.features) ? plan.features.slice(0, 3).join(' · ') : ''}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-2 shrink-0">
+                                <div className="text-right">
+                                  <div className="text-xl font-extrabold text-white">
+                                    {formatPlanPrice(plan)}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 uppercase tracking-wider">per {plan?.interval || 'month'}</div>
+                                </div>
+                                {plan.key !== currentPlan ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCheckout(plan.key)}
+                                    disabled={billingActionLoading || billingProvider !== 'stripe'}
+                                    className="rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white text-xs font-bold py-2 px-4 transition-all disabled:opacity-40 whitespace-nowrap"
+                                  >
+                                    {billingProvider === 'stripe' ? `Upgrade to ${plan.name}` : 'Contact support'}
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">✓ Active</span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          <div className="text-[11px] text-slate-500 uppercase tracking-wider">per {plan?.interval || 'month'}</div>
-                        </div>
-                        {plan.key !== currentPlan ? (
-                          <button
-                            type="button"
-                            onClick={() => handleCheckout(plan.key)}
-                            disabled={billingActionLoading || billingProvider !== 'stripe'}
-                            className="rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white text-xs font-bold py-2 px-4 transition-all disabled:opacity-40 whitespace-nowrap"
-                          >
-                            {billingProvider === 'stripe' ? `Upgrade to ${plan.name}` : 'Contact support'}
-                          </button>
-                        ) : (
-                          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">✓ Active</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                        );
+                      })}
+                    </>
+                  );
+                })()}
                 <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <div>
                     <div className="text-sm font-bold text-emerald-200">Need Enterprise?</div>
@@ -982,129 +955,39 @@ export default function RestaurantAdminDashboard() {
         )}
       </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Table Management List */}
-        <div className="lg:col-span-2 space-y-6">
+      <section>
+        <div className="lg:col-span-3 space-y-6">
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl backdrop-blur-md">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold">Registered Tables</h2>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/40 px-3 py-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Paper</span>
-                  <select
-                    value={printPaperSize}
-                    onChange={(event) => setPrintPaperSize(event.target.value)}
-                    className="bg-transparent text-xs font-semibold text-slate-200 focus:outline-none"
-                  >
-                    <option value="letter">Letter</option>
-                    <option value="a4">A4</option>
-                    <option value="a5">A5</option>
-                  </select>
-                </div>
-                {tables.length > 0 && (
-                  canGenerateQr ? (
-                    <button
-                      onClick={openQrModal}
-                      className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
-                    >
-                      <span>📱</span> Generate QR Codes
-                    </button>
-                  ) : (
-                    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-[11px] font-semibold text-amber-200">
-                      Trial QRs provided by Super Admin
-                    </div>
-                  )
-                )}
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-xl font-bold">Registered Tables</h2>
+                <p className="text-xs text-slate-400 mt-1 max-w-xl">Tables and QR codes are managed and delivered by the Catalyst Super Admin team during onboarding and after plan changes.</p>
+              </div>
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/10 px-3 py-1.5 text-[11px] font-semibold text-indigo-200 shrink-0 self-start">
+                SA Provisioned Only
               </div>
             </div>
-            {!canGenerateQr && (
-              <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/90">
-                During the trial period, QR codes are issued by the Catalyst Super Admin team. Once provisioned, they will appear here and you can print them. Upgrade to a paid plan to self-serve QR generation.
+            <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/90">
+              Need new tables or updated printable QR files? Contact your Catalyst Super Admin onboarding contact or support, and they will provision and deliver the files directly.
+            </div>
+            {tables.length === 0 ? (
+              <div className="py-12 text-center text-slate-500">
+                No tables registered yet.
               </div>
-            )}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {tables.map(t => (
-                <div key={t.id} className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
-                  <div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {tables.map(t => (
+                  <div key={t.id} className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5">
                     <span className="text-xs font-bold tracking-wider text-indigo-400 uppercase">Table Number</span>
                     <h3 className="text-2xl font-black text-white mt-0.5">{t.table_number}</h3>
-                    <p className="text-[10px] text-slate-500 truncate max-w-[200px] mt-1">{t.qr_code_url}</p>
+                    <p className="text-[10px] text-slate-500 truncate mt-1" title={t.qr_code_url}>{t.qr_code_url}</p>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handlePrint(t)}
-                      disabled={printingTableId === t.id}
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition-all hover:shadow-lg hover:shadow-indigo-500/20 flex items-center gap-1.5"
-                    >
-                      <span>🖨️</span> Print QR
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {tables.length === 0 && (
-                <div className="col-span-2 py-12 text-center text-slate-500">No tables registered yet.</div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Register Table form */}
-        <div>
-          <div className="bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl backdrop-blur-md sticky top-6">
-            <h2 className="text-xl font-bold mb-4">Register New Table</h2>
-            <p className="text-xs text-slate-400 mb-6">
-              {canGenerateQr
-                ? 'Create a table mapping to automatically generate a conversational QR link'
-                : 'Trial tables are created and provisioned by the Catalyst Super Admin team. Upgrade to self-serve.'}
-            </p>
-            {!canGenerateQr && (
-              <div className="mb-5 rounded-2xl border border-amber-500/40 bg-[linear-gradient(135deg,rgba(251,191,36,0.14),rgba(251,146,60,0.06))] px-4 py-4">
-                <div className="text-sm font-extrabold text-amber-200 mb-1">Registration locked during trial</div>
-                <div className="text-xs text-slate-300">
-                  Your onboarding contact will provision your initial tables and QR codes. After trial, you can add and regenerate tables at any time.
-                </div>
+                ))}
               </div>
             )}
-            <form onSubmit={handleRegisterTable} className="space-y-4">
-              {error && (
-                <div className="bg-rose-500/20 border border-rose-500/50 text-rose-200 text-xs py-2 px-3 rounded-lg text-center">
-                  ⚠️ {error}
-                </div>
-              )}
-              {success && (
-                <div className="bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 text-xs py-2 px-3 rounded-lg text-center">
-                  ✅ {success}
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Table Number / Label</label>
-                <input
-                  type="text"
-                  required
-                  disabled={!canGenerateQr}
-                  value={tableNumber}
-                  onChange={(e) => setTableNumber(e.target.value)}
-                  placeholder="e.g. 5A, 12, Terrace-1"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-all text-sm disabled:opacity-60 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading || !canGenerateQr}
-                className="w-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm mt-6 disabled:cursor-not-allowed"
-              >
-                {loading
-                  ? 'Registering...'
-                  : canGenerateQr
-                    ? 'Register Table'
-                    : 'Registration locked during trial'}
-              </button>
-            </form>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Profile Edit Modal */}
       <AnimatePresence>
@@ -1169,117 +1052,6 @@ export default function RestaurantAdminDashboard() {
         )}
       </AnimatePresence>
 
-      {/* QR Code Generation Modal */}
-      <AnimatePresence>
-        {qrModal && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/70 backdrop-blur-sm">
-            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-              className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h3 className="text-xl font-bold">Generate QR Codes</h3>
-                  <p className="text-xs text-slate-400 mt-1">Select tables and generate downloadable QR images</p>
-                </div>
-                <button onClick={() => setQrModal(false)} className="text-slate-500 hover:text-white text-2xl leading-none">&times;</button>
-              </div>
-
-              {!qrResults.length ? (
-                <>
-                  {/* Table selection */}
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Select Tables</p>
-                  <div className="flex gap-2 flex-wrap mb-4">
-                    <button
-                      onClick={() => setSelectedTables(tables.map(t => t.id))}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white border border-slate-700 transition-all"
-                    >
-                      Select All
-                    </button>
-                    <button
-                      onClick={() => setSelectedTables([])}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition-all"
-                    >
-                      Clear
-                    </button>
-                    <span className="text-xs text-slate-500 self-center ml-1">
-                      {selectedTables.length} of {tables.length} selected
-                    </span>
-                  </div>
-                  <div className="space-y-2 mb-6 max-h-48 overflow-y-auto">
-                    {tables.map(t => (
-                      <label key={t.id} className={`flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-all ${
-                        selectedTables.includes(t.id)
-                          ? 'bg-indigo-600/10 border-indigo-500/40'
-                          : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                      }`}>
-                        <input
-                          type="checkbox"
-                          checked={selectedTables.includes(t.id)}
-                          onChange={() => toggleTableSelection(t.id)}
-                          className="accent-indigo-500 w-4 h-4"
-                        />
-                        <span className="text-sm font-bold text-white">{t.table_number}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => setQrModal(false)}
-                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 px-4 rounded-xl transition-all text-sm">
-                      Cancel
-                    </button>
-                    <button onClick={generateQrCodes} disabled={selectedTables.length === 0 || generatingQr}
-                      className="flex-1 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 text-sm">
-                      {generatingQr ? 'Generating...' : `Generate ${selectedTables.length} QR Code${selectedTables.length !== 1 ? 's' : ''}`}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  {/* QR results grid */}
-                  <div className="flex justify-between items-center mb-4">
-                    <p className="text-sm font-bold text-emerald-400">{qrResults.length} QR codes generated</p>
-                    <button
-                      onClick={() => { setQrResults([]); }}
-                      className="text-xs text-indigo-400 hover:text-indigo-300 font-bold transition-colors"
-                    >
-                      ← Generate More
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 max-h-[60vh] overflow-y-auto mb-6">
-                    {qrResults.map(r => (
-                      <div key={r.id} className="bg-white rounded-2xl p-4 flex flex-col items-center text-center">
-                        <p className="text-xs font-black text-slate-800 mb-2 tracking-wider uppercase">Table</p>
-                        <p className="text-lg font-black text-slate-900 mb-3">{r.table_number}</p>
-                        <img src={r.qr} alt={`QR for ${r.table_number}`} className="w-full rounded-xl" />
-                        <div className="mt-2 flex gap-1 w-full">
-                          <button
-                            onClick={() => downloadQr(r)}
-                            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 rounded-xl transition-all"
-                          >
-                            Download PNG
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => setQrModal(false)}
-                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 px-4 rounded-xl transition-all text-sm">
-                      Done
-                    </button>
-                    <button
-                      onClick={() => qrResults.forEach(r => downloadQr(r))}
-                      className="flex-1 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold py-3 px-4 rounded-xl transition-all text-sm"
-                    >
-                      Download All as PNG
-                    </button>
-                  </div>
-                </>
-              )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
@@ -1330,6 +1102,42 @@ function EntitlementChip({ label, enabled, value }) {
 function formatPlanLabel(plan) {
   const map = { trial: 'Trial', starter: 'Starter', premium: 'Premium', enterprise: 'Enterprise', free: 'Free', pro: 'Pro' };
   return map[plan] || 'Trial';
+}
+
+function normalizePlanShape(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cents =
+    typeof raw.monthly_amount_cents === 'number' && Number.isFinite(raw.monthly_amount_cents)
+      ? raw.monthly_amount_cents
+      : typeof raw.monthly_amount === 'number' && Number.isFinite(raw.monthly_amount)
+        ? raw.monthly_amount
+        : null;
+  return {
+    ...raw,
+    key: String(raw.key || raw.plan_key || ''),
+    name: String(raw.name || '').trim() || formatPlanLabel(raw.key),
+    description: raw.description || raw.tagline || '',
+    tagline: raw.tagline || raw.description || '',
+    monthly_amount_cents: cents,
+    monthly_amount: cents,
+    currency: String(raw.currency || 'USD').toUpperCase(),
+    interval: String(raw.interval || 'month'),
+    public: typeof raw.public === 'boolean' ? raw.public : true,
+    features: Array.isArray(raw.features) ? raw.features : [],
+    defaults: raw.defaults || {}
+  };
+}
+
+function formatPlanPrice(plan) {
+  const p = normalizePlanShape(plan);
+  if (!p) return '—';
+  const cents = Number(p.monthly_amount_cents);
+  if (!Number.isFinite(cents) || cents === 0) return '$0';
+  const currency = String(p.currency || 'USD').toUpperCase();
+  const symbol = currency === 'USD' ? '$' : `${currency} `;
+  const amount = (cents / 100).toFixed(Number.isInteger(cents / 100) ? 0 : 2);
+  const interval = p.interval === 'month' ? '/mo' : '';
+  return `${symbol}${amount}${interval}`;
 }
 
 function formatStatusLabel(status) {

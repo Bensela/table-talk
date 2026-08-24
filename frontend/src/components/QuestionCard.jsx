@@ -1,13 +1,13 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from './ui/Button';
 
-export default function QuestionCard({ 
-  question, 
-  onReveal, 
-  isRevealed, 
-  onNext, 
-  waitingForPartner, 
+export default function QuestionCard({
+  question,
+  onReveal,
+  isRevealed,
+  onNext,
+  waitingForPartner,
   mode,
   socket,
   sessionId,
@@ -16,245 +16,211 @@ export default function QuestionCard({
   partnerIsReady = false,
   feedbackMessage = null,
   conversationStarted = false,
-  onAdvanceTurn
+  onAdvanceTurn,
+  nextIntentCount = 0,
+  advanceIntentCount = 0
 }) {
   if (!question) {
     return (
-        <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto text-center p-8">
-            <h2 className="text-xl text-gray-400 font-medium">Loading question...</h2>
-        </div>
+      <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto text-center p-8">
+        <h2 className="text-xl text-[#6E6A60] font-medium">Loading question...</h2>
+      </div>
     );
   }
 
-  const [localRevealed, setLocalRevealed] = useState(isRevealed);
-  
-  // Dual Mode State (New Flow)
-  const [localNextIntent, setLocalNextIntent] = useState(false);
-  const [fadeApplied, setFadeApplied] = useState(false);
-  
-  // Legacy states (kept for compatibility if needed, but mostly unused now)
-  const [conversationState, setConversationState] = useState(false); // Can map to fadeApplied
+  const isDualMode = mode === 'dual-phone' || mode === 'dual';
+  const isMultipleChoice = question.question_type === 'multiple-choice';
+  const questionHasHint = Boolean(
+    !isMultipleChoice &&
+    question.answer_text &&
+    String(question.answer_text).trim().length > 0
+  );
 
-  // Multiple Choice State
+  // ---------- Open-Ended Hint Reveal State + Dual Sync ----------
+  const [localRevealed, setLocalRevealed] = useState(isRevealed);
+  const syncHintRevealToPartner = useRef(true);
+
+  useEffect(() => {
+    setLocalRevealed(isRevealed);
+  }, [isRevealed, question?.question_id]);
+
+  useEffect(() => {
+    if (!socket || !isDualMode) return;
+    const onHintTap = () => {
+      syncHintRevealToPartner.current = false;
+      setLocalRevealed(true);
+      onReveal?.();
+      setTimeout(() => { syncHintRevealToPartner.current = true; }, 50);
+    };
+    socket.on('hint_tap_revealed', onHintTap);
+    return () => socket.off('hint_tap_revealed', onHintTap);
+  }, [socket, isDualMode, onReveal]);
+
+  useEffect(() => {
+    if (!isDualMode) return;
+    const onCross = () => {
+      syncHintRevealToPartner.current = false;
+      setLocalRevealed(true);
+      onReveal?.();
+      setTimeout(() => { syncHintRevealToPartner.current = true; }, 50);
+    };
+    window.addEventListener('tt:hint_revealed_sync', onCross);
+    return () => window.removeEventListener('tt:hint_revealed_sync', onCross);
+  }, [isDualMode, onReveal]);
+
+  const handleHintTap = () => {
+    if (localRevealed || isMultipleChoice || !questionHasHint) return;
+    setLocalRevealed(true);
+    onReveal?.();
+    if (isDualMode && syncHintRevealToPartner.current && socket?.connected) {
+      socket.emit('hint_tap_reveal', { sessionId, question_id: question.question_id });
+    }
+  };
+
+  // ---------- Multiple Choice: Selection + Submitted ----------
   const [selectedOption, setSelectedOption] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [partnerSelections, setPartnerSelections] = useState(partnerSelectionsData);
-  const [showReadyButton, setShowReadyButton] = useState(false);
-  const normalizedOptions = useMemo(() => normalizeQuestionOptions(question?.options), [question?.options]);
+  const normalizedOptions = useMemo(
+    () => normalizeQuestionOptions(question?.options),
+    [question?.options]
+  );
 
-  // Sync prop changes (if parent gets data first/later)
   useEffect(() => {
     if (partnerSelectionsData && Object.keys(partnerSelectionsData).length > 0) {
       setPartnerSelections(partnerSelectionsData);
     }
   }, [partnerSelectionsData]);
 
-  // Memoize partner selection logic to prevent re-render loops and unnecessary recalculations
-  const partnerPickedText = useMemo(() => {
-    if (!localRevealed || !partnerSelections) return '...';
-
-    // Logic to find partner's selection
-    const myIdStr = String(userId);
-    const mySelectionStr = String(selectedOption);
-
-    // 1. Try strict ID match (Best)
-    // IMPORTANT: The backend sanitizes undefined to null, so the value might be null if not found.
-    const partnerEntry = Object.entries(partnerSelections).find(([uid]) => String(uid) !== myIdStr);
-    
-    let pAuthId = null;
-    
-    if (partnerEntry) {
-        // partnerEntry[1] is the value (option ID)
-        pAuthId = partnerEntry[1];
-    } else {
-        // 2. Fallback: Value Inference (If IDs are messed up)
-        const allSelectedIds = Object.values(partnerSelections);
-        
-        // If we have distinct values, find the one that isn't mine
-        // Ensure we filter out nulls first
-        const validIds = allSelectedIds.filter(v => v !== null);
-        
-        // Find a value that is NOT my selection
-        const otherValue = validIds.find(val => String(val) !== mySelectionStr);
-        
-        if (otherValue) {
-            pAuthId = otherValue;
-        } else if (validIds.length >= 2) {
-            // If all valid values are the same (and we have at least 2), then partner picked the same
-            pAuthId = selectedOption;
-        }
-    }
-
-    // 4. Find text
-    // Fallback to "..." if text not found, but if we have a valid ID but no text, show "Unknown"
-    // This helps distinguish between "No ID found" vs "ID found but no text match"
-    const text = normalizedOptions.find((option) => String(option.id) === String(pAuthId))?.text;
-    
-    // Final fallback: if pAuthId exists but no text match, show ID for debugging? 
-    // Or better: check if pAuthId is null
-    if (!pAuthId) return '...';
-    
-    return text || '...';
-  }, [localRevealed, partnerSelections, userId, selectedOption, normalizedOptions]);
-
   useEffect(() => {
-    setLocalRevealed(isRevealed);
-  }, [isRevealed, question?.question_id]);
+    if (!socket || !isDualMode) return;
+    const onRevealAnswers = ({ selections }) => {
+      if (selections && Object.keys(selections).length > 0) {
+        setPartnerSelections(selections);
+      }
+      setLocalRevealed(true);
+    };
+    socket.on('reveal_answers', onRevealAnswers);
+    return () => socket.off('reveal_answers', onRevealAnswers);
+  }, [socket, isDualMode, userId]);
 
-  // Delay "I'm Ready" button for Multiple Choice to allow viewing results
+  const [showReadyButton, setShowReadyButton] = useState(false);
   useEffect(() => {
-    if (question?.question_type === 'multiple-choice' && localRevealed) {
-      setShowReadyButton(false);
-      const timer = setTimeout(() => {
-        setShowReadyButton(true);
-      }, 3000); // 3 second delay
-      return () => clearTimeout(timer);
-    } else {
-      // Immediate for open-ended or unrevealed
-      setShowReadyButton(true);
-    }
-  }, [localRevealed, question?.question_type]);
-
-  const [waitingForAdvance, setWaitingForAdvance] = useState(false);
-
-  // Reset state on new question
-  useEffect(() => {
-    setLocalNextIntent(false);
-    // setFadeApplied(false); // Controlled by conversationStarted prop now? 
-    // Wait, if conversationStarted is passed from parent, we should use that.
-    
     setSelectedOption(null);
     setSubmitted(false);
     setPartnerSelections({});
     setLocalRevealed(false);
     setShowReadyButton(false);
-    setWaitingForAdvance(false);
   }, [question?.question_id]);
 
-  // Sync fade state with parent
   useEffect(() => {
-      // Sync fade state completely with conversationStarted for both open-ended and MCQ
-      setFadeApplied(conversationStarted);
-  }, [conversationStarted]);
-
-
-  // Socket Listeners
-  useEffect(() => {
-    if (!socket || mode !== 'dual-phone') return;
-
-    // We can still listen for partner status updates if needed, but the main driver is local intent + server advance
-    // The "remote_intent" event is optional per prompt, so we skip it for now unless server emits it.
-
-    const onRevealAnswers = ({ selections }) => {
-      setPartnerSelections(selections);
-      setLocalRevealed(true);
-      // Keep fadeApplied true to maintain "background" effect, or set it false?
-      // User said "popup out of the Conversation in Progress Background", so we keep the blur.
-    };
-
-    socket.on('reveal_answers', onRevealAnswers);
-
-    return () => {
-      socket.off('reveal_answers', onRevealAnswers);
-    };
-  }, [socket, mode, userId]);
-
-  const handleReveal = () => {
-    if (!localRevealed) {
-      setLocalRevealed(true);
-      onReveal();
+    if (question?.question_type === 'multiple-choice' && localRevealed && isDualMode) {
+      setShowReadyButton(false);
+      const timer = setTimeout(() => setShowReadyButton(true), 3000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowReadyButton(true);
     }
-  };
-
-  const isDualMode = mode === 'dual-phone' || mode === 'dual';
+  }, [localRevealed, question?.question_type, isDualMode]);
 
   const handleSubmitAnswer = () => {
-    if (selectedOption) {
-      setSubmitted(true);
-      // Removed setFadeApplied(true) here. 
-      // We only want to fade/blur when BOTH partners lock their answers (handled via conversationStarted)
-      
-      // Emit selectionId as-is (assuming it is defined/truthy)
-      console.log("Submitting answer:", selectedOption);
-      socket.emit('answer_submitted', { 
-        sessionId, 
-        user_id: userId, 
-        question_id: question.question_id, 
-        selectionId: selectedOption 
+    if (!selectedOption) return;
+    setSubmitted(true);
+    if (socket) {
+      socket.emit('answer_submitted', {
+        sessionId,
+        user_id: userId,
+        question_id: question.question_id,
+        selectionId: selectedOption
       });
     }
   };
 
-  const handleNextIntent = () => {
-    // 1. Set local state immediately
-    setLocalNextIntent(true);
-    // setFadeApplied(true); // REMOVED: Wait for server confirmation (conversationStarted)
-    // setConversationState(true); 
-
-    // 2. Emit Intent
-    onNext(); 
+  const handleIAmReady = () => {
+    if (onNext) onNext();
   };
-
-  const isMultipleChoice = question.question_type === 'multiple-choice';
+  const handleNextQuestion = () => {
+    if (isDualMode) {
+      if (onAdvanceTurn) onAdvanceTurn();
+    } else {
+      if (onNext) onNext();
+    }
+  };
 
   const cleanQuestionText = (text) => {
     if (!text) return '';
-    // Remove (40) or [12] at the end, handling optional spaces
     return text.replace(/\s*[\(\[]\d+[\)\]]\s*$/, '');
   };
 
+  // ---------------- STATE BOOLEANS ----------------
+  const state = conversationStarted ? 2 : 1;
+  const iClickedReadyFirst = isDualMode && state === 1 && nextIntentCount === 1 && !partnerIsReady;
+  const partnerClickedReadyFirst = isDualMode && state === 1 && partnerIsReady;
+  const partnerAdvancedFirst = isDualMode && state === 2 &&
+    (feedbackMessage === "Partner is waiting for you to click Next!" ||
+     (advanceIntentCount === 1 && partnerIsReady));
+  const iAdvancedFirst = isDualMode && state === 2 && advanceIntentCount === 1 && !partnerAdvancedFirst;
+  const mcqAnswerLocked = isMultipleChoice && submitted && !localRevealed;
+
+  // For MCQ Dual State 1 reveal: get partner selection ID
+  const partnerSelectedId = useMemo(() => {
+    if (!isDualMode) return null;
+    const entry = Object.entries(partnerSelections || {}).find(
+      ([uid]) => String(uid) !== String(userId)
+    );
+    return entry ? String(entry[1] || '') : null;
+  }, [partnerSelections, userId, isDualMode]);
+
+  // -------------------------------------------------------------------
+  // ----------------------- RENDER -----------------------------------
+  // -------------------------------------------------------------------
+
   return (
     <div className="flex-1 flex flex-col justify-center w-full max-w-md mx-auto">
-      {/* Main Card */}
+      {/* ---------- Main Question Card ---------- */}
       <motion.div
         key={question.question_id}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -20 }}
         transition={{ duration: 0.4 }}
-        onClick={(!isMultipleChoice) ? handleReveal : undefined}
+        onClick={!isMultipleChoice ? handleHintTap : undefined}
         className={`
-          bg-white rounded-[2rem] p-8 shadow-2xl shadow-blue-500/10 border border-gray-100 
+          bg-[#FBF7EF] rounded-[2rem] p-8 border border-[#DCD3C2]
           relative overflow-hidden flex flex-col justify-center min-h-[400px]
-          ${!isMultipleChoice && !localRevealed ? 'cursor-pointer hover:scale-[1.01] transition-transform active:scale-[0.99]' : ''}
+          ${!isMultipleChoice && !localRevealed && questionHasHint ? 'cursor-pointer hover:scale-[1.01] transition-transform active:scale-[0.99]' : ''}
         `}
       >
-        {/* Topic Badge */}
-        <div className="absolute top-8 left-0 w-full flex justify-center">
-          <span className="px-3 py-1 rounded-full bg-gray-50 text-xs font-bold uppercase tracking-widest text-gray-400">
-            {question.category || question.context || 'Topic'}
-          </span>
-        </div>
-
-        {/* Question Text */}
-        <div className={`my-8 text-center relative z-10 ${fadeApplied ? 'pointer-events-none' : ''}`}>
-          <h2 className={`text-3xl font-extrabold leading-tight transition-all duration-1000 ${
-            fadeApplied ? 'text-gray-900/20 blur-[2px]' : 'text-gray-900'
-          }`}>
+        {/* Question Text — de-emphasized in State 2 via color (no blur) */}
+        <div className="my-8 text-center">
+          <h2
+            className={`text-3xl font-extrabold leading-tight transition-all duration-700 ${
+              state === 2 ? 'text-[#6E6A60]' : 'text-[#35332E]'
+            }`}
+          >
             {cleanQuestionText(question.question_text)}
           </h2>
-          {fadeApplied && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <p className="text-gray-500 font-medium mb-2">Conversation in progress...</p>
-            </div>
-          )}
         </div>
 
-        {/* CONTENT AREA (Hint or Options) */}
-        <div className="relative z-10">
-          
-          {/* OPEN ENDED */}
-          {!isMultipleChoice && (
+        {/* ------------------- CONTENT AREA ------------------- */}
+        <div className="relative z-20">
+          {/* OPEN ENDED HINT — S1 uses #35332E, S2 fades with question to #6E6A60 */}
+          {!isMultipleChoice && questionHasHint && (
             <AnimatePresence>
               {localRevealed && question.answer_text && (
                 <motion.div
+                  key={`hint-${question.question_id}`}
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="pt-6 border-t border-gray-100 text-center">
-                    <p className="text-blue-600 font-medium italic text-lg">
+                  <div className="pt-6 border-t border-[#DCD3C2] text-center">
+                    <p
+                      className={`font-medium italic text-lg transition-colors duration-700 ${
+                        state === 2 ? 'text-[#6E6A60]' : 'text-[#35332E]'
+                      }`}
+                    >
                       {question.answer_text}
                     </p>
                   </div>
@@ -263,252 +229,360 @@ export default function QuestionCard({
             </AnimatePresence>
           )}
 
-          {/* MULTIPLE CHOICE */}
+          {/* MULTIPLE CHOICE OPTIONS */}
           {isMultipleChoice && normalizedOptions.length > 0 && (
-            <AnimatePresence mode="wait">
-              {/* Only show the options list if the answers haven't been revealed OR if it's the "Reveal" phase. 
-                  Since we no longer fade/hide locally on "submit", we can just keep showing it. 
-                  Wait, we want the cards to stay visible while waiting for the partner, but then what happens on reveal? 
-                  On reveal, it updates the styling to show "You" and "Partner" tags.
-              */}
-              <motion.div 
-                key="options-list"
-                initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -20, scale: 0.95 }}
-                transition={{ type: "spring", bounce: 0.4, duration: 0.6 }}
-                className="space-y-3 mt-4 relative z-20"
-              >
-                {normalizedOptions.map((opt) => {
-                const isSelected = selectedOption === opt.id;
-                // Check if partner selected this
-                const partnerSelectedId = Object.entries(partnerSelections).find(([uid]) => String(uid) !== String(userId))?.[1];
-                const isPartnerSelected = localRevealed && partnerSelectedId === opt.id;
-                
-                // Determine style based on state
-                let optionStyle = 'border-gray-200 hover:border-gray-300 text-gray-900 bg-white';
-                if (isSelected && isPartnerSelected) {
-                    // Both picked same
-                    optionStyle = 'border-purple-500 bg-purple-50 text-purple-900 ring-2 ring-purple-400 ring-offset-2 shadow-md';
-                } else if (isSelected) {
-                    // You picked
-                    optionStyle = 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm';
-                } else if (isPartnerSelected) {
-                    // Partner picked
-                    optionStyle = 'border-green-500 bg-green-50 text-green-900 ring-2 ring-green-400 ring-offset-2 shadow-md';
-                }
-
-                return (
-                  <button
-                    key={opt.id}
-                    onClick={() => !submitted && setSelectedOption(opt.id)}
-                    disabled={submitted || localRevealed}
-                    className={`
-                      w-full px-5 py-4 rounded-2xl border-2 text-left transition-all flex justify-between items-center group
-                      ${optionStyle}
-                    `}
-                  >
-                    <span className="font-semibold text-lg">{opt.text}</span>
-                    <div className="flex gap-2 text-xs uppercase font-bold tracking-wider">
-                      {isSelected && <span className={isPartnerSelected ? "text-purple-600" : "text-blue-600"}>You</span>}
-                      {isPartnerSelected && <span className={isSelected ? "text-purple-600" : "text-green-600"}>Partner</span>}
-                    </div>
-                  </button>
-                );
-              })}
-              </motion.div>
-            </AnimatePresence>
+            isDualMode ? (
+              <DualMCQOptions
+                options={normalizedOptions}
+                selectedOption={selectedOption}
+                partnerSelectedId={partnerSelectedId}
+                locked={submitted || localRevealed}
+                onSelect={(id) => !submitted && !localRevealed && setSelectedOption(id)}
+              />
+            ) : (
+              <SingleMCQOptions options={normalizedOptions} />
+            )
           )}
         </div>
 
-        {/* Hint Indicator / Reveal Button */}
-        {!isMultipleChoice && !localRevealed && (
+        {/* Hint Tap Indicator for open-ended — only if the question actually has a hint */}
+        {!isMultipleChoice && questionHasHint && !localRevealed && (
           <div className="absolute bottom-6 left-0 w-full text-center pointer-events-none">
-            <span className="text-xs text-gray-300 font-bold uppercase tracking-wide animate-pulse">
+            <span className="text-xs text-[#6E6A60] font-bold uppercase tracking-wide animate-pulse">
               Tap card to reveal hint
             </span>
           </div>
         )}
       </motion.div>
 
-        {/* ACTION BAR (Bottom) */}
-        <div className="mt-8 space-y-4">
-          
-          {/* DUAL MODE: Ready Button Only (Replaces Next) */}
-          {mode === 'dual-phone' && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="space-y-3">
-                 {/* For Multiple Choice: Show "Lock In Answer" unless revealed */}
-                 {isMultipleChoice && !localRevealed ? (
-                   <div className="space-y-3">
-                    {submitted ? (
-                      <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500 font-medium border border-gray-100">
-                        Answer Submitted. Waiting for partner...
-                      </div>
-                    ) : (
-                      <Button
-                        onClick={handleSubmitAnswer}
-                        disabled={!selectedOption}
-                        variant="primary"
-                        size="lg"
-                        fullWidth
-                      >
-                        Lock In Answer
-                      </Button>
-                    )}
-                  </div>
-                 ) : (
-                   /* For Open Ended OR Revealed Multiple Choice: Show "I'm Ready" */
-                   <>
-                    {/* Delay showing Ready button for Multiple Choice */}
-                    {isMultipleChoice && localRevealed && !showReadyButton ? (
-                        <div className="p-4 text-center">
-                            <p className="text-gray-500 font-medium animate-pulse">Viewing Results...</p>
-                        </div>
-                    ) : (
-                      <>
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (conversationStarted) {
-                                // Phase 2: Manual Advance
-                                setWaitingForAdvance(true);
-                                if (onAdvanceTurn) onAdvanceTurn(); // Uses socket.emit('advance_turn')
-                            } else if (!localNextIntent) {
-                                // Phase 1: Mark Ready
-                                handleNextIntent();
-                            }
-                          }}
-                          variant="black"
-                          size="lg"
-                          fullWidth
-                          className={`shadow-xl hover:shadow-2xl transition-all ${
-                              (localNextIntent && !conversationStarted) || waitingForAdvance ? "bg-gray-800 border-gray-800 opacity-80 cursor-wait" : ""
-                          }`}
-                          disabled={(localNextIntent && !conversationStarted) || waitingForAdvance}
-                          icon={
-                            (conversationStarted && !waitingForAdvance)
-                               ? <span>→</span>
-                               : ((localNextIntent) || waitingForAdvance)
-                                   ? <span className="animate-spin">⌛</span> 
-                                   : <span>✓</span>
-                          }
-                        >
-                          {conversationStarted
-                               ? (waitingForAdvance ? "Waiting for Partner..." : "Next Question")
-                               : (localNextIntent
-                                   ? "Waiting for Partner..." 
-                                   : (isMultipleChoice && localRevealed ? "Next Question" : "I'm Ready"))
-                          }
-                        </Button>
-                        
-                        {/* Partner Ready Indicator */}
-                        {partnerIsReady && !localNextIntent && !conversationStarted && (
-                           <div className="text-center animate-pulse pt-2">
-                              <p className="text-sm font-bold text-blue-600">
-                                👋 Partner is ready!
-                              </p>
-                              <p className="text-xs text-blue-400">
-                                Click "I'm Ready" to continue.
-                              </p>
-                           </div>
-                        )}
-
-                        {/* Feedback Message (e.g. Request Declined) */}
-                        {feedbackMessage && (
-                           <div className="text-center pt-4">
-                              <motion.div 
-                                initial={{ opacity: 0, y: 5 }} 
-                                animate={{ opacity: 1, y: 0 }}
-                                className="inline-block px-4 py-2 bg-blue-50 text-blue-600 text-sm font-bold rounded-full border border-blue-100 shadow-sm"
-                              >
-                                {feedbackMessage}
-                              </motion.div>
-                           </div>
-                        )}
-                      </>
-                    )}
-                   </>
-                 )}
-              </div>
-            </motion.div>
-          )}
-
-          {/* SINGLE MODE: Standard Next Button */}
-          {mode !== 'dual-phone' && (
-            <AnimatePresence>
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }} 
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-              >
-                <Button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onNext();
-                  }}
-                  disabled={waitingForPartner}
-                  variant="black"
-                  size="lg"
-                  fullWidth
-                  className="shadow-xl hover:shadow-2xl"
-                  icon={<span>→</span>}
-                >
-                  Next Question
-                </Button>
-              </motion.div>
-            </AnimatePresence>
-          )}
+      {/* ---------- ACTION BAR (Bottom) ---------- */}
+      <div className="mt-8 space-y-3">
+        {!isDualMode ? (
+          <SingleModeActions
+            question={question}
+            onReveal={handleHintTap}
+            isRevealed={localRevealed}
+            submitted={submitted}
+            showReadyButton={showReadyButton}
+            selectedOption={selectedOption}
+            handleSubmitAnswer={handleSubmitAnswer}
+            handleIAmReady={handleIAmReady}
+            handleNextQuestion={handleNextQuestion}
+            isMultipleChoice={isMultipleChoice}
+            waitingForPartner={waitingForPartner}
+          />
+        ) : (
+          <DualModeActions
+            question={question}
+            state={state}
+            isMultipleChoice={isMultipleChoice}
+            submitted={submitted}
+            localRevealed={localRevealed}
+            showReadyButton={showReadyButton}
+            selectedOption={selectedOption}
+            iClickedReadyFirst={iClickedReadyFirst && !partnerClickedReadyFirst && nextIntentCount === 1}
+            partnerClickedReadyFirst={partnerClickedReadyFirst}
+            iAdvancedFirst={iAdvancedFirst}
+            partnerAdvancedFirst={partnerAdvancedFirst || feedbackMessage === 'Partner is waiting for you to click Next!'}
+            mcqAnswerLocked={mcqAnswerLocked}
+            feedbackMessage={feedbackMessage}
+            handleSubmitAnswer={handleSubmitAnswer}
+            handleIAmReady={handleIAmReady}
+            handleNextQuestion={handleNextQuestion}
+          />
+        )}
       </div>
     </div>
   );
 }
 
-function normalizeQuestionOptions(rawOptions) {
-  if (!rawOptions) {
-    return [];
+// ----------------- MCQ OPTIONS: DUAL --------------------
+function DualMCQOptions({ options, selectedOption, partnerSelectedId, locked, onSelect }) {
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key="options-list"
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -20, scale: 0.95 }}
+        transition={{ type: 'spring', bounce: 0.4, duration: 0.6 }}
+        className="space-y-3 mt-4 relative z-20"
+      >
+        {options.map((opt) => {
+          const me = String(selectedOption || '') === String(opt.id);
+          const partner = partnerSelectedId && String(partnerSelectedId) === String(opt.id);
+          const chosen = me || partner;
+          const bothSame = me && partner;
+
+          let classes =
+            'bg-[#FBF7EF] border border-[#DCD3C2] text-[#35332E]';
+          let label = null;
+          if (chosen) {
+            classes = 'bg-[#35332E] text-[#F3EDE1] border-0';
+            if (bothSame) label = 'YOU · PARTNER';
+            else if (me) label = 'YOU';
+            else if (partner) label = 'PARTNER';
+          }
+
+          return (
+            <button
+              key={opt.id}
+              onClick={() => onSelect(opt.id)}
+              disabled={locked}
+              className={`w-full px-5 py-4 rounded-2xl text-left transition-all flex justify-between items-center group ${classes} ${!locked ? 'hover:scale-[1.01] active:scale-[0.995]' : ''}`}
+            >
+              <span className="font-semibold text-lg">{opt.text}</span>
+              {label && (
+                <span className={`text-[11px] font-bold uppercase tracking-widest ${
+                  chosen ? 'text-[#F3EDE1]' : 'text-[#6E6A60]'
+                }`}>
+                  {label}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----------------- MCQ OPTIONS: SINGLE (READ-ONLY) --------------------
+function SingleMCQOptions({ options }) {
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key="options-list"
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -20, scale: 0.95 }}
+        transition={{ type: 'spring', bounce: 0.4, duration: 0.6 }}
+        className="space-y-3 mt-4 relative z-20"
+      >
+        {options.map((opt) => (
+          <div
+            key={opt.id}
+            className="w-full px-5 py-4 rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] text-[#35332E]"
+          >
+            <span className="font-semibold text-lg">{opt.text}</span>
+          </div>
+        ))}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----------------- SINGLE MODE ACTIONS --------------------
+function SingleModeActions(props) {
+  const {
+    isMultipleChoice,
+    handleNextQuestion
+  } = props;
+
+  return (
+    <Button
+      onClick={handleNextQuestion}
+      variant="ink"
+      size="lg"
+      fullWidth
+    >
+      Next Question
+    </Button>
+  );
+}
+
+// ----------------- DUAL MODE ACTIONS --------------------
+function DualModeActions(props) {
+  const {
+    state,
+    isMultipleChoice,
+    submitted,
+    localRevealed,
+    showReadyButton,
+    selectedOption,
+    iClickedReadyFirst,
+    partnerClickedReadyFirst,
+    iAdvancedFirst,
+    partnerAdvancedFirst,
+    mcqAnswerLocked,
+    handleSubmitAnswer,
+    handleIAmReady,
+    handleNextQuestion
+  } = props;
+
+  // --------------------------
+  // MCQ STATE 0 PRE: answer not locked
+  // Button does NOT exist until an option is selected (not rendered, not disabled).
+  // After Lock In: replaced by plain text "Waiting for your partner" in #6E6A60.
+  // --------------------------
+  if (isMultipleChoice && !localRevealed) {
+    if (!submitted) {
+      if (!selectedOption) {
+        // No button rendered at all per spec
+        return null;
+      }
+      return (
+        <div className="space-y-3">
+          <Button
+            onClick={handleSubmitAnswer}
+            variant="ink"
+            size="lg"
+            fullWidth
+          >
+            Lock In Answer
+          </Button>
+        </div>
+      );
+    }
+    // Submitted but not yet revealed → plain text only: Waiting for your partner, #6E6A60
+    return (
+      <div className="space-y-3 text-center">
+        <div className="text-[#6E6A60] font-medium py-2">
+          Waiting for your partner
+        </div>
+        {showReadyButton === false ? null : null}
+      </div>
+    );
   }
 
+  // ---- STATE 1: Question Revealed + Waiting, button = "I'm Ready" ----
+  if (state === 1) {
+    const buttonLabel =
+      iClickedReadyFirst
+        ? 'Waiting for Partner…'
+        : "I'm Ready";
+    const buttonDisabled = iClickedReadyFirst && !partnerClickedReadyFirst;
+    const usePlainVariant = buttonDisabled;
+
+    return (
+      <div className="space-y-3">
+        {!buttonDisabled && (
+          <Button
+            onClick={handleIAmReady}
+            variant="ink"
+            size="lg"
+            fullWidth
+          >
+            {buttonLabel}
+          </Button>
+        )}
+        {buttonDisabled && (
+          <div className="text-center py-2 text-[#6E6A60] font-medium">
+            {buttonLabel}
+          </div>
+        )}
+        {/* (A) partner clicked ready first → plain text under, no pill */}
+        {partnerClickedReadyFirst && !iClickedReadyFirst && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center pt-2"
+          >
+            <span className="text-[#6E6A60] text-sm font-medium">
+              Partner is Ready
+            </span>
+          </motion.div>
+        )}
+      </div>
+    );
+  }
+
+  // ---- STATE 2: Conversation in Progress ----
+  let state2BtnLabel;
+  let state2BtnDisabled = false;
+  let state2ShowPartnerText = false;
+
+  if (!isMultipleChoice) {
+    if (partnerAdvancedFirst) {
+      state2BtnLabel = 'Next Question';
+      state2ShowPartnerText = true;
+      state2BtnDisabled = false;
+    } else if (iAdvancedFirst) {
+      state2BtnLabel = 'Waiting for Partner…';
+      state2BtnDisabled = true;
+      state2ShowPartnerText = false;
+    } else {
+      state2BtnLabel = 'Next Question';
+      state2BtnDisabled = false;
+      state2ShowPartnerText = false;
+    }
+  } else {
+    if (partnerAdvancedFirst) {
+      state2BtnLabel = 'Next Question';
+      state2ShowPartnerText = true;
+      state2BtnDisabled = false;
+    } else if (iAdvancedFirst) {
+      state2BtnLabel = 'Waiting for Partner…';
+      state2BtnDisabled = true;
+      state2ShowPartnerText = false;
+    } else if (mcqAnswerLocked && !partnerAdvancedFirst && !iAdvancedFirst) {
+      state2BtnLabel = 'Waiting for your partner';
+      state2BtnDisabled = true;
+      state2ShowPartnerText = false;
+    } else {
+      state2BtnLabel = 'Next Question';
+      state2ShowPartnerText = false;
+      state2BtnDisabled = false;
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {!state2BtnDisabled && (
+        <Button
+          onClick={handleNextQuestion}
+          variant="ink"
+          size="lg"
+          fullWidth
+        >
+          {state2BtnLabel}
+        </Button>
+      )}
+      {state2BtnDisabled && (
+        <div className="text-center py-2 text-[#6E6A60] font-medium">
+          {state2BtnLabel}
+        </div>
+      )}
+      {state2ShowPartnerText && (
+        <motion.div
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center pt-2"
+        >
+          <span className="text-[#6E6A60] text-sm font-medium">
+            Partner is Waiting
+          </span>
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+function normalizeQuestionOptions(rawOptions) {
+  if (!rawOptions) return [];
   const sourceOptions = Array.isArray(rawOptions)
     ? rawOptions
-    : Array.isArray(rawOptions.options)
+    : Array.isArray(rawOptions?.options)
       ? rawOptions.options
       : typeof rawOptions === 'string'
         ? rawOptions.split('|').map((item) => item.trim()).filter(Boolean)
         : [];
-
   return sourceOptions
     .map((option, index) => normalizeQuestionOption(option, index))
     .filter(Boolean);
 }
 
 function normalizeQuestionOption(option, index) {
-  if (option == null) {
-    return null;
-  }
-
+  if (option == null) return null;
   if (typeof option === 'object' && !Array.isArray(option)) {
     const rawText = option.text ?? option.label ?? option.value ?? '';
     const text = cleanOptionLabel(rawText);
-    if (!text) {
-      return null;
-    }
-
-    return {
-      id: String(option.id ?? option.value ?? `option-${index + 1}`),
-      text
-    };
+    if (!text) return null;
+    return { id: String(option.id ?? option.value ?? `option-${index + 1}`), text };
   }
-
   const text = cleanOptionLabel(option);
-  if (!text) {
-    return null;
-  }
-
-  return {
-    id: `option-${index + 1}`,
-    text
-  };
+  if (!text) return null;
+  return { id: `option-${index + 1}`, text };
 }
 
 function cleanOptionLabel(value) {

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const db = require('../db');
+const { insertAnalyticsEvent } = require('./analyticsService');
 
 const ROOT_SECRET = process.env.JWT_SECRET || process.env.APP_SECRET || 'tabletalk_secure_secret_key_123';
 
@@ -218,20 +219,15 @@ async function revealPaymentGatewayField(fieldKey, actorUserId) {
   // Persist an explicit audit trail for every reveal so any sensitive access
   // is attributable to a specific super admin at a specific time.
   try {
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data, timestamp)
-       VALUES ($1, $2, $3::jsonb, NOW())`,
-      [
-        null,
-        'super_admin.payment_gateway.reveal',
-        JSON.stringify({
-          field: fieldKey,
-          setting_key: storeKey,
-          actor_user_id: actorUserId || null,
-          has_value: Boolean(plaintext)
-        })
-      ]
-    );
+    await insertAnalyticsEvent({
+      event_type: 'super_admin.payment_gateway.reveal',
+      event_data: {
+        field: fieldKey,
+        setting_key: storeKey,
+        actor_user_id: actorUserId || null,
+        has_value: Boolean(plaintext)
+      }
+    });
   } catch (auditErr) {
     console.warn('[platformSettings] Audit insert for reveal failed:', auditErr.message);
   }
@@ -335,6 +331,66 @@ function isMaskedToken(str) {
   return typeof str === 'string' && /\*{4,}/.test(str);
 }
 
+/**
+ * Read the stored plan-catalog override (JSON string) from platform_settings.
+ * Returns the parsed override object OR null if nothing has been saved yet
+ * (in that case callers should fall back to the code-default PLAN_CATALOG and
+ * display an "using defaults" indicator on the UI).
+ */
+async function getPlanCatalogOverride() {
+  const rows = await getAllRaw();
+  const row = rows['plan_catalog.override'];
+  if (!row || !row.setting_value || row.setting_value === '') {
+    return {
+      stored: false,
+      override: null,
+      updated_at: null,
+      source: 'default',
+      updated_by: null
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(row.setting_value);
+  } catch (err) {
+    console.warn('[platformSettings] plan_catalog.override is corrupted JSON; ignoring stored value.', err.message);
+    return {
+      stored: false,
+      override: null,
+      updated_at: row.updated_at ? new Date(row.updated_at) : null,
+      source: 'default_corrupted',
+      updated_by: row.updated_by || null
+    };
+  }
+  return {
+    stored: true,
+    override: parsed,
+    updated_at: row.updated_at ? new Date(row.updated_at) : null,
+    source: row.source === 'default' ? 'default' : 'super_admin',
+    updated_by: row.updated_by || null
+  };
+}
+
+/**
+ * Write the plan-catalog override as a single JSON setting row.
+ * Validation (keys, numeric ranges, string non-empty) is the caller's job —
+ * this function only JSON-serializes and upserts.
+ */
+async function setPlanCatalogOverride({ override, actorUserId } = {}) {
+  if (!override || typeof override !== 'object' || Array.isArray(override)) {
+    throw new Error('plan_catalog.override body must be an object');
+  }
+  const serialized = JSON.stringify(override);
+  await upsertSetting({
+    key: 'plan_catalog.override',
+    value: serialized,
+    isSecret: false,
+    actorUserId: actorUserId || null,
+    source: 'super_admin'
+  });
+  return getPlanCatalogOverride();
+}
+
 module.exports = {
   encryptSecret,
   decryptSecret,
@@ -345,5 +401,7 @@ module.exports = {
   deriveWebhookEndpointUrl,
   maskSecret,
   maskKey,
-  revealPaymentGatewayField
+  revealPaymentGatewayField,
+  getPlanCatalogOverride,
+  setPlanCatalogOverride
 };

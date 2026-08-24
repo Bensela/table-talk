@@ -13,6 +13,7 @@ import {
   clearDualSession 
 } from '../utils/sessionStorage';
 import { SCANNER_ROUTE } from '../constants/routes';
+import useAnalytics from '../hooks/useAnalytics';
 
 export default function SessionMenu({
   tableToken,
@@ -21,22 +22,67 @@ export default function SessionMenu({
   socketRef,
   onSessionChange // Optional callback if parent needs to know
 }) {
+  const { fireSession, firePublic } = useAnalytics();
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Wrap open/close to log
+  const openMenu = () => {
+    const current = getStoredParticipant();
+    fireSession({
+      event_type: 'menu_opened',
+      event_data: {
+        table_token: tableToken || null,
+        mode: currentMode,
+        context: currentContext
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
+    setIsOpen(true);
+  };
+
+  const closeMenu = () => {
+    const current = getStoredParticipant();
+    fireSession({
+      event_type: 'menu_closed',
+      event_data: {
+        table_token: tableToken || null,
+        mode: currentMode,
+        context: currentContext
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
+    setIsOpen(false);
+  };
 
   const handleRestart = async () => {
     if (!tableToken) {
         console.error("[Menu] handleRestart called but tableToken is missing");
         return;
     }
+
+    const current = getStoredParticipant();
+    
+    // Fire pressed event
+    fireSession({
+      event_type: 'menu_start_fresh_pressed',
+      event_data: {
+        table_token: tableToken,
+        mode: currentMode,
+        context: currentContext
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
     
     console.log("[Menu] handleRestart called. Mode:", currentMode, "Token:", tableToken);
+
+    let terminateOutcome = 'redirect_to_scanner';
+    let dualIntentSent = false;
 
     // If currently in Dual Mode, handle termination intent
     if (currentMode === 'dual-phone') {
        // We save local credentials in dual storage just in case we are the "First" one leaving
        // and want to resume later if the partner didn't leave (and session wasn't terminated).
-       const current = getStoredParticipant();
        
        // Send HTTP request for reliability (Wait for it)
        if (current.sessionId && current.participantId) {
@@ -46,8 +92,11 @@ export default function SessionMenu({
            try {
                const res = await api.post(`/sessions/${current.sessionId}/fresh_intent`, { participant_id: current.participantId });
                console.log("[Menu] Sent fresh intent. Keeping device token until session is terminated.");
+               dualIntentSent = true;
+               terminateOutcome = res.data?.both_pressed === true ? 'session_terminated_mutual' : 'waiting_for_partner_confirm';
            } catch (e) {
                console.error("Failed to send fresh intent API", e);
+               terminateOutcome = 'fresh_intent_api_error';
            }
        }
        
@@ -56,6 +105,9 @@ export default function SessionMenu({
            console.log("[Menu] Sending Fresh Intent via Socket");
            socketRef.current.emit('fresh_intent', { session_id: current.sessionId, participant_id: current.participantId });
        }
+    } else {
+      // Single mode: session is permanently terminated
+      terminateOutcome = 'single_session_terminated';
     }
 
     setLastResetAt();
@@ -64,18 +116,41 @@ export default function SessionMenu({
     // and enforce the "no new table while active" rule.
     // In Single Mode, we permanently terminate the session.
     if (currentMode !== 'dual-phone') {
-        const current = getStoredParticipant();
         if (current.sessionId) {
             try {
                 await api.delete(`/sessions/${current.sessionId}`);
                 console.log("[Menu] Single Mode session permanently terminated.");
             } catch (e) {
                 console.error("Failed to terminate single mode session", e);
+                if (terminateOutcome === 'single_session_terminated') terminateOutcome = 'single_terminate_api_error';
             }
         }
         clearStoredParticipant();
         clearDualSession(tableToken);
     }
+
+    // Outcome event
+    fireSession({
+      event_type: 'menu_start_fresh_outcome',
+      event_data: {
+        outcome: terminateOutcome,
+        redirect_url: SCANNER_ROUTE,
+        dual_intent_sent: dualIntentSent,
+        mode: currentMode
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
+
+    fireSession({
+      event_type: 'start_fresh',
+      event_data: {
+        outcome: terminateOutcome,
+        redirect_url: SCANNER_ROUTE,
+        mode: currentMode,
+        table_token: tableToken
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
     
     // Redirect to scanner with slight delay to ensure socket emit
     setTimeout(() => {
@@ -91,6 +166,17 @@ export default function SessionMenu({
     setLoading(true);
     
     const current = getStoredParticipant();
+    fireSession({
+      event_type: 'menu_reset_mode_requested',
+      event_data: {
+        from_mode: currentMode,
+        to_mode: 'dual-phone',
+        via: 'upgrade_endpoint',
+        table_token: tableToken
+      },
+      ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+    });
+    
     if (current.sessionId && current.participantId) {
         try {
             const res = await api.post(`/sessions/${current.sessionId}/upgrade`, { participant_id: current.participantId });
@@ -99,7 +185,7 @@ export default function SessionMenu({
             // Ensure dual session backup is saved
             storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
             
-            setIsOpen(false);
+            closeMenu();
             // The backend emits 'session_updated' which triggers fetchCurrentQuestion
             // But just in case, we can force a local update or reload
             window.location.reload();
@@ -116,8 +202,37 @@ export default function SessionMenu({
   const handleQuickSwitch = async (updates = {}) => {
     if (!tableToken) return;
     
+    const current = getStoredParticipant();
     const newContext = updates.context || currentContext;
     const newMode = updates.mode || currentMode;
+    
+    // Fire reset events BEFORE any side effects
+    if (updates.context && updates.context !== currentContext) {
+      fireSession({
+        event_type: 'menu_reset_context_requested',
+        event_data: {
+          from_context: currentContext,
+          to_context: updates.context,
+          mode: currentMode,
+          table_token: tableToken,
+          via: 'menu_card'
+        },
+        ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+      });
+    }
+    if (updates.mode && updates.mode !== currentMode) {
+      fireSession({
+        event_type: 'menu_reset_mode_requested',
+        event_data: {
+          from_mode: currentMode,
+          to_mode: updates.mode,
+          context: currentContext,
+          table_token: tableToken,
+          via: 'menu_card'
+        },
+        ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+      });
+    }
     
     // 1. Resume Dual Mode Check
     if (newMode === 'dual-phone' && currentMode !== 'dual-phone') {
@@ -151,7 +266,7 @@ export default function SessionMenu({
     }
 
     setLoading(true);
-    setIsOpen(false);
+    closeMenu();
 
     try {
       // 2. Dual Mode Context Switch (Mutation via Socket)
@@ -159,15 +274,20 @@ export default function SessionMenu({
           if (socketRef?.current?.connected) {
              console.log("[Menu] Sending Context Switch Intent:", newContext);
              
+             fireSession({
+               event_type: 'context_changed',
+               event_data: {
+                 from_context: currentContext,
+                 to_context: newContext,
+                 via: 'dual_socket_context_switch_intent',
+                 table_token: tableToken,
+                 mode: currentMode
+               },
+               ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+             });
+             
              // Emit intent
              socketRef.current.emit('context_switch_intent', { context: newContext });
-             
-             // OPTIONAL: We can set a "pending" flag in parent if needed, 
-             // but SessionGame handles the "pendingSwitchContext" logic for popups.
-             // We assume SessionGame will receive the event if we are on that page?
-             // Ah, SessionMenu is rendered INSIDE SessionGame (via header).
-             // But SessionMenu doesn't have access to SessionGame's state setter.
-             // We need to inform SessionGame that WE initiated the switch so it ignores the echo.
              
              if (onSessionChange) {
                  // Pass the intent up so SessionGame can set pendingSwitchContext
@@ -181,6 +301,17 @@ export default function SessionMenu({
              const current = getStoredParticipant();
              if (current.sessionId) {
                   console.log("[Menu] Updating existing Dual Session context (Fallback):", newContext);
+                  fireSession({
+                    event_type: 'context_changed',
+                    event_data: {
+                      from_context: currentContext,
+                      to_context: newContext,
+                      via: 'dual_api_patch_fallback',
+                      table_token: tableToken,
+                      mode: currentMode
+                    },
+                    ids: { session_id: current.sessionId, participant_id: current.participantId }
+                  });
                   await api.patch(`/sessions/${current.sessionId}`, { context: newContext });
                   window.location.reload();
                   return;
@@ -208,6 +339,34 @@ export default function SessionMenu({
         context: newContext,
         mode: newMode
       });
+
+      if (updates.context && updates.context !== currentContext) {
+        fireSession({
+          event_type: 'context_changed',
+          event_data: {
+            from_context: currentContext,
+            to_context: newContext,
+            via: 'menu_new_session_creation',
+            table_token: tableToken,
+            from_mode: currentMode,
+            to_mode: newMode
+          },
+          ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+        });
+      }
+      if (updates.mode && updates.mode !== currentMode) {
+        fireSession({
+          event_type: 'mode_changed',
+          event_data: {
+            from_mode: currentMode,
+            to_mode: newMode,
+            via: 'menu_new_session_creation',
+            table_token: tableToken,
+            context: newContext
+          },
+          ids: { session_id: current?.sessionId, participant_id: current?.participantId }
+        });
+      }
 
       // Notify partner to follow (if migrating from Single to Dual or similar)
       if (socketRef?.current?.connected && newMode === 'dual-phone') {
@@ -256,10 +415,10 @@ export default function SessionMenu({
     <>
       <div
         className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
-        onClick={() => setIsOpen(true)}
+        onClick={openMenu}
       >
-        <div className="w-10 h-10 rounded-full bg-[#FBF7EF] border border-[#DCD3C2] flex items-center justify-center text-[#35332E] hover:bg-[#35332E] hover:text-[#F3EDE1] hover:border-[#35332E] transition-colors">
-          <span className="text-lg font-bold">☰</span>
+        <div className="w-11 h-11 rounded-full border border-[#DCD3C2] flex items-center justify-center text-[#6E6A60] hover:text-[#35332E] hover:border-[#35332E] transition-colors min-w-[44px] min-h-[44px]">
+          <span className="text-lg font-bold leading-none">☰</span>
         </div>
         <span className="text-sm font-semibold text-[#35332E] tracking-wider hidden sm:block">MENU</span>
       </div>
@@ -272,20 +431,20 @@ export default function SessionMenu({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                onClick={() => setIsOpen(false)}
+                onClick={closeMenu}
                 className="absolute inset-0 bg-[#35332E]/55 backdrop-blur-sm"
               />
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="relative bg-[#F3EDE1] w-full max-w-sm rounded-3xl shadow-xl overflow-hidden flex flex-col border border-[#DCD3C2]"
+                className="relative bg-[#F3EDE1] w-full max-w-sm rounded-3xl overflow-hidden flex flex-col border border-[#DCD3C2]"
               >
                  {/* Header */}
                  <div className="px-6 pt-6 pb-4 flex items-start justify-between bg-[#F3EDE1] relative z-10 gap-4">
                    <h3 className="text-2xl font-semibold text-[#35332E] pt-2 leading-none">Session Settings</h3>
                    <button
-                     onClick={() => setIsOpen(false)}
+                     onClick={closeMenu}
                      aria-label="Close menu"
                      className="flex-shrink-0 flex items-center justify-center w-[44px] h-[44px] min-w-[44px] min-h-[44px] rounded-2xl bg-transparent border border-[#DCD3C2] hover:border-[#35332E]/30 hover:bg-[#FBF7EF] text-[#6E6A60] hover:text-[#35332E] transition-colors"
                    >
@@ -313,7 +472,7 @@ export default function SessionMenu({
                                onClick={() => handleQuickSwitch({ context: m.id })}
                                className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all ${
                                  isActive
-                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0 shadow-sm'
+                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0'
                                    : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
                                }`}
                              >
@@ -352,7 +511,7 @@ export default function SessionMenu({
                                }}
                                className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all ${
                                  isActive
-                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0 shadow-sm'
+                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0'
                                    : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
                                }`}
                              >
@@ -366,7 +525,7 @@ export default function SessionMenu({
                      {/* Actions */}
                      <div className="pt-5 flex flex-col gap-5">
                        <Button
-                         onClick={() => setIsOpen(false)}
+                         onClick={closeMenu}
                          variant="ink"
                          fullWidth
                          className="py-3.5 text-base font-semibold rounded-2xl"

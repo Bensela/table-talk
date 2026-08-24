@@ -71,15 +71,15 @@ router.get('/:slug/info', async (req, res) => {
 router.get('/:slug', adminAuth, (req, res) => {
   // secret_key intentionally excluded from response
   const { id, slug, name, plan, active, contact_email, contact_phone,
-          address, latitude, longitude, manager_name, created_at } = req.restaurant;
+          address, latitude, longitude, geofence_radius_meters, manager_name, created_at } = req.restaurant;
   res.json({ id, slug, name, plan, active, contact_email, contact_phone,
-              address, latitude, longitude, manager_name, created_at });
+              address, latitude, longitude, geofence_radius_meters, manager_name, created_at });
 });
 
 // ── Super-admin: create a restaurant ─────────────────────────────────────────
-// POST /restaurants  { name, slug, contactEmail, contactPhone, address, latitude, longitude, managerName }
+// POST /restaurants  { name, slug, contactEmail, contactPhone, address, latitude, longitude, geofenceRadius, managerName }
 router.post('/', superAdminGuard, async (req, res) => {
-  const { name, slug, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
+  const { name, slug, contactEmail, contactPhone, address, latitude, longitude, geofenceRadius, managerName } = req.body;
   if (!name || !slug) {
     return res.status(400).json({ error: 'name and slug are required' });
   }
@@ -87,12 +87,17 @@ router.post('/', superAdminGuard, async (req, res) => {
   const slugClean = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const secretKey = crypto.randomBytes(32).toString('hex');
 
+  let radiusInt = 100;
+  if (geofenceRadius != null && Number.isFinite(Number(geofenceRadius))) {
+    radiusInt = Math.max(5, Math.min(5000, Math.floor(Number(geofenceRadius))));
+  }
+
   try {
     const result = await db.query(
-      `INSERT INTO restaurants (slug, name, secret_key, contact_email, contact_phone, address, latitude, longitude, manager_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, slug, name, plan, secret_key, active, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
-      [slugClean, name, secretKey, contactEmail || null, contactPhone || null, address || null, latitude || null, longitude || null, managerName || null]
+      `INSERT INTO restaurants (slug, name, secret_key, contact_email, contact_phone, address, latitude, longitude, geofence_radius_meters, manager_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, slug, name, plan, secret_key, active, contact_email, contact_phone, address, latitude, longitude, geofence_radius_meters, manager_name, created_at`,
+      [slugClean, name, secretKey, contactEmail || null, contactPhone || null, address || null, latitude || null, longitude || null, radiusInt, managerName || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {

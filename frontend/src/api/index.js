@@ -187,6 +187,127 @@ api.interceptors.response.use(
   }
 );
 
+// -----------------------------------------------------------------------------
+// Public analytics beacon — client-side step logging
+// -----------------------------------------------------------------------------
+export const PUBLIC_EVENT_TYPES = Object.freeze({
+  QR_SCAN_VALIDATED: 'qr_scan_validated',
+  QR_SCAN_REJECTED: 'qr_scan_rejected',
+  QR_SCAN_INVALID: 'qr_scan_invalid',
+  GEOFENCE_CHECK_DENIED: 'geofence_check_denied',
+  WELCOME_GEOFENCE_DENIED: 'welcome_geofence_denied',
+  WELCOME_GEOLOCATION_REQUEST: 'welcome_geolocation_request',
+  WELCOME_SCREEN_RENDERED: 'welcome_screen_rendered',
+  CONTEXT_SELECTED: 'context_selected',
+  MODE_SELECTED: 'mode_selected',
+  SESSION_CREATED: 'session_created',
+  SESSION_RESUMED: 'session_resumed',
+  SESSION_RECONNECT: 'session_reconnect',
+  SESSION_EXPIRED: 'session_expired',
+  SESSION_END: 'session_end',
+  DUAL_PARTNER_JOINED: 'dual_partner_joined',
+  DUAL_PAIRING_FAILED: 'dual_pairing_failed',
+  DUAL_FULL_REJECTED: 'dual_full_rejected',
+  MENU_OPENED: 'menu_opened',
+  CONTEXT_CHANGED: 'context_changed',
+  MODE_CHANGED: 'mode_changed',
+  START_FRESH: 'start_fresh',
+  SESSION_DESTROYED: 'session_destroyed',
+  QUESTION_VIEWED: 'question_viewed',
+  QUESTION_REVEALED: 'question_revealed',
+  QUESTION_LOCKED: 'question_locked',
+  MCQ_ANSWER_SUBMITTED: 'mcq_answer_submitted',
+  QUESTION_ADVANCED: 'question_advanced',
+  HINT_REVEALED: 'hint_revealed',
+  DECK_FALLBACK_CONTEXT: 'deck_fallback_context',
+  DECK_EMPTY: 'deck_empty',
+  SERVER_ERROR: 'server_error',
+  SOCKET_ERROR: 'socket_error',
+  CLIENT_ERROR: 'client_error',
+  RECONNECT_SUCCEEDED: 'reconnect_succeeded',
+  RECONNECT_FAILED: 'reconnect_failed',
+  DESYNC_DETECTED: 'desync_detected'
+});
+
+// Local per-session deduplication of noisy events (client-side).
+const __dedup = new Map(); // key -> expiresAt ms
+function __shouldEmit(key, ttlMs = 1000 * 60) {
+  try {
+    const now = Date.now();
+    const exp = __dedup.get(key);
+    if (exp && exp > now) return false;
+    __dedup.set(key, now + ttlMs);
+    return true;
+  } catch { return true; }
+}
+
+/**
+ * Fire-and-forget public analytics beacon. Never throws, never blocks.
+ *
+ * @param {keyof typeof PUBLIC_EVENT_TYPES | string} event_type - canonical vocabulary string
+ * @param {{session_id?, participant_id?, restaurant_id?, table_token?, anonymous_id?, event_data?, timestamp?}} [ctx]
+ */
+export function trackEvent(event_type, ctx = {}) {
+  try {
+    if (!event_type || typeof event_type !== 'string') return;
+    const key = `${String(event_type)}:${String(ctx.session_id || 'no-session')}:${String(ctx.participant_id || 'no-participant')}:${JSON.stringify(ctx.event_data || null).slice(0, 80)}`;
+    if (event_type === PUBLIC_EVENT_TYPES.QUESTION_VIEWED) {
+      if (!__shouldEmit(key, 500)) return;
+    } else if (event_type === PUBLIC_EVENT_TYPES.HINT_REVEALED || event_type === PUBLIC_EVENT_TYPES.QUESTION_REVEALED) {
+      if (!__shouldEmit(key, 1000 * 60 * 5)) return;
+    } else if (event_type === PUBLIC_EVENT_TYPES.RECONNECT_FAILED || event_type === PUBLIC_EVENT_TYPES.RECONNECT_SUCCEEDED) {
+      if (!__shouldEmit(key, 1000 * 30)) return;
+    }
+    const payload = {
+      event_type: String(event_type).slice(0, 50),
+      session_id: ctx.session_id || null,
+      participant_id: ctx.participant_id || null,
+      restaurant_id: ctx.restaurant_id || null,
+      table_token: typeof ctx.table_token === 'string' ? ctx.table_token : (ctx.table_number != null ? String(ctx.table_number) : null) || null,
+      anonymous_id: typeof ctx.anonymous_id === 'string' ? ctx.anonymous_id : null,
+      event_data: ctx.event_data || null,
+      timestamp: ctx.timestamp || null
+    };
+    fetch(buildApiUrl('/public/events'), {
+      method: 'POST',
+      credentials: 'omit',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(() => null);
+  } catch { /* never throw, never break the UX */ }
+}
+
+// Automatically forward unhandled client-side JS errors to the audit log, deduped.
+if (typeof window !== 'undefined') {
+  const ERROR_DEDUP_MS = 1000 * 60 * 5;
+  window.addEventListener('error', (evt) => {
+    const sig = `${String(evt.message || '').slice(0, 120)}|${String(evt.filename || '')}|${String(evt.lineno || '')}|${String(evt.colno || '')}`;
+    if (!__shouldEmit(`window_error:${sig}`, ERROR_DEDUP_MS)) return;
+    trackEvent(PUBLIC_EVENT_TYPES.CLIENT_ERROR, {
+      event_data: {
+        source: 'window.error',
+        message: String(evt.message || '').slice(0, 500),
+        filename: String(evt.filename || '').slice(0, 255),
+        line: Number.isFinite(evt.lineno) ? Number(evt.lineno) : null,
+        col: Number.isFinite(evt.colno) ? Number(evt.colno) : null,
+        stack: String(evt.error?.stack || '').slice(0, 2000) || null
+      }
+    });
+  });
+  window.addEventListener('unhandledrejection', (evt) => {
+    const sig = String((evt.reason && (evt.reason.message || evt.reason)) || '').slice(0, 160);
+    if (!__shouldEmit(`unhandled_rejection:${sig}`, ERROR_DEDUP_MS)) return;
+    trackEvent(PUBLIC_EVENT_TYPES.CLIENT_ERROR, {
+      event_data: {
+        source: 'window.unhandledrejection',
+        reason: sig.slice(0, 1000),
+        stack: String(evt.reason?.stack || '').slice(0, 2000) || null
+      }
+    });
+  });
+}
+
 // Updated createSession to accept table_token, context, and mode
 export const createSession = ({ table_token, context, mode, restaurant_slug }) => 
   api.post('/sessions', { table_token, context, mode, restaurant_slug });
@@ -203,8 +324,61 @@ export const resumeSessionByQr = ({ table_token, participant_token, restaurant_s
 export const getSession = (sessionId) => api.get(`/sessions/${sessionId}`);
 export const getSessionByTable = (tableToken) => api.get(`/sessions/by-table/${tableToken}`);
 
-export const publicHandshake = (slug, table) =>
-  api.get(`/public/handshake?slug=${encodeURIComponent(slug)}&table=${encodeURIComponent(table)}`);
+/**
+ * Public handshake + optional geolocation payload.
+ *
+ * @param {string} slug - restaurant slug
+ * @param {string|number} table - table identifier
+ * @param {Object} [opts]
+ * @param {{latitude:number|null, longitude:number|null}|null} [opts.location] - client GPS coordinates
+ * @param {'granted'|'prompt'|'denied'|'unsupported'} [opts.geolocationStatus] - browser Geolocation permission state
+ */
+export const publicHandshake = (slug, table, opts = {}) => {
+  const params = new URLSearchParams();
+  params.set('slug', encodeURIComponent(slug));
+  params.set('table', encodeURIComponent(table));
+  if (opts.location?.latitude != null && Number.isFinite(Number(opts.location.latitude))) {
+    params.set('client_lat', String(opts.location.latitude));
+  }
+  if (opts.location?.longitude != null && Number.isFinite(Number(opts.location.longitude))) {
+    params.set('client_lng', String(opts.location.longitude));
+  }
+  if (opts.geolocationStatus) {
+    params.set('geolocation_status', opts.geolocationStatus);
+  }
+  if (typeof opts.location?.accuracy === 'number' && Number.isFinite(opts.location.accuracy)) {
+    params.set('client_accuracy_m', String(Math.round(opts.location.accuracy)));
+  }
+  if (typeof opts.bypass === 'string' && opts.bypass.length > 0) {
+    params.set('bypass', opts.bypass);
+  }
+  return api.get(`/public/handshake?${params.toString()}`);
+};
+
+/**
+ * Pre-flight geofence-only check. Runs no billing or table validation.
+ * Useful to warm the permission prompt before the full handshake call.
+ */
+export const preflightGeofence = (slug, opts = {}) => {
+  const params = new URLSearchParams();
+  params.set('slug', encodeURIComponent(slug));
+  if (opts.location?.latitude != null && Number.isFinite(Number(opts.location.latitude))) {
+    params.set('client_lat', String(opts.location.latitude));
+  }
+  if (opts.location?.longitude != null && Number.isFinite(Number(opts.location.longitude))) {
+    params.set('client_lng', String(opts.location.longitude));
+  }
+  if (opts.geolocationStatus) {
+    params.set('geolocation_status', opts.geolocationStatus);
+  }
+  if (typeof opts.location?.accuracy === 'number' && Number.isFinite(opts.location.accuracy)) {
+    params.set('client_accuracy_m', String(Math.round(opts.location.accuracy)));
+  }
+  if (typeof opts.bypass === 'string' && opts.bypass.length > 0) {
+    params.set('bypass', opts.bypass);
+  }
+  return api.get(`/public/geofence?${params.toString()}`);
+};
 
 // Kept for backward compatibility or joining existing sessions if needed, 
 // though the new flow emphasizes creating/joining via the main flow.

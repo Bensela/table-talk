@@ -1,4 +1,5 @@
 const db = require('../db');
+const { EVENT_TYPES, insertSessionAnalyticsEvent } = require('./analyticsService');
 const crypto = require('crypto');
 
 const GLOBAL_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
@@ -21,6 +22,20 @@ const getAllQuestions = async (restaurant_id) => {
     [restId, GLOBAL_RESTAURANT_ID]
   );
   return result.rows;
+};
+
+/**
+ * Resolve questions for a deck with transparent fallback.
+ *  1. Primary = questions whose context exactly matches preferred (or no context)
+ *  2. If 0, fallback = any active questions regardless of context.
+ * Returns an object with the question list plus a flag so caller can log fallback when used.
+ */
+const resolveDeckQuestions = (allQuestions, preferredContext) => {
+  const primary = allQuestions.filter(q => !q.context || q.context === preferredContext);
+  if (primary.length > 0) {
+    return { questions: primary, usedFallback: false };
+  }
+  return { questions: allQuestions || [], usedFallback: Boolean(preferredContext) };
 };
 
 // Simple seeded random generator
@@ -151,7 +166,6 @@ const getDeckSession = async (restaurant_id, table_token, context, session_group
 
 const getCurrentQuestion = async (session) => {
   const restId = session.restaurant_id || 'd0000000-0000-0000-0000-000000000000';
-  // 1. Get Deck Session
   const deckSession = await getDeckSession(
     restId, 
     session.table_token, 
@@ -164,27 +178,46 @@ const getCurrentQuestion = async (session) => {
       return null;
   }
   
-  // 2. Get Questions for Context
   const allQuestions = await getAllQuestions(restId);
-  // Filter questions that match the context (or if context is null/global)
-  const deckQuestions = allQuestions.filter(q => 
-    !q.context || q.context === session.context
+  const { questions: deckQuestions, usedFallback } = resolveDeckQuestions(allQuestions, session.context);
+
+  console.log(
+    `[DeckService] Context=${session.context} TotalQs=${allQuestions.length} DeckQs=${deckQuestions.length}${usedFallback ? ' (fallback to any context)' : ''}`
   );
 
-  console.log(`[DeckService] Context: ${session.context}, Total Qs: ${allQuestions.length}, Filtered Qs: ${deckQuestions.length}`);
-
   if (deckQuestions.length === 0) {
-    console.warn(`[DeckService] No questions found for context: ${session.context}`);
-    return null; // Handle empty deck
+    console.warn(`[DeckService] No questions available globally — returning null`);
+    await insertSessionAnalyticsEvent(session, {
+      event_type: EVENT_TYPES.DECK_EMPTY,
+      event_data: { context: session.context, primary_context_questions: 0, global_questions: allQuestions.length }
+    }).catch(() => null);
+    return null;
   }
 
-  // 3. Shuffle
+  if (usedFallback) {
+    // Fire once per session-per-day, not per deck fetch, to avoid log spam.
+    try {
+      const FALLBACK_DEDUP = '_deck_fallback_emitted_sessions';
+      if (!global[FALLBACK_DEDUP]) global[FALLBACK_DEDUP] = new WeakSet();
+      const SET = global[FALLBACK_DEDUP];
+      if (!SET.has(session)) {
+        SET.add(session);
+        await insertSessionAnalyticsEvent(session, {
+          event_type: EVENT_TYPES.DECK_FALLBACK_CONTEXT,
+          event_data: {
+            requested_context: session.context,
+            primary_count: 0,
+            fallback_count: deckQuestions.length
+          }
+        }).catch(() => null);
+      }
+    } catch {}
+  }
+
   if (!deckSession.seed) {
-      deckSession.seed = 'default-seed'; // Fallback
+      deckSession.seed = 'default-seed';
   }
   const shuffledDeck = shuffle(deckQuestions, deckSession.seed);
-
-  // 4. Get Current Position
   const index = deckSession.position_index % shuffledDeck.length;
   
   if (!shuffledDeck[index]) {
@@ -194,9 +227,10 @@ const getCurrentQuestion = async (session) => {
 
   const result = {
     ...shuffledDeck[index],
-    deck_session_id: deckSession.deck_context_id
+    deck_session_id: deckSession.deck_context_id,
+    fallback_context: usedFallback ? true : undefined
   };
-  console.log('[DeckService] Returning question:', result.question_id);
+  console.log('[DeckService] Returning question:', result.question_id, usedFallback ? '(context fallback)' : '');
   return result;
 };
 
@@ -210,16 +244,12 @@ const advanceDeck = async (session) => {
     session.session_group_id
   );
 
-  // Get total questions to handle wraparound
   const allQuestions = await getAllQuestions(restId);
-  const deckQuestions = allQuestions.filter(q => 
-    !q.context || q.context === session.context
-  );
+  const { questions: deckQuestions } = resolveDeckQuestions(allQuestions, session.context);
   const totalQuestions = deckQuestions.length;
 
   let newIndex = deckSession.position_index + 1;
   
-  // Wraparound logic
   if (totalQuestions > 0 && newIndex >= totalQuestions) {
     newIndex = 0;
   }
@@ -231,14 +261,13 @@ const advanceDeck = async (session) => {
     [newIndex, deckSession.deck_context_id]
   );
   
-  return newIndex + 1; // Return 1-based index for display
+  return newIndex + 1;
 };
 
 const previousDeck = async (session) => {
   const restId = session.restaurant_id || 'd0000000-0000-0000-0000-000000000000';
   console.log(`[DeckService] Rewinding deck for ${session.table_token}`);
   
-  // 1. Get Deck Session
   const deckSession = await getDeckSession(
     restId, 
     session.table_token, 
@@ -246,24 +275,18 @@ const previousDeck = async (session) => {
     session.session_group_id
   );
 
-  // 2. Get total questions
   const allQuestions = await getAllQuestions(restId);
-  const deckQuestions = allQuestions.filter(q => 
-    !q.context || q.context === session.context
-  );
+  const { questions: deckQuestions } = resolveDeckQuestions(allQuestions, session.context);
   const totalQuestions = deckQuestions.length;
 
   if (totalQuestions === 0) return 1;
 
-  // 3. Calculate new index
   let newIndex = deckSession.position_index - 1;
   
-  // Wraparound logic (go to end if at start)
   if (newIndex < 0) {
     newIndex = totalQuestions - 1;
   }
 
-  // 4. Update DB
   await db.query(
     `UPDATE deck_sessions 
      SET position_index = $1, updated_at = NOW()
@@ -271,45 +294,11 @@ const previousDeck = async (session) => {
     [newIndex, deckSession.deck_context_id]
   );
   
-  return newIndex + 1; // Return 1-based index
+  return newIndex + 1;
 };
 
 const getQuestionAtIndex = async (restaurant_id, context, index) => {
-  // Get all questions (cached)
-  const allQuestions = await getAllQuestions(restaurant_id);
-  
-  // Filter by context
-  const deckQuestions = allQuestions.filter(q => 
-    !q.context || q.context === context
-  );
-
-  if (deckQuestions.length === 0) return null;
-
-  // Shuffle using consistent seed for the day/context
-  // Wait, we need the seed from the deck_session!
-  // But this function doesn't take session_group_id.
-  // It's a helper for getSessionState which already fetched position_index.
-  // We need to fetch the deck session to get the seed.
-  
-  // Actually, we should refactor getSessionState to use getCurrentQuestion logic 
-  // but explicitly passing the index is redundant if we just want "current".
-  // However, the prompt implies "rehydrate UI from this state".
-  // So returning the full question object is correct.
-  
-  // Let's make this function take the full session object or deck_session info.
-  // But for now, let's assume the caller has the deck_session or we fetch it.
-  
-  // BETTER APPROACH: Export a function that takes the session object and returns the current question
-  // exactly like getCurrentQuestion does, but maybe expose more metadata if needed.
-  // Actually, getCurrentQuestion ALREADY does exactly what we need:
-  // It fetches the deck session, gets the seed, shuffles, and picks the question at the current index.
-  
-  // So we don't need a new function in deckService if we can just use getCurrentQuestion?
-  // Yes. getSessionState in controller can just call deckService.getCurrentQuestion(session).
-  // I added a call to deckService.getQuestionAtIndex in the controller, but that function didn't exist.
-  // I should have used getCurrentQuestion.
-  
-  return null; 
+  return null;
 };
 
 module.exports = {

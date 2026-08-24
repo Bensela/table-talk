@@ -3,6 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const billingService = require('../services/billingService');
 const platformSettings = require('../services/platformSettingsService');
+const { insertAnalyticsEvent } = require('../services/analyticsService');
 const { authenticateToken, requireRole, verifyTenantAccess } = require('../middleware/authMiddleware');
 
 // Public Login Endpoint
@@ -30,7 +31,7 @@ router.patch('/questions/reshuffle', authenticateToken, requireRole(['SUPER_ADMI
 router.get('/plans', async (_req, res) => {
   const provider = (await billingService.hasBillingProvider()) ? 'stripe' : 'manual';
   res.json({
-    plans: billingService.listPublicPlans(),
+    plans: await billingService.listPublicPlans(),
     billing_provider: provider
   });
 });
@@ -165,12 +166,122 @@ router.get('/billing/tenants', authenticateToken, requireRole(['SUPER_ADMIN']), 
     return res.json({
       tenants,
       summary: agg.rows[0] || {},
-      plan_catalog: billingService.listAllPlans(),
+      plan_catalog: await billingService.listAllPlans(),
       billing_provider: (await billingService.hasBillingProvider()) ? 'stripe' : 'manual'
     });
   } catch (err) {
     console.error('[admin billing tenants] failed:', err);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Super Admin: get the effective plan catalog (defaults merged with any saved override).
+// Returns metadata about which source is currently in effect (stored DB override vs
+// code defaults) so the Pricing Editor UI can show an "Unsaved changes" indicator
+// and a "Reset to defaults" button.
+router.get('/platform/plan-catalog', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
+  try {
+    const { catalog, override } = await billingService.getEffectivePlanCatalog();
+    const serialized = billingService.SUPPORTED_PLANS
+      .filter((k) => catalog[k])
+      .map((k) => ({
+        key: catalog[k].key,
+        name: catalog[k].name,
+        description: catalog[k].description,
+        tagline: catalog[k].tagline || '',
+        monthly_amount_cents: catalog[k].monthly_amount_cents,
+        currency: catalog[k].currency,
+        interval: catalog[k].interval,
+        public: catalog[k].public === true,
+        features: Array.isArray(catalog[k].features) ? catalog[k].features : [],
+        defaults: catalog[k].defaults || {}
+      }));
+    return res.json({
+      plans: serialized,
+      default_keys: billingService.SUPPORTED_PLANS,
+      override: {
+        stored: Boolean(override?.stored),
+        source: override?.source || 'default',
+        updated_at: override?.updated_at ? new Date(override.updated_at).toISOString() : null,
+        updated_by: override?.updated_by || null,
+        stored_override: override?.override || null
+      }
+    });
+  } catch (err) {
+    console.error('[platform plan-catalog GET] failed:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Super Admin: save a plan catalog override (edits take effect instantly without
+// restart because getEffectivePlanCatalog() reads platform_settings each call).
+// POST body = { plan_catalog_override: { trial?: {...}, starter?: {...}, ... } }
+// Use the key 'reset' = true to wipe the override back to code defaults.
+router.post('/platform/plan-catalog', authenticateToken, requireRole(['SUPER_ADMIN']), async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (body.reset === true) {
+      billingService.invalidateCaches && billingService.invalidateCaches();
+      await billingService.resetPlanCatalogOverride();
+      await new Promise((r) => setTimeout(r, 50));
+      const { catalog, override } = await billingService.getEffectivePlanCatalog();
+      return res.json({
+        ok: true,
+        reset: true,
+        override: {
+          stored: Boolean(override?.stored),
+          source: override?.source || 'default',
+          updated_at: override?.updated_at ? new Date(override.updated_at).toISOString() : null,
+          updated_by: override?.updated_by || null
+        },
+        plans: billingService.SUPPORTED_PLANS.filter((k) => catalog[k]).map((k) => ({
+          key: catalog[k].key,
+          name: catalog[k].name,
+          monthly_amount_cents: catalog[k].monthly_amount_cents,
+          currency: catalog[k].currency,
+          interval: catalog[k].interval,
+          public: catalog[k].public,
+          features: catalog[k].features,
+          defaults: catalog[k].defaults
+        }))
+      });
+    }
+
+    const raw = body.plan_catalog_override;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return res.status(400).json({ error: 'plan_catalog_override must be an object' });
+    }
+    const normalized = await billingService.validateAndNormalizePlanOverride(raw);
+    const overrideSave = await platformSettings.setPlanCatalogOverride({
+      override: normalized,
+      actorUserId: req.user?.id || null
+    });
+    billingService.invalidateCaches && billingService.invalidateCaches();
+    await new Promise((r) => setTimeout(r, 50));
+    const { catalog } = await billingService.getEffectivePlanCatalog();
+    return res.json({
+      ok: true,
+      reset: false,
+      override: {
+        stored: Boolean(overrideSave?.stored),
+        source: overrideSave?.source || 'super_admin',
+        updated_at: overrideSave?.updated_at ? new Date(overrideSave.updated_at).toISOString() : null,
+        updated_by: overrideSave?.updated_by || null
+      },
+      plans: billingService.SUPPORTED_PLANS.filter((k) => catalog[k]).map((k) => ({
+        key: catalog[k].key,
+        name: catalog[k].name,
+        monthly_amount_cents: catalog[k].monthly_amount_cents,
+        currency: catalog[k].currency,
+        interval: catalog[k].interval,
+        public: catalog[k].public,
+        features: catalog[k].features,
+        defaults: catalog[k].defaults
+      }))
+    });
+  } catch (err) {
+    console.error('[platform plan-catalog POST] failed:', err);
+    return res.status(400).json({ error: err?.message || 'Validation failed' });
   }
 });
 
@@ -300,11 +411,15 @@ router.delete('/billing/tenants/:restaurantId/tables/:tableId', authenticateToke
       return res.status(404).json({ error: 'Table not found for this tenant' });
     }
     try {
-      await db.query(
-        `INSERT INTO analytics_events (event_type, event_data)
-         VALUES ('super_admin.table_deleted', $1::jsonb)`,
-        [{ super_admin_user_id: req.user.id, restaurant_id: restaurantId, table_id: tableId, table_number: del.rows[0]?.table_number }]
-      );
+      await insertAnalyticsEvent({
+        restaurant_id: restaurantId,
+        event_type: 'super_admin.table_deleted',
+        event_data: {
+          super_admin_user_id: req.user.id,
+          table_id: tableId,
+          table_number: del.rows[0]?.table_number
+        }
+      });
     } catch (_e) { /* non-fatal: analytics insert shouldn't block the response */ }
     return res.json({ deleted: del.rows[0] });
   } catch (err) {
@@ -388,7 +503,7 @@ router.post('/billing/checkout', authenticateToken, requireRole(['RESTAURANT_ADM
     if (!restaurantId) return res.status(400).json({ error: 'User is not associated with any restaurant' });
     const frontendUrl = await billingService.getFrontendUrl();
     const { plan, successUrl, cancelUrl } = req.body || {};
-    const planObj = billingService.getPlan(plan);
+    const planObj = await billingService.getPlan(plan);
     if (!planObj || !planObj.public) {
       return res.status(400).json({ error: 'Invalid plan for checkout' });
     }

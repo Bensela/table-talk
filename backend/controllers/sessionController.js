@@ -1,5 +1,6 @@
 const db = require('../db');
 const deckService = require('../services/deckService');
+const { insertAnalyticsEvent, insertSessionAnalyticsEvent } = require('../services/analyticsService');
 
 const crypto = require('crypto');
 
@@ -139,21 +140,6 @@ const createSession = async (req, res) => {
       ]
     );
     
-    // Log Session Group Creation/Join
-    if (isNewGroup) {
-       await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [sessionId, 'session_group_created', { session_group_id: sessionGroupId, table_token, context }]
-      );
-    } else {
-       await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [sessionId, 'session_joined_existing_group', { session_group_id: sessionGroupId }]
-      );
-    }
-
     // 6. Create Participant
     const participantId = crypto.randomUUID();
     const participantToken = crypto.randomBytes(32).toString('hex');
@@ -165,20 +151,46 @@ const createSession = async (req, res) => {
       [participantId, sessionId, 'A', participantTokenHash]
     );
 
-    // 7. Log analytics
-    if (mode === 'dual-phone') {
-      await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [sessionId, 'join_code_generated', { expires_at: pairingExpiresAt }]
-      );
+    // Log Session Group Creation/Join
+    const baseSession = {
+      session_id: sessionId,
+      participant_id: participantId,
+      restaurant_id: resolvedRestaurantId,
+      table_token
+    };
+    if (isNewGroup) {
+      await insertAnalyticsEvent({
+        ...baseSession,
+        event_type: 'session_group_created',
+        event_data: { session_group_id: sessionGroupId, context }
+      });
+    } else {
+      await insertAnalyticsEvent({
+        ...baseSession,
+        event_type: 'session_joined_existing_group',
+        event_data: { session_group_id: sessionGroupId }
+      });
     }
 
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [sessionId, 'session_created', { table_token, context, mode, session_group_id: sessionGroupId }]
-    );
+    // 7. Log analytics
+    if (mode === 'dual-phone') {
+      await insertAnalyticsEvent({
+        ...baseSession,
+        event_type: 'join_code_generated',
+        event_data: { expires_at: pairingExpiresAt }
+      });
+      await insertAnalyticsEvent({
+        ...baseSession,
+        event_type: 'waiting_partner_start',
+        event_data: { context, session_group_id: sessionGroupId }
+      });
+    }
+
+    await insertAnalyticsEvent({
+      ...baseSession,
+      event_type: 'session_created',
+      event_data: { context, mode, session_group_id: sessionGroupId, role: 'A' }
+    });
 
     // Notify Setup Channel that session is created
     // This releases any waiting users (Phone B)
@@ -297,17 +309,32 @@ const joinDualPhoneSession = async (req, res) => {
     }
 
     // 5. Log analytics
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [validSession.session_id, 'session_paired', { role: 'B' }]
-    );
-    
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [validSession.session_id, 'auto_join_success', { success: true }]
-    );
+    await insertAnalyticsEvent({
+      session_id: validSession.session_id,
+      participant_id: participantId,
+      restaurant_id: validSession.restaurant_id,
+      table_token: validSession.table_token,
+      event_type: 'session_paired',
+      event_data: { role: assignedRole, reclaim: Boolean(reclaim_role) }
+    });
+
+    await insertAnalyticsEvent({
+      session_id: validSession.session_id,
+      participant_id: participantId,
+      restaurant_id: validSession.restaurant_id,
+      table_token: validSession.table_token,
+      event_type: 'partner_connected',
+      event_data: { role: assignedRole }
+    });
+
+    await insertAnalyticsEvent({
+      session_id: validSession.session_id,
+      participant_id: participantId,
+      restaurant_id: validSession.restaurant_id,
+      table_token: validSession.table_token,
+      event_type: 'auto_join_success',
+      event_data: { success: true, role: assignedRole }
+    });
 
     res.json({
       session_id: validSession.session_id,
@@ -394,11 +421,13 @@ const updateSession = async (req, res) => {
       );
 
       // Log analytics
-      await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [session_id, 'context_changed', { context }]
-      );
+      await insertAnalyticsEvent({
+        session_id: session_id,
+        restaurant_id: updatedSession.restaurant_id,
+        table_token: updatedSession.table_token,
+        event_type: 'context_changed',
+        event_data: { context }
+      });
     }
 
     // 2. Handle Mode Update
@@ -414,11 +443,13 @@ const updateSession = async (req, res) => {
       updatedSession = result.rows[0];
       
       // Log analytics
-      await db.query(
-        `INSERT INTO analytics_events (session_id, event_type, event_data)
-         VALUES ($1, $2, $3)`,
-        [session_id, 'mode_selected', { mode }]
-      );
+      await insertAnalyticsEvent({
+        session_id: session_id,
+        restaurant_id: updatedSession.restaurant_id,
+        table_token: updatedSession.table_token,
+        event_type: 'mode_selected',
+        event_data: { mode }
+      });
     }
 
     if (context || mode) {
@@ -493,16 +524,11 @@ const endSession = async (req, res) => {
         return res.status(200).json({ message: 'Session already deleted' });
     }
 
-    // 3. Delete dependent data (Explicitly, just like cleanup job handles implicitly via CASCADE or logic)
-    // IMPORTANT: The cleanup job (Rule 4) deletes from 'sessions' where expires_at is old.
-    // Here we want to do the same thing: REMOVE it completely.
-    // If we rely on ON DELETE CASCADE, we can just delete from sessions.
-    
-    // Check if constraints exist (assumed yes based on cleanup job comments).
-    // Safest approach matches cleanup job logic: Direct Delete.
-    
-    // However, to be extra safe against constraint errors if CASCADE isn't there:
-    await db.query('DELETE FROM analytics_events WHERE session_id = $1', [session_id]);
+    // 3. Delete dependent data
+    // IMPORTANT: analytics_events rows are NEVER deleted (append-only).
+    // The session_id FK uses ON DELETE SET NULL, so the historical event
+    // stream keeps restaurant_id, table_token, anonymous_id top-level cols
+    // even when the sessions row itself is deleted.
     await db.query('DELETE FROM session_participants WHERE session_id = $1', [session_id]);
     // Delete dual_groups referencing this session before deleting the session itself
     await db.query('DELETE FROM dual_groups WHERE active_session_id = $1', [session_id]);
@@ -1156,11 +1182,11 @@ const freshIntent = async (req, res) => {
         }
         
         // Log Analytics
-        await db.query(
-          `INSERT INTO analytics_events (session_id, event_type, event_data)
-           VALUES ($1, $2, $3)`,
-          [session_id, 'dual_session_terminated_mutual', { source: 'api' }]
-        );
+        await insertAnalyticsEvent({
+          session_id,
+          event_type: 'dual_session_terminated_mutual',
+          event_data: { source: 'api' }
+        });
         
         if (io) {
             io.to(session_id).emit('dual_group_terminated');
@@ -1306,4 +1332,55 @@ const upgradeToDual = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent, upgradeToDual };
+/**
+ * POST /api/sessions/events
+ * Append-only client-side in-session event stream (render events, menu opens,
+ * per-side next intent, etc.). participant_id is required for attribution
+ * but the route accepts anonymous_id for extra tracking.
+ *
+ * Request body:
+ *   { event_type, participant_id, session_id?, event_data?, anonymous_id?,
+ *     restaurant_id?, table_token?, timestamp? }
+ */
+const postSessionEvent = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const eventType = typeof body.event_type === 'string' ? body.event_type.trim().slice(0, 50) : '';
+    const sessionId = body.session_id || null;
+    const participantId = body.participant_id || null;
+
+    if (!eventType) {
+      return res.status(400).json({ error: 'event_type required' });
+    }
+    if (!sessionId) {
+      return res.status(400).json({ error: 'session_id required for in-session events' });
+    }
+    if (!participantId) {
+      return res.status(400).json({ error: 'participant_id required for in-session events' });
+    }
+
+    const sessionRes = await db.query(
+      `SELECT restaurant_id, table_token FROM sessions WHERE session_id = $1`,
+      [sessionId]
+    );
+    const session = sessionRes.rows && sessionRes.rows[0] ? sessionRes.rows[0] : null;
+
+    const event = await insertAnalyticsEvent({
+      event_type: eventType,
+      session_id: sessionId,
+      participant_id: participantId,
+      restaurant_id: body.restaurant_id || session?.restaurant_id || null,
+      table_token: (typeof body.table_token === 'string' ? body.table_token : null) || session?.table_token || null,
+      anonymous_id: typeof body.anonymous_id === 'string' ? body.anonymous_id : null,
+      event_data: body.event_data || null,
+      timestamp: body.timestamp || null
+    });
+
+    return res.status(201).json({ event_id: event ? event.event_id : null });
+  } catch (err) {
+    console.error('[sessions/events] post failed:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent, upgradeToDual, postSessionEvent };

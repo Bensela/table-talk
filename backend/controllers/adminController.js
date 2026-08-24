@@ -5,6 +5,7 @@ const QRCode = require('qrcode');
 const deckService = require('../services/deckService');
 const billingService = require('../services/billingService');
 const { geocodeAddress } = require('../services/geocodeService');
+const { invalidateCachedRestaurantGeo } = require('../services/geofenceService');
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://tabletalk.app').replace(/\/+$/, '');
 const GLOBAL_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
@@ -758,7 +759,7 @@ async function createTenantInvite(req, res) {
  * Super Admin: Register a new tenant. Optionally creates a tenant admin user.
  */
 async function createTenant(req, res) {
-  const { name, slug, adminEmail, adminPassword, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
+  const { name, slug, adminEmail, adminPassword, contactEmail, contactPhone, address, latitude, longitude, geofenceRadius, managerName } = req.body;
   if (!name || !slug) {
     return res.status(400).json({ error: 'Name and slug are required' });
   }
@@ -777,15 +778,20 @@ async function createTenant(req, res) {
       shouldGeocode: Boolean(address) && (latitude === undefined || latitude === null || latitude === '') && (longitude === undefined || longitude === null || longitude === '')
     });
 
+    let radiusInt = 100;
+    if (geofenceRadius != null && Number.isFinite(Number(geofenceRadius))) {
+      radiusInt = Math.max(5, Math.min(5000, Math.floor(Number(geofenceRadius))));
+    }
+
     const trialStartsAt = new Date();
     const trialEndsAt = new Date(trialStartsAt.getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
 
     await db.query('BEGIN');
 
     const restResult = await db.query(
-      `INSERT INTO restaurants (name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, plan, trial_ends_at)
-       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, 'trial', $9)
-       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, plan, trial_ends_at, created_at`,
+      `INSERT INTO restaurants (name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, geofence_radius_meters, manager_name, plan, trial_ends_at)
+       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, 'trial', $10)
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, geofence_radius_meters, manager_name, plan, trial_ends_at, created_at`,
       [
         name,
         slug,
@@ -794,6 +800,7 @@ async function createTenant(req, res) {
         location?.address ?? (address || null),
         location?.latitude ?? parseOptionalNumber(latitude),
         location?.longitude ?? parseOptionalNumber(longitude),
+        radiusInt,
         managerName || null,
         trialEndsAt
       ]
@@ -838,7 +845,7 @@ async function createTenant(req, res) {
  */
 async function updateTenant(req, res) {
   const { id } = req.params;
-  const { name, slug, billing_status, contactEmail, contactPhone, address, latitude, longitude, managerName } = req.body;
+  const { name, slug, billing_status, contactEmail, contactPhone, address, latitude, longitude, geofenceRadius, managerName } = req.body;
 
   try {
     const fields = [];
@@ -888,11 +895,25 @@ async function updateTenant(req, res) {
     }
     if (latitude !== undefined || (address !== undefined && location && 'latitude' in location)) {
       fields.push(`latitude = $${index++}`);
-      params.push(location?.latitude ?? null);
+      const rawLat = location?.latitude ?? null;
+      const clampedLat = rawLat == null ? null : Math.min(Math.max(Number(rawLat), -90), 90);
+      params.push(clampedLat);
     }
     if (longitude !== undefined || (address !== undefined && location && 'longitude' in location)) {
       fields.push(`longitude = $${index++}`);
-      params.push(location?.longitude ?? null);
+      const rawLng = location?.longitude ?? null;
+      const clampedLng = rawLng == null ? null : Math.min(Math.max(Number(rawLng), -180), 180);
+      params.push(clampedLng);
+    }
+    if (geofenceRadius !== undefined) {
+      // 50m is the reliable GPS minimum for consumer phones; anything
+      // smaller produces false blocks even inside the restaurant.
+      let radiusInt = 100;
+      if (geofenceRadius != null && Number.isFinite(Number(geofenceRadius))) {
+        radiusInt = Math.max(50, Math.min(5000, Math.floor(Number(geofenceRadius))));
+      }
+      fields.push(`geofence_radius_meters = $${index++}`);
+      params.push(radiusInt);
     }
     if (managerName !== undefined) {
       fields.push(`manager_name = $${index++}`);
@@ -905,11 +926,19 @@ async function updateTenant(req, res) {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
+    // If slug is being changed, load the existing row so we can invalidate the
+    // old slug *and* the new slug from the geofence soft-TTL cache below.
+    let priorRow = null;
+    if (slug !== undefined) {
+      const prior = await db.query('SELECT slug FROM restaurants WHERE id = $1 LIMIT 1', [id]);
+      priorRow = prior.rows[0] || null;
+    }
+
     const result = await db.query(
       `UPDATE restaurants
        SET ${fields.join(', ')}
        WHERE id = $1
-       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, manager_name, created_at`,
+       RETURNING id, name, slug, billing_status, contact_email, contact_phone, address, latitude, longitude, geofence_radius_meters, manager_name, created_at`,
       params
     );
 
@@ -917,7 +946,16 @@ async function updateTenant(req, res) {
       return res.status(404).json({ error: 'Tenant not found' });
     }
 
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    // Evict cache keys that could be holding stale lat/lng/radius/slug data.
+    // Always evict current slug; when slug changes, also evict the prior slug
+    // (otherwise re-lookups with the old URL path would return stale info).
+    invalidateCachedRestaurantGeo(updated.slug);
+    if (priorRow && priorRow.slug && priorRow.slug !== updated.slug) {
+      invalidateCachedRestaurantGeo(priorRow.slug);
+    }
+
+    res.json(updated);
   } catch (err) {
     console.error('Update tenant error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1066,17 +1104,39 @@ async function getSuperAdminMetrics(req, res) {
            WHERE restaurant_id <> $1
              AND expires_at > NOW()
              AND COALESCE(dual_status, '') <> 'ended'
-             AND COALESCE(last_activity_at, created_at) >= NOW() - INTERVAL '5 minutes'
+         ),
+         recent_restaurant_activity AS (
+           -- Primary truth: denormalized analytics_events rows from the last 24 hours
+           SELECT
+             COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) AS restaurant_id,
+             MAX(ae.timestamp) AS last_activity_at,
+             COUNT(DISTINCT ae.session_id) FILTER (WHERE ae.event_type = 'session_created') AS active_sessions,
+             COUNT(DISTINCT COALESCE(ae.table_token, ae.event_data->>'table_token')) FILTER (WHERE ae.event_type IN ('qr_scan_validated','session_created','question_viewed')) AS active_tables,
+             COUNT(*) FILTER (WHERE ae.event_type = 'question_viewed') AS engagement_signals,
+             MAX(CASE WHEN ae.timestamp >= NOW() - INTERVAL '5 minutes' THEN 1 ELSE 0 END) AS is_realtime
+           FROM analytics_events ae
+           WHERE ae.timestamp >= NOW() - INTERVAL '24 hours'
+             AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL)
+             AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $1
+           GROUP BY 1
          )
          SELECT
-           (SELECT COUNT(*) FROM live_sessions) AS active_sessions_now,
-           (SELECT COUNT(DISTINCT restaurant_id::text || ':' || table_token) FROM live_sessions) AS active_tables_now,
-           (SELECT COUNT(DISTINCT restaurant_id) FROM live_sessions) AS live_restaurants_now,
-           (SELECT COUNT(*) FROM live_sessions WHERE mode = 'dual-phone') AS dual_sessions_now,
-           (SELECT COUNT(*) FROM sessions WHERE restaurant_id <> $1 AND created_at >= NOW() - INTERVAL '${sqlInterval}') AS sessions_window,
-           (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'qr_scan_validated' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS qr_scans_window,
-           (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'question_viewed' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS question_views_window`
-        ,
+           COALESCE(rra.restaurant_id, ls.restaurant_id) AS restaurant_id,
+           MAX(CASE WHEN ls.mode = 'dual-phone' THEN 1 ELSE 0 END) AS has_dual,
+           COUNT(DISTINCT ls.session_id)::int AS active_sessions_now,
+           COUNT(DISTINCT ls.table_token)::int AS active_tables_now,
+           COALESCE(MAX(rra.active_sessions), 0)::int AS sessions_24h,
+           COALESCE(MAX(rra.active_tables), 0)::int AS tables_24h,
+           COALESCE(MAX(rra.engagement_signals), 0)::int AS engagement_signals_24h,
+           COALESCE(
+             MAX(rra.is_realtime) = 1,
+             BOOL_OR(COALESCE(ls.last_seen_at, '-infinity'::timestamptz) >= NOW() - INTERVAL '5 minutes')
+           )::boolean AS live_now_flag
+         FROM recent_restaurant_activity rra
+         FULL OUTER JOIN live_sessions ls ON ls.restaurant_id = rra.restaurant_id
+         WHERE COALESCE(rra.restaurant_id, ls.restaurant_id) IS NOT NULL
+         GROUP BY 1
+        `,
         [GLOBAL_RESTAURANT_ID]
       ),
       db.query(
@@ -1086,7 +1146,21 @@ async function getSuperAdminMetrics(req, res) {
            WHERE restaurant_id <> $1
              AND expires_at > NOW()
              AND COALESCE(dual_status, '') <> 'ended'
-             AND COALESCE(last_activity_at, created_at) >= NOW() - INTERVAL '5 minutes'
+             AND COALESCE(last_activity_at, created_at) >= NOW() - INTERVAL '24 hours'
+         ),
+         recent_restaurant_activity AS (
+           SELECT
+             COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) AS restaurant_id,
+             MAX(ae.timestamp) AS last_activity_at,
+             COUNT(DISTINCT ae.session_id) FILTER (WHERE ae.event_type = 'session_created') AS active_sessions,
+             COUNT(DISTINCT COALESCE(ae.table_token, ae.event_data->>'table_token')) FILTER (WHERE ae.event_type IN ('qr_scan_validated','session_created','question_viewed')) AS active_tables,
+             COUNT(*) FILTER (WHERE ae.event_type = 'question_viewed') AS engagement_signals,
+             MAX(CASE WHEN ae.timestamp >= NOW() - INTERVAL '5 minutes' THEN 1 ELSE 0 END) AS is_realtime
+           FROM analytics_events ae
+           WHERE ae.timestamp >= NOW() - INTERVAL '24 hours'
+             AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL)
+             AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $1
+           GROUP BY 1
          )
          SELECT
            r.id,
@@ -1095,14 +1169,46 @@ async function getSuperAdminMetrics(req, res) {
            r.address,
            r.latitude,
            r.longitude,
+           r.geofence_radius_meters,
+           GREATEST(
+             rra.last_activity_at,
+             (SELECT MAX(ls2.last_seen_at) FROM live_sessions ls2 WHERE ls2.restaurant_id = r.id)
+           ) AS last_activity_at,
+           -- Active sessions NOW (strict in-memory 5m hot sessions)
+           COALESCE((SELECT COUNT(*) FROM live_sessions WHERE restaurant_id = r.id AND last_seen_at >= NOW() - INTERVAL '5 minutes'), 0) AS active_sessions,
+           COALESCE((SELECT COUNT(DISTINCT table_token) FROM live_sessions WHERE restaurant_id = r.id AND last_seen_at >= NOW() - INTERVAL '5 minutes'), 0) AS active_tables,
+           -- Cumulative 24h numbers: primary numbers on card
+           COALESCE(rra.active_sessions, 0)::int AS sessions_24h,
+           COALESCE(rra.active_tables, 0)::int AS tables_24h,
+           COALESCE(rra.engagement_signals, 0)::int AS engagement_signals_24h,
+           -- Flags used by frontend to tint card
+           CASE WHEN COALESCE(rra.is_realtime, 0) = 1 THEN true ELSE false END AS live_now
+         FROM recent_restaurant_activity rra
+         JOIN restaurants r ON r.id = rra.restaurant_id
+         UNION
+         SELECT
+           r.id,
+           r.name,
+           r.slug,
+           r.address,
+           r.latitude,
+           r.longitude,
+           r.geofence_radius_meters,
            MAX(ls.last_seen_at) AS last_activity_at,
-           COUNT(*) AS active_sessions,
-           COUNT(DISTINCT ls.table_token) AS active_tables
+           COUNT(*) FILTER (WHERE ls.last_seen_at >= NOW() - INTERVAL '5 minutes') AS active_sessions,
+           COUNT(DISTINCT ls.table_token) FILTER (WHERE ls.last_seen_at >= NOW() - INTERVAL '5 minutes') AS active_tables,
+           0 AS sessions_24h,
+           0 AS tables_24h,
+           0 AS engagement_signals_24h,
+           BOOL_OR(ls.last_seen_at >= NOW() - INTERVAL '5 minutes') AS live_now
          FROM live_sessions ls
          JOIN restaurants r ON r.id = ls.restaurant_id
-         GROUP BY r.id, r.name, r.slug, r.address, r.latitude, r.longitude
-         ORDER BY COUNT(*) DESC, MAX(ls.last_seen_at) DESC
-         LIMIT 8`,
+         WHERE NOT EXISTS (
+           SELECT 1 FROM recent_restaurant_activity rra WHERE rra.restaurant_id = ls.restaurant_id
+         )
+         GROUP BY r.id, r.name, r.slug, r.address, r.latitude, r.longitude, r.geofence_radius_meters
+         ORDER BY live_now DESC, last_activity_at DESC, active_sessions DESC
+         LIMIT 12`,
         [GLOBAL_RESTAURANT_ID]
       ),
       db.query(
@@ -1139,21 +1245,84 @@ async function getSuperAdminMetrics(req, res) {
            ae.event_type,
            ae.timestamp,
            ae.event_data,
-           COALESCE(r.name, ae.event_data->>'restaurant_name') AS restaurant_name,
-           COALESCE(r.slug, ae.event_data->>'restaurant_slug') AS restaurant_slug,
-           COALESCE(s.table_token, ae.event_data->>'table_number') AS table_token
+           ae.session_id,
+           ae.participant_id,
+           ae.restaurant_id AS ae_restaurant_id,
+           ae.table_token AS ae_table_token,
+           ae.anonymous_id,
+           -- Prefer: restaurant from denormalized column -> event_data json -> sessions join -> name in event_data
+           COALESCE(
+             r.name,
+             ae.event_data->>'restaurant_name',
+             r_default.name,
+             NULLIF(ae.event_data->>'restaurant_slug', '')
+           ) AS restaurant_name,
+           COALESCE(
+             r.slug,
+             ae.event_data->>'restaurant_slug',
+             r_default.slug
+           ) AS restaurant_slug,
+           COALESCE(
+             s.table_token,
+             ae.table_token,
+             ae.event_data->>'table_token',
+             ae.event_data->>'table_number'
+           ) AS table_token
          FROM analytics_events ae
          LEFT JOIN sessions s ON s.session_id = ae.session_id
-         LEFT JOIN restaurants r ON r.id = s.restaurant_id
+         LEFT JOIN restaurants r ON r.id IN (ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid)
+         LEFT JOIN restaurants r_default ON r_default.id IN (s.restaurant_id, ae.restaurant_id)
          WHERE ae.timestamp >= NOW() - INTERVAL '${sqlInterval}'
-           AND ae.event_type IN ('qr_scan_validated', 'qr_scan_rejected', 'session_created', 'question_viewed', 'session_paired', 'context_changed')
+           -- Only user-visible, user-initiated or user-impacting lifecycles.
+           -- Explicitly EXCLUDED: backend cron jobs (cleanup_*), server-side
+           -- errors, socket transport-level reconnects, auto-expiry.
+           AND ae.event_type IN (
+             'qr_scan_validated', 'qr_scan_rejected', 'qr_scan_invalid',
+             'geofence_check_denied', 'welcome_geofence_denied',
+             'welcome_geolocation_request', 'welcome_screen_rendered',
+             'context_selected', 'mode_selected',
+             'session_created', 'session_resumed', 'session_reconnect',
+             'session_end',
+             'session_paired', 'dual_partner_joined', 'dual_pairing_failed', 'dual_full_rejected',
+             'dual_pairing_requested', 'waiting_partner_ended', 'partner_reconnected', 'partner_disconnected',
+             'socket_joined_session',
+             'context_changed', 'mode_changed', 'menu_opened', 'menu_closed',
+             'menu_reset_context_requested', 'menu_reset_mode_requested',
+             'menu_start_fresh_pressed', 'menu_start_fresh_outcome',
+             'start_fresh', 'session_destroyed',
+             'question_viewed', 'question_shown', 'question_dwell_complete',
+             'question_revealed', 'question_locked',
+             'question_advanced', 'question_advance',
+             'hint_revealed', 'mcq_answer_submitted'
+           )
          ORDER BY ae.timestamp DESC
-         LIMIT 12`
+         LIMIT 20`
       )
     ]);
 
     const restaurantSummary = restaurantSummaryResult.rows[0];
-    const overview = overviewResult.rows[0];
+    const overviewRows = overviewResult.rows || [];
+
+    const overview = {
+      active_sessions_now: overviewRows.reduce((sum, row) => sum + Number(row.active_sessions_now || 0), 0),
+      active_tables_now: overviewRows.reduce((sum, row) => sum + Number(row.active_tables_now || 0), 0),
+      live_restaurants_now: overviewRows.filter((row) => Boolean(row.live_now_flag)).length,
+      active_restaurants_24h: overviewRows.length,
+      dual_sessions_now: overviewRows.reduce((sum, row) => sum + Number(row.has_dual || 0), 0),
+      sessions_24h: overviewRows.reduce((sum, row) => sum + Number(row.sessions_24h || 0), 0),
+      tables_24h: overviewRows.reduce((sum, row) => sum + Number(row.tables_24h || 0), 0),
+      engagement_24h: overviewRows.reduce((sum, row) => sum + Number(row.engagement_signals_24h || 0), 0)
+    };
+
+    // Compute windowed overview numbers: qr_scans, question_views, created sessions in chosen interval
+    const intervalQuery = await db.query(
+      `SELECT
+         (SELECT COUNT(*) FROM sessions WHERE restaurant_id <> $1 AND created_at >= NOW() - INTERVAL '${sqlInterval}') AS sessions_window,
+         (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'qr_scan_validated' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS qr_scans_window,
+         (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'question_viewed' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS question_views_window`,
+      [GLOBAL_RESTAURANT_ID]
+    );
+    const windowOverview = intervalQuery.rows?.[0] || {};
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -1167,15 +1336,20 @@ async function getSuperAdminMetrics(req, res) {
         active_sessions_now: Number(overview.active_sessions_now || 0),
         active_tables_now: Number(overview.active_tables_now || 0),
         live_restaurants_now: Number(overview.live_restaurants_now || 0),
+        active_restaurants_24h: Number(overview.active_restaurants_24h || 0),
         dual_sessions_now: Number(overview.dual_sessions_now || 0),
-        sessions_window: Number(overview.sessions_window || 0),
-        qr_scans_window: Number(overview.qr_scans_window || 0),
-        question_views_window: Number(overview.question_views_window || 0)
+        sessions_window: Number(windowOverview.sessions_window || 0),
+        qr_scans_window: Number(windowOverview.qr_scans_window || 0),
+        question_views_window: Number(windowOverview.question_views_window || 0)
       },
       live_restaurants: liveRestaurantsResult.rows.map((row) => ({
         ...row,
         active_sessions: Number(row.active_sessions || 0),
-        active_tables: Number(row.active_tables || 0)
+        active_tables: Number(row.active_tables || 0),
+        sessions_24h: Number(row.sessions_24h || 0),
+        tables_24h: Number(row.tables_24h || 0),
+        engagement_signals_24h: Number(row.engagement_signals_24h || 0),
+        live_now: Boolean(row.live_now)
       })),
       context_mix: contextMixResult.rows.map((row) => ({
         label: row.label,
@@ -1568,7 +1742,7 @@ async function getTenantBilling(req, res) {
   try {
     const result = await db.query(
       `SELECT id, name, slug, billing_status, contact_email, contact_phone,
-              address, latitude, longitude, manager_name, created_at
+              address, latitude, longitude, geofence_radius_meters, manager_name, created_at
        FROM restaurants
        WHERE id = $1`,
       [restaurantId]
@@ -1591,11 +1765,13 @@ async function getTenantBilling(req, res) {
                updated_at = NOW()
            WHERE id = $1
            RETURNING id, name, slug, billing_status, contact_email, contact_phone,
-                     address, latitude, longitude, manager_name, created_at`,
+                     address, latitude, longitude, geofence_radius_meters, manager_name, created_at`,
           [restaurantId, geocoded.latitude, geocoded.longitude]
         );
 
-        return res.json(updatedResult.rows[0]);
+        const geocodedRow = updatedResult.rows[0];
+        if (geocodedRow && geocodedRow.slug) invalidateCachedRestaurantGeo(geocodedRow.slug);
+        return res.json(geocodedRow || result.rows[0]);
       }
     }
 
@@ -1630,8 +1806,18 @@ async function updateTenantProfile(req, res) {
     if (contactEmail !== undefined)   { fields.push(`contact_email = $${i++}`); params.push(contactEmail || null); }
     if (contactPhone !== undefined)   { fields.push(`contact_phone = $${i++}`); params.push(contactPhone || null); }
     if (address !== undefined)        { fields.push(`address = $${i++}`);        params.push(location?.address ?? null); }
-    if (latitude !== undefined || (address !== undefined && location && 'latitude' in location))       { fields.push(`latitude = $${i++}`);       params.push(location?.latitude ?? null); }
-    if (longitude !== undefined || (address !== undefined && location && 'longitude' in location))     { fields.push(`longitude = $${i++}`);     params.push(location?.longitude ?? null); }
+    if (latitude !== undefined || (address !== undefined && location && 'latitude' in location)) {
+      fields.push(`latitude = $${i++}`);
+      const rawLat = location?.latitude ?? null;
+      const clampedLat = rawLat == null ? null : Math.min(Math.max(Number(rawLat), -90), 90);
+      params.push(clampedLat);
+    }
+    if (longitude !== undefined || (address !== undefined && location && 'longitude' in location)) {
+      fields.push(`longitude = $${i++}`);
+      const rawLng = location?.longitude ?? null;
+      const clampedLng = rawLng == null ? null : Math.min(Math.max(Number(rawLng), -180), 180);
+      params.push(clampedLng);
+    }
     fields.push(`updated_at = NOW()`);
     if (fields.length === 1) return res.status(400).json({ error: 'No fields to update' });
 
@@ -1641,7 +1827,11 @@ async function updateTenantProfile(req, res) {
       params
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
-    res.json(result.rows[0]);
+    const profileUpdated = result.rows[0];
+    if (profileUpdated && profileUpdated.slug) {
+      invalidateCachedRestaurantGeo(profileUpdated.slug);
+    }
+    res.json(profileUpdated);
   } catch (err) {
     console.error('Update tenant profile error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1676,157 +1866,34 @@ async function getTenantTables(req, res) {
 /**
  * POST /api/tenant/tables
  * Restaurant Admin: Register a new table, generate its QR URL.
- * Trial-plan restaurants are NOT allowed to self-create tables/QRs — SA provisions them explicitly.
+ * DEPRECATED: This endpoint is now SUPER ADMIN ONLY.
  */
 async function createTenantTable(req, res) {
-  const restaurantId = req.user.restaurant_id;
-  const { table_number } = req.body;
-
-  if (!restaurantId) {
-    return res.status(400).json({ error: 'User is not associated with any restaurant' });
-  }
-  if (!table_number) {
-    return res.status(400).json({ error: 'table_number is required' });
-  }
-
-  try {
-    // Trial-plan restaurants cannot self-generate tables/QRs.
-    const billing = await billingService.canRestaurantGenerateQr(restaurantId);
-    if (billing === false || (typeof billing === 'object' && billing.can_generate_qr === false)) {
-      const info = await billingService.getRestaurantBilling(restaurantId);
-      if (!info || info.plan === 'trial') {
-        return res.status(403).json({
-          error: 'Trial restaurants cannot generate QR codes. Please ask your Super Admin to provision trial-QR tables.'
-        });
-      }
-    }
-    if (typeof billing === 'object' && billing.can_generate_qr === false && info?.plan !== 'trial') {
-      return res.status(403).json({ error: 'QR generation is disabled for this restaurant. Please contact support.' });
-    }
-
-    // Get restaurant slug
-    const restRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
-    if (restRes.rows.length === 0) {
-      return res.status(404).json({ error: 'Restaurant not found' });
-    }
-    const slug = restRes.rows[0].slug;
-
-    // Generate table public QR URL using path-based format: /r/{slug}/t/{tableNumber}
-    const frontendBase = await billingService.getFrontendUrl();
-    const qr_code_url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(table_number)}`;
-
-    const result = await db.query(
-      `INSERT INTO restaurant_tables (restaurant_id, table_number, qr_code_url)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (restaurant_id, table_number) DO UPDATE SET qr_code_url = EXCLUDED.qr_code_url
-       RETURNING id, table_number, qr_code_url, created_at`,
-      [restaurantId, table_number, qr_code_url]
-    );
-
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Create tenant table error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  return res.status(403).json({
+    error: 'Table and QR management are performed exclusively by the Catalyst Super Admin team. Please contact your onboarding contact to provision tables or make QR changes.'
+  });
 }
 
 /**
  * POST /api/tenant/qr
  * Restaurant Admin: Generate QR codes for selected table(s) or all tables.
- * Trial-plan restaurants are NOT allowed to self-serve QRs.
- * Returns array of { id, table_number, url, qr } where qr is a data URL.
+ * DEPRECATED: This endpoint is now SUPER ADMIN ONLY.
  */
 async function generateTenantQr(req, res) {
-  const restaurantId = req.user.restaurant_id;
-  if (!restaurantId) {
-    return res.status(400).json({ error: 'User is not associated with any restaurant' });
-  }
-  const { tables } = req.body; // optional array of table_numbers
-
-  try {
-    // Trial-plan restaurants cannot self-generate QRs.
-    const billingInfo = await billingService.getRestaurantBilling(restaurantId);
-    if (!billingInfo) return res.status(404).json({ error: 'Restaurant not found' });
-    if (!billingInfo.can_generate_qr || billingInfo.plan === 'trial') {
-      return res.status(403).json({
-        error: billingInfo.plan === 'trial'
-          ? 'Trial restaurants cannot generate QR codes. Please ask your Super Admin to provision trial-QR tables.'
-          : 'QR generation is disabled for this restaurant. Please contact support.'
-      });
-    }
-
-    const slug = billingInfo.slug;
-    if (!slug) return res.status(404).json({ error: 'Restaurant not found' });
-
-    let query = `SELECT id, table_number, qr_code_url FROM restaurant_tables WHERE restaurant_id = $1`;
-    const params = [restaurantId];
-    if (Array.isArray(tables) && tables.length > 0) {
-      query += ` AND table_number = ANY($2)`;
-      params.push(tables);
-    }
-    query += ` ORDER BY table_number ASC`;
-
-    const frontendBase = await billingService.getFrontendUrl();
-    const rows = await db.query(query, params);
-    const results = await Promise.all(rows.rows.map(async (row) => {
-      const url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
-      const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
-      return { id: row.id, table_number: row.table_number, url, qr };
-    }));
-
-    res.json(results);
-  } catch (err) {
-    console.error('Generate tenant QR error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  return res.status(403).json({
+    error: 'QR code generation is performed exclusively by the Catalyst Super Admin team. Please contact your onboarding contact for QR deliveries.'
+  });
 }
 
 /**
  * PATCH /api/tenant/tables/:id/qr
- * Restaurant Admin: Regenerate QR code for a single table. Returns fresh QR data URL.
+ * Restaurant Admin: Regenerate QR code for a single table.
+ * DEPRECATED: This endpoint is now SUPER ADMIN ONLY.
  */
 async function regenerateTableQr(req, res) {
-  const restaurantId = req.user.restaurant_id;
-  if (!restaurantId) {
-    return res.status(400).json({ error: 'User is not associated with any restaurant' });
-  }
-  const { id } = req.params;
-
-  try {
-    const billingInfo = await billingService.getRestaurantBilling(restaurantId);
-    if (!billingInfo) return res.status(404).json({ error: 'Restaurant not found' });
-    if (!billingInfo.can_generate_qr || billingInfo.plan === 'trial') {
-      return res.status(403).json({
-        error: billingInfo.plan === 'trial'
-          ? 'Trial restaurants cannot regenerate QRs. Please ask your Super Admin.'
-          : 'QR regeneration is disabled for this restaurant. Please contact support.'
-      });
-    }
-
-    const slug = billingInfo.slug;
-    if (!slug) return res.status(404).json({ error: 'Restaurant not found' });
-
-    const rowRes = await db.query(
-      `SELECT id, table_number FROM restaurant_tables WHERE id = $1 AND restaurant_id = $2`,
-      [id, restaurantId]
-    );
-    if (!rowRes.rows.length) return res.status(404).json({ error: 'Table not found' });
-
-    const frontendBase = await billingService.getFrontendUrl();
-    const row = rowRes.rows[0];
-    const url = `${frontendBase}/r/${slug}/t/${encodeURIComponent(row.table_number)}`;
-    const qr = await QRCode.toDataURL(url, { width: 600, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
-
-    await db.query(
-      `UPDATE restaurant_tables SET qr_code_url = $1 WHERE id = $2`,
-      [url, id]
-    );
-
-    res.json({ id: row.id, table_number: row.table_number, url, qr });
-  } catch (err) {
-    console.error('Regenerate table QR error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  return res.status(403).json({
+    error: 'QR regeneration is performed exclusively by the Catalyst Super Admin team. Please contact your onboarding contact for changes.'
+  });
 }
 
 module.exports = {

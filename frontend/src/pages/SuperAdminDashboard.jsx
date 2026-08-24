@@ -13,7 +13,13 @@ export default function SuperAdminDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const TAB_DASHBOARD = 'dashboard';
   const TAB_QUESTIONS = 'questions';
-  const initialTab = searchParams.get('tab') === TAB_QUESTIONS ? TAB_QUESTIONS : TAB_DASHBOARD;
+  const TAB_PRICING = 'pricing';
+  const initialTab = (() => {
+    const t = searchParams.get('tab');
+    if (t === TAB_QUESTIONS) return TAB_QUESTIONS;
+    if (t === TAB_PRICING) return TAB_PRICING;
+    return TAB_DASHBOARD;
+  })();
   const [activeTab, setActiveTab] = useState(initialTab);
   const setActiveTabSync = (next) => {
     setActiveTab(next);
@@ -91,6 +97,13 @@ export default function SuperAdminDashboard() {
   const [saBulkPrinting, setSaBulkPrinting] = useState(false);
   const [saDeletingTableId, setSaDeletingTableId] = useState(null);
   const [saDeleteConfirmTable, setSaDeleteConfirmTable] = useState(null);
+  const [saDeleteTenant, setSaDeleteTenant] = useState(null); // { tenant, slugInput }
+  const [saDeleteTenantInput, setSaDeleteTenantInput] = useState('');
+  const [saDeleteTenantLoading, setSaDeleteTenantLoading] = useState(false);
+  const [saDeleteQuestion, setSaDeleteQuestion] = useState(null); // { mode: 'single'|'bulk', questionId?, count? }
+  const [saDeleteQuestionLoading, setSaDeleteQuestionLoading] = useState(false);
+  const [saTableQrPreviews, setSaTableQrPreviews] = useState({}); // map tableId -> data URL
+  const [saTableQrPreviewsLoading, setSaTableQrPreviewsLoading] = useState(false);
   const [billingSearch, setBillingSearch] = useState('');
   const [paymentGateway, setPaymentGateway] = useState(null);
   const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
@@ -105,6 +118,14 @@ export default function SuperAdminDashboard() {
     frontend_url: ''
   });
   const [pgBanner, setPgBanner] = useState(null);
+  const [pricingEditorForm, setPricingEditorForm] = useState({
+    plans: [],
+    override: null,
+    loadedAt: null
+  });
+  const [pricingEditorLoading, setPricingEditorLoading] = useState(false);
+  const [pricingEditorSaving, setPricingEditorSaving] = useState(false);
+  const [pricingEditorBanner, setPricingEditorBanner] = useState(null);
   const [openPanel, setOpenPanel] = useState('plan');
 
   useEffect(() => {
@@ -212,13 +233,16 @@ export default function SuperAdminDashboard() {
   const fetchData = async () => {
     try {
       setPageLoading(true);
-      const [tenantsRes, questionsRes, metricsRes, billingRes, pgRes] = await Promise.all([
+      const [tenantsRes, questionsRes, metricsRes, billingRes, pgRes, pricingRes] = await Promise.all([
         apiFetch('/admin/tenants', { headers: getAdminHeaders() }),
         apiFetch('/admin/questions', { headers: getAdminHeaders() }),
         apiFetch(`/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, { headers: getAdminHeaders() }),
         apiFetch('/admin/billing/tenants', { headers: getAdminHeaders() }),
         (async () => {
           try { setPaymentGatewayLoading(true); return await apiFetch('/admin/platform/payment-gateway', { headers: getAdminHeaders() }); } finally { setPaymentGatewayLoading(false); }
+        })(),
+        (async () => {
+          try { setPricingEditorLoading(true); return await apiFetch('/admin/platform/plan-catalog', { headers: getAdminHeaders() }); } finally { setPricingEditorLoading(false); }
         })()
       ]);
 
@@ -255,6 +279,48 @@ export default function SuperAdminDashboard() {
       } else {
         const pgErr = await pgRes.json().catch(() => ({}));
         setPgBanner({ kind: 'error', message: pgErr?.error || 'Unable to load payment gateway settings.' });
+      }
+
+      if (pricingRes?.ok) {
+        try {
+          const pricingData = await pricingRes.json();
+          const plans = (pricingData?.plans || []).map((raw) => {
+            const defaults = raw?.defaults || {};
+            return {
+              key: String(raw.key || ''),
+              name: String(raw.name || ''),
+              description: String(raw.description || ''),
+              tagline: String(raw.tagline || ''),
+              monthly_amount_cents: Number.isFinite(Number(raw.monthly_amount_cents)) ? Number(raw.monthly_amount_cents) : 0,
+              currency: String(raw.currency || 'USD').toUpperCase(),
+              interval: String(raw.interval || 'month'),
+              public: raw.public === true,
+              features: Array.isArray(raw.features) ? raw.features.map((f) => String(f || '')).filter(Boolean) : [],
+              defaults: {
+                trial_days: Number.isFinite(Number(defaults.trial_days)) ? Number(defaults.trial_days) : null,
+                max_tables: Number.isFinite(Number(defaults.max_tables)) ? Number(defaults.max_tables) : null,
+                max_monthly_sessions: Number.isFinite(Number(defaults.max_monthly_sessions)) ? Number(defaults.max_monthly_sessions) : null,
+                support_tier: String(defaults.support_tier || ''),
+                can_use_dual_phone_sessions: defaults.can_use_dual_phone_sessions === true,
+                can_generate_qr: defaults.can_generate_qr === true,
+                can_export_analytics: defaults.can_export_analytics === true,
+                can_use_custom_qr_branding: defaults.can_use_custom_qr_branding === true,
+                can_access_support: defaults.can_access_support === true
+              }
+            };
+          });
+          setPricingEditorForm({
+            plans,
+            override: pricingData?.override || null,
+            loadedAt: Date.now()
+          });
+        } catch (pricingErr) {
+          console.error('[pricing editor] parse failed:', pricingErr);
+          setPricingEditorBanner({ kind: 'error', message: 'Unable to parse plan catalog.' });
+        }
+      } else if (pricingRes) {
+        const pricingErr = await pricingRes.json().catch(() => ({}));
+        setPricingEditorBanner({ kind: 'error', message: pricingErr?.error || 'Unable to load plan catalog.' });
       }
 
       setTenants(Array.isArray(tenantsData) ? tenantsData : []);
@@ -323,6 +389,187 @@ export default function SuperAdminDashboard() {
       setPgBanner({ kind: 'error', message: err.message || 'Verification failed' });
     } finally {
       setPaymentGatewayVerifying(false);
+    }
+  };
+
+  const updatePricingPlanField = (planKey, field, value) => {
+    setPricingEditorForm((prev) => {
+      const plans = (prev?.plans || []).map((plan) => {
+        if (plan.key !== planKey) return plan;
+        if (field === 'monthly_amount_cents') {
+          const raw = String(value || '').replace(/[^0-9]/g, '');
+          const num = raw === '' ? 0 : Number(raw);
+          return { ...plan, monthly_amount_cents: Number.isFinite(num) ? num : 0 };
+        }
+        if (field.startsWith('defaults.')) {
+          const sub = field.slice('defaults.'.length);
+          const defs = plan.defaults || {};
+          let next;
+          if (['max_tables', 'max_monthly_sessions', 'trial_days'].includes(sub)) {
+            const raw = String(value ?? '').trim();
+            next = raw === '' ? null : Number.isFinite(Number(raw)) ? Number(raw) : defs[sub];
+          } else if (['can_use_dual_phone_sessions', 'can_generate_qr', 'can_export_analytics', 'can_use_custom_qr_branding', 'can_access_support'].includes(sub)) {
+            next = value === true;
+          } else {
+            next = String(value ?? '');
+          }
+          return { ...plan, defaults: { ...defs, [sub]: next } };
+        }
+        if (field === 'public') {
+          return { ...plan, public: value === true };
+        }
+        if (field === 'features') {
+          const arr = String(value ?? '')
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean);
+          return { ...plan, features: arr };
+        }
+        return { ...plan, [field]: String(value ?? '') };
+      });
+      return { ...(prev || {}), plans };
+    });
+  };
+
+  const buildPlanOverrideFromForm = () => {
+    const override = {};
+    (pricingEditorForm.plans || []).forEach((plan) => {
+      const key = plan.key;
+      if (!key) return;
+      const patch = {};
+      if (typeof plan.name === 'string' && plan.name !== '') patch.name = plan.name;
+      if (typeof plan.description === 'string') patch.description = plan.description;
+      if (typeof plan.tagline === 'string') patch.tagline = plan.tagline;
+      if (typeof plan.monthly_amount_cents === 'number') patch.monthly_amount_cents = plan.monthly_amount_cents;
+      if (typeof plan.currency === 'string' && plan.currency !== '') patch.currency = plan.currency;
+      if (typeof plan.interval === 'string' && plan.interval !== '') patch.interval = plan.interval;
+      if (typeof plan.public === 'boolean') patch.public = plan.public;
+      if (Array.isArray(plan.features)) patch.features = plan.features;
+      const defs = plan.defaults || {};
+      patch.defaults = { ...defs };
+      override[key] = patch;
+    });
+    return override;
+  };
+
+  const savePricingEditor = async () => {
+    try {
+      setPricingEditorSaving(true);
+      setPricingEditorBanner(null);
+      const plan_catalog_override = buildPlanOverrideFromForm();
+      const response = await apiFetch('/admin/platform/plan-catalog', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ plan_catalog_override })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Unable to save plan pricing');
+      setPricingEditorForm((prev) => ({
+        ...(prev || {}),
+        plans: (data?.plans || []).map((raw) => {
+          const defaults = raw?.defaults || {};
+          return {
+            key: String(raw.key || ''),
+            name: String(raw.name || ''),
+            description: String(raw.description || ''),
+            tagline: String(raw.tagline || ''),
+            monthly_amount_cents: Number.isFinite(Number(raw.monthly_amount_cents)) ? Number(raw.monthly_amount_cents) : 0,
+            currency: String(raw.currency || 'USD').toUpperCase(),
+            interval: String(raw.interval || 'month'),
+            public: raw.public === true,
+            features: Array.isArray(raw.features) ? raw.features.map((f) => String(f || '')).filter(Boolean) : [],
+            defaults: {
+              trial_days: Number.isFinite(Number(defaults.trial_days)) ? Number(defaults.trial_days) : null,
+              max_tables: Number.isFinite(Number(defaults.max_tables)) ? Number(defaults.max_tables) : null,
+              max_monthly_sessions: Number.isFinite(Number(defaults.max_monthly_sessions)) ? Number(defaults.max_monthly_sessions) : null,
+              support_tier: String(defaults.support_tier || ''),
+              can_use_dual_phone_sessions: defaults.can_use_dual_phone_sessions === true,
+              can_generate_qr: defaults.can_generate_qr === true,
+              can_export_analytics: defaults.can_export_analytics === true,
+              can_use_custom_qr_branding: defaults.can_use_custom_qr_branding === true,
+              can_access_support: defaults.can_access_support === true
+            }
+          };
+        }),
+        override: data?.override || prev?.override || null,
+        loadedAt: Date.now()
+      }));
+      setBillingError('');
+      setPricingEditorBanner({ kind: 'success', message: 'Plan pricing saved. Changes take effect immediately for new checkout sessions and listings.' });
+      await fetchData();
+    } catch (err) {
+      setPricingEditorBanner({ kind: 'error', message: err?.message || 'Unable to save plan pricing' });
+    } finally {
+      setPricingEditorSaving(false);
+    }
+  };
+
+  const resetPricingEditor = async () => {
+    try {
+      setPricingEditorSaving(true);
+      setPricingEditorBanner(null);
+      const response = await apiFetch('/admin/platform/plan-catalog', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ reset: true })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Unable to reset plan pricing');
+      setPricingEditorForm((prev) => ({
+        ...(prev || {}),
+        plans: (data?.plans || []).map((raw) => {
+          const defaults = raw?.defaults || {};
+          return {
+            key: String(raw.key || ''),
+            name: String(raw.name || ''),
+            description: String(raw.description || ''),
+            tagline: String(raw.tagline || ''),
+            monthly_amount_cents: Number.isFinite(Number(raw.monthly_amount_cents)) ? Number(raw.monthly_amount_cents) : 0,
+            currency: String(raw.currency || 'USD').toUpperCase(),
+            interval: String(raw.interval || 'month'),
+            public: raw.public === true,
+            features: Array.isArray(raw.features) ? raw.features.map((f) => String(f || '')).filter(Boolean) : [],
+            defaults: {
+              trial_days: Number.isFinite(Number(defaults.trial_days)) ? Number(defaults.trial_days) : null,
+              max_tables: Number.isFinite(Number(defaults.max_tables)) ? Number(defaults.max_tables) : null,
+              max_monthly_sessions: Number.isFinite(Number(defaults.max_monthly_sessions)) ? Number(defaults.max_monthly_sessions) : null,
+              support_tier: String(defaults.support_tier || ''),
+              can_use_dual_phone_sessions: defaults.can_use_dual_phone_sessions === true,
+              can_generate_qr: defaults.can_generate_qr === true,
+              can_export_analytics: defaults.can_export_analytics === true,
+              can_use_custom_qr_branding: defaults.can_use_custom_qr_branding === true,
+              can_access_support: defaults.can_access_support === true
+            }
+          };
+        }),
+        override: data?.override || prev?.override || null,
+        loadedAt: Date.now()
+      }));
+      setPricingEditorBanner({ kind: 'success', message: 'Plan pricing reset to code defaults.' });
+      await fetchData();
+    } catch (err) {
+      setPricingEditorBanner({ kind: 'error', message: err?.message || 'Unable to reset plan pricing' });
+    } finally {
+      setPricingEditorSaving(false);
+    }
+  };
+
+  const formatRelativeTime = (iso) => {
+    if (!iso) return null;
+    try {
+      const then = new Date(iso).getTime();
+      if (!Number.isFinite(then)) return null;
+      const diffMs = Date.now() - then;
+      const sec = Math.max(1, Math.round(diffMs / 1000));
+      if (sec < 60) return `${sec}s ago`;
+      const min = Math.round(sec / 60);
+      if (min < 60) return `${min}m ago`;
+      const hr = Math.round(min / 60);
+      if (hr < 24) return `${hr}h ago`;
+      const day = Math.round(hr / 24);
+      return `${day}d ago`;
+    } catch {
+      return null;
     }
   };
 
@@ -477,7 +724,8 @@ export default function SuperAdminDashboard() {
       contactPhone: tenant.contact_phone || '',
       address: tenant.address || '',
       latitude: tenant.latitude != null ? String(tenant.latitude) : '',
-      longitude: tenant.longitude != null ? String(tenant.longitude) : ''
+      longitude: tenant.longitude != null ? String(tenant.longitude) : '',
+      geofenceRadius: tenant.geofence_radius_meters != null ? String(tenant.geofence_radius_meters) : '100'
     });
     setTenantAddressLookup({
       loading: false,
@@ -506,7 +754,8 @@ export default function SuperAdminDashboard() {
           contactPhone: editForm.contactPhone || null,
           address: editForm.address || null,
           latitude: editForm.latitude || null,
-          longitude: editForm.longitude || null
+          longitude: editForm.longitude || null,
+          geofenceRadius: editForm.geofenceRadius != null && editForm.geofenceRadius !== '' ? Number(editForm.geofenceRadius) : null
         })
       });
 
@@ -551,6 +800,7 @@ export default function SuperAdminDashboard() {
     setBillingError('');
     setBillingSuccess('');
     setBillingActionLoading(true);
+    clearSaTableQrPreviewsCache();
     setBillingPlanForm((current) => ({ ...current, plan: tenant.plan || 'trial', trialDays: 14 }));
     setBillingEntitlementsForm({
       max_tables: '',
@@ -672,6 +922,7 @@ export default function SuperAdminDashboard() {
       }
       await openTenantBilling(billingDetail.tenant);
       setBillingSuccess(`Trial QR provisioned for table ${billingProvisionForm.single}.`);
+      clearSaTableQrPreviewsCache();
       setBillingProvisionForm((f) => ({ ...f, single: '' }));
     } catch (err) {
       setBillingError(err.message);
@@ -703,6 +954,7 @@ export default function SuperAdminDashboard() {
       const count = Array.isArray(body?.tables) ? body.tables.length : 0;
       await openTenantBilling(billingDetail.tenant);
       setBillingSuccess(`Provisioned ${count} trial QR tables.`);
+      clearSaTableQrPreviewsCache();
     } catch (err) {
       setBillingError(err.message);
     } finally {
@@ -946,6 +1198,7 @@ export default function SuperAdminDashboard() {
         });
       }
       setBillingSuccess(`Deleted table ${String(table.table_number || table.id)}`);
+      clearSaTableQrPreviewsCache();
     } catch (err) {
       setBillingError(err.message);
     } finally {
@@ -968,24 +1221,60 @@ export default function SuperAdminDashboard() {
     }
   };
 
+  // Ensure we have inline QR preview data URLs loaded for the currently-opened tables-print panel.
+  // Safe to call repeatedly: skips when already loaded for the current table set.
+  const ensureSaTableQrPreviews = async () => {
+    const tables = Array.isArray(billingDetail?.tables) ? billingDetail.tables : [];
+    if (!tables.length || !billingDetail?.tenant?.id) return;
+    const need = tables.filter((t) => !saTableQrPreviews[String(t.id)]);
+    if (!need.length) return;
+    setSaTableQrPreviewsLoading(true);
+    try {
+      const res = await apiFetch(`/admin/billing/tenants/${billingDetail.tenant.id}/qr`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ table_ids: tables.map((t) => t.id) })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to load QR previews');
+      }
+      const data = await res.json();
+      if (!Array.isArray(data)) return;
+      const next = { ...saTableQrPreviews };
+      for (const entry of data) {
+        if (entry?.id && entry?.qr) next[String(entry.id)] = entry.qr;
+      }
+      setSaTableQrPreviews(next);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaTableQrPreviewsLoading(false);
+    }
+  };
+
+  const clearSaTableQrPreviewsCache = () => {
+    setSaTableQrPreviews({});
+  };
+
   const handlePermanentDeleteTenant = async (tenant) => {
     if (!tenant || tenant.slug === 'default') {
       return;
     }
+    setSaDeleteTenantInput('');
+    setSaDeleteTenant({ tenant });
+  };
+
+  const executePermanentDeleteTenant = async () => {
+    const tenant = saDeleteTenant?.tenant;
+    if (!tenant) return;
+    if (saDeleteTenantInput !== tenant.slug) return;
 
     setTenantActionError('');
     setTenantActionSuccess('');
 
-    const confirmation = window.prompt(
-      `Permanent delete will remove "${tenant.name}" and all its admin accounts.\n\nType the restaurant slug (${tenant.slug}) to confirm:`
-    );
-
-    if (confirmation !== tenant.slug) {
-      return;
-    }
-
     try {
-      setTenantActionLoading(true);
+      setSaDeleteTenantLoading(true);
       const response = await apiFetch(`/admin/tenants/${tenant.id}`, {
         method: 'DELETE',
         headers: getAdminHeaders()
@@ -1003,11 +1292,13 @@ export default function SuperAdminDashboard() {
       if (editingTenant?.id === tenant.id) {
         setEditingTenant(null);
       }
+      setSaDeleteTenant(null);
+      setSaDeleteTenantInput('');
       await fetchData();
     } catch (err) {
       setTenantActionError(err.message);
     } finally {
-      setTenantActionLoading(false);
+      setSaDeleteTenantLoading(false);
     }
   };
 
@@ -1196,33 +1487,50 @@ export default function SuperAdminDashboard() {
   };
 
   const handleDeleteQuestion = async (questionId) => {
-    const confirmed = window.confirm('Delete this question? This action cannot be undone.');
-    if (!confirmed) {
-      return;
-    }
+    setSaDeleteQuestion({ mode: 'single', questionId, count: 1 });
+  };
+
+  const executeDeleteQuestion = async () => {
+    const plan = saDeleteQuestion;
+    if (!plan) return;
 
     setQuestionError('');
     setQuestionSuccess('');
 
     try {
-      setQuestionActionLoading(true);
-      const response = await apiFetch(`/admin/questions/${questionId}`, {
-        method: 'DELETE',
-        headers: getAdminHeaders()
-      });
+      setSaDeleteQuestionLoading(true);
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Unable to delete question');
+      if (plan.mode === 'single') {
+        const response = await apiFetch(`/admin/questions/${plan.questionId}`, {
+          method: 'DELETE',
+          headers: getAdminHeaders()
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to delete question');
+        }
+        setSelectedQuestionIds((current) => current.filter((id) => id !== plan.questionId));
+        setQuestionSuccess('Question deleted successfully.');
+      } else if (plan.mode === 'bulk') {
+        const response = await apiFetch('/admin/questions/bulk-delete', {
+          method: 'POST',
+          headers: getAdminHeaders(),
+          body: JSON.stringify({ question_ids: selectedQuestionIds })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to bulk delete questions');
+        }
+        setSelectedQuestionIds([]);
+        setQuestionSuccess(`Deleted ${data.deleted} question${data.deleted === 1 ? '' : 's'}.`);
       }
 
-      setSelectedQuestionIds((current) => current.filter((id) => id !== questionId));
-      setQuestionSuccess('Question deleted successfully.');
+      setSaDeleteQuestion(null);
       await fetchData();
     } catch (err) {
       setQuestionError(err.message);
     } finally {
-      setQuestionActionLoading(false);
+      setSaDeleteQuestionLoading(false);
     }
   };
 
@@ -1230,36 +1538,7 @@ export default function SuperAdminDashboard() {
     if (selectedQuestionIds.length === 0) {
       return;
     }
-
-    const confirmed = window.confirm(`Delete ${selectedQuestionIds.length} selected question(s)? This action cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
-
-    setQuestionError('');
-    setQuestionSuccess('');
-
-    try {
-      setQuestionActionLoading(true);
-      const response = await apiFetch('/admin/questions/bulk-delete', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ question_ids: selectedQuestionIds })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Unable to bulk delete questions');
-      }
-
-      setSelectedQuestionIds([]);
-      setQuestionSuccess(`Deleted ${data.deleted} question${data.deleted === 1 ? '' : 's'}.`);
-      await fetchData();
-    } catch (err) {
-      setQuestionError(err.message);
-    } finally {
-      setQuestionActionLoading(false);
-    }
+    setSaDeleteQuestion({ mode: 'bulk', count: selectedQuestionIds.length });
   };
 
   const copyText = async (value, successMessage) => {
@@ -1403,7 +1682,7 @@ export default function SuperAdminDashboard() {
       </header>
 
       <nav className="mb-8 rounded-2xl border border-border bg-card p-2 shadow-[0_4px_20px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
             onClick={() => setActiveTabSync(TAB_DASHBOARD)}
@@ -1416,6 +1695,19 @@ export default function SuperAdminDashboard() {
           >
             <LayoutDashboard className="w-4 h-4" />
             Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTabSync(TAB_PRICING)}
+            aria-pressed={activeTab === TAB_PRICING}
+            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold tracking-wide transition-all duration-200 ${
+              activeTab === TAB_PRICING
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-[0_4px_18px_rgba(79,70,229,0.22)] dark:from-violet-500 dark:to-indigo-500 dark:shadow-[0_4px_20px_rgba(139,92,246,0.25)]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            Plans &amp; Pricing
           </button>
           <button
             type="button"
@@ -1499,14 +1791,14 @@ export default function SuperAdminDashboard() {
               </div>
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-                <MetricCard label="Live Sessions" value={metrics.overview.active_sessions_now} accent="cyan" helper={`${metrics.overview.dual_sessions_now} dual live`} />
-                <MetricCard label="Live Restaurants" value={metrics.overview.live_restaurants_now} accent="violet" helper={`${metrics.overview.active_tables_now} active tables`} />
-                <MetricCard label={`QR Scans · ${metricsRange}`} value={metrics.overview.qr_scans_window} accent="emerald" helper={`${metrics.overview.sessions_window} sessions started`} />
-                <MetricCard label={`Question Views · ${metricsRange}`} value={metrics.overview.question_views_window} accent="amber" helper={`${metrics.overview.total_questions} questions in bank`} />
+                <MetricCard label="Live Sessions" value={metrics.overview.active_sessions_now} accent="cyan" helper={`${metrics.overview.dual_sessions_now} dual · ${metrics.overview.active_tables_now} tables`} />
+                <MetricCard label="Live Restaurants" value={metrics.overview.live_restaurants_now} accent="violet" helper={`${metrics.overview.active_restaurants_24h || 0} active last 24h`} />
+                <MetricCard label={`QR Scans · ${metricsRange}`} value={metrics.overview.qr_scans_window} accent="amber" helper={`${metrics.overview.sessions_window} sessions started`} />
+                <MetricCard label={`Question Views · ${metricsRange}`} value={metrics.overview.question_views_window} accent="rose" helper={`${metrics.overview.total_questions} questions in bank`} />
               </div>
 
-              <div className="grid grid-cols-1 2xl:grid-cols-[1.5fr_1fr] gap-6">
-                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5 min-w-0">
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div>
                       <div className="flex items-center gap-2">
@@ -1524,7 +1816,7 @@ export default function SuperAdminDashboard() {
                   <MetricsTimeline timeline={metrics.activity_timeline} />
                 </div>
 
-                <div className="rounded-3xl border border-border/80 bg-card/70 p-5">
+                <div className="rounded-3xl border border-border/80 bg-card/70 p-5 min-w-0">
                   <div className="mb-4">
                     <div className="flex items-center gap-2">
                       <Sparkles className="w-4 h-4 text-violet-400" />
@@ -1557,13 +1849,13 @@ export default function SuperAdminDashboard() {
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div>
                       <div className="flex items-center gap-2">
-                        <MapPin className="w-4 h-4 text-emerald-400" />
+                        <MapPin className="w-4 h-4 text-amber-400" />
                         <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Live Venue Feed</h3>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">Where the app is active right now based on recent tenant session activity.</p>
+                      <p className="text-xs text-muted-foreground mt-1">Restaurants with activity in the last 24 hours. Amber pulse = live right now (last 5 minutes).</p>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {metrics.overview.active_restaurants} active subscriptions
+                      {metrics.overview.active_restaurants_24h || 0} seen 24h · {metrics.overview.live_restaurants_now || 0} live now
                     </div>
                   </div>
                   <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-4">
@@ -1586,7 +1878,7 @@ export default function SuperAdminDashboard() {
                       <Zap className="w-4 h-4 text-amber-400" />
                       <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-300">Recent Platform Events</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Latest validated scans, session events, and engagement signals.</p>
+                    <p className="text-xs text-muted-foreground mt-1">Latest user activity: scans, session starts, context changes, and engagement signals.</p>
                   </div>
                   <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
                     {metrics.recent_activity.length > 0 ? (
@@ -1595,7 +1887,7 @@ export default function SuperAdminDashboard() {
                       ))
                     ) : (
                       <div className="rounded-2xl border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">
-                        No recent activity available.
+                        No recent user activity yet. Scans, sessions, and question interactions will appear here.
                       </div>
                     )}
                   </div>
@@ -2713,6 +3005,331 @@ export default function SuperAdminDashboard() {
         </div>
       )}
 
+      {activeTab === TAB_PRICING && (
+        <div className="w-full">
+          <section className="bg-card/60 border border-border rounded-3xl p-6 shadow-xl backdrop-blur-md">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-gradient-to-br from-amber-500/20 to-violet-500/20 border border-amber-500/30">
+                    <Sparkles className="w-6 h-6 text-amber-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-foreground">Plan Pricing &amp; Entitlements</h2>
+                    <p className="text-xs text-muted-foreground mt-1">Edit plan prices, feature lists, and subscription defaults. Saved changes take effect immediately for new checkouts and listings.</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => fetchData()}
+                  disabled={pricingEditorLoading || pricingEditorSaving}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-muted px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:bg-muted/80 hover:text-foreground disabled:opacity-60 transition-colors duration-200"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${pricingEditorLoading ? 'animate-spin' : ''}`} />
+                  {pricingEditorLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+                {pricingEditorForm?.override?.stored && (
+                  <button
+                    onClick={resetPricingEditor}
+                    disabled={pricingEditorSaving}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/20 disabled:opacity-60 transition-colors duration-200"
+                  >
+                    {pricingEditorSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    Reset Defaults
+                  </button>
+                )}
+                <button
+                  onClick={savePricingEditor}
+                  disabled={pricingEditorSaving}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-violet-500/20 hover:brightness-110 disabled:opacity-60 transition-all duration-200"
+                >
+                  {pricingEditorSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  {pricingEditorSaving ? 'Saving…' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+
+            {pricingEditorBanner && (
+              <div className={`mb-5 rounded-xl border px-4 py-3 text-sm ${
+                pricingEditorBanner.kind === 'success'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200'
+                  : 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200'
+              }`}>
+                {pricingEditorBanner.message}
+              </div>
+            )}
+
+            <div className={`mb-5 rounded-2xl border p-4 ${
+              pricingEditorForm?.override?.stored
+                ? 'border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10'
+                : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60'
+            } transition-colors duration-300`}>
+              <div className="flex flex-wrap items-start gap-3 justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                    {pricingEditorForm?.override?.stored ? 'Pricing source: Saved override' : 'Pricing source: Code defaults'}
+                  </div>
+                  <div className={`text-xs mt-1 ${
+                    pricingEditorForm?.override?.stored ? 'text-amber-700 dark:text-amber-200' : 'text-slate-600 dark:text-slate-400'
+                  }`}>
+                    {pricingEditorForm?.override?.stored
+                      ? `Custom pricing saved${pricingEditorForm.override?.source ? ` by ${pricingEditorForm.override.source}` : ''}${pricingEditorForm.override?.updated_at ? ` · ${formatRelativeTime(pricingEditorForm.override.updated_at)}` : ''}.`
+                      : 'No override saved yet. All plans use built-in code defaults. Edit any field below and click Save Changes to persist custom pricing.'}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${
+                    pricingEditorForm?.override?.stored
+                      ? 'border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/20 dark:text-amber-200'
+                      : 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                  }`}>
+                    {pricingEditorForm?.override?.stored ? 'Custom Pricing Active' : 'Default Pricing'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              {(pricingEditorForm.plans || []).map((plan) => {
+                const cfg = PLAN_DISPLAY_ACCENTS[plan.key] || PLAN_DISPLAY_ACCENTS.starter;
+                const Icon = cfg.Icon || Zap;
+                const accentBorder = {
+                  amber: 'border-amber-500/30',
+                  cyan: 'border-cyan-500/30',
+                  violet: 'border-violet-500/30',
+                  emerald: 'border-emerald-500/30'
+                }[cfg.accent] || 'border-cyan-500/30';
+                const accentBg = {
+                  amber: 'from-amber-500/15 to-orange-500/10',
+                  cyan: 'from-cyan-500/15 to-blue-500/10',
+                  violet: 'from-violet-500/15 to-fuchsia-500/10',
+                  emerald: 'from-emerald-500/15 to-teal-500/10'
+                }[cfg.accent] || 'from-cyan-500/15 to-blue-500/10';
+                const accentText = {
+                  amber: 'text-amber-400',
+                  cyan: 'text-cyan-400',
+                  violet: 'text-violet-400',
+                  emerald: 'text-emerald-400'
+                }[cfg.accent] || 'text-cyan-400';
+                return (
+                  <div
+                    key={plan.key}
+                    className={`rounded-3xl border ${accentBorder} bg-gradient-to-br ${accentBg} p-5 md:p-6`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-11 h-11 rounded-2xl bg-gradient-to-br ${accentBg} border ${accentBorder} flex items-center justify-center shrink-0`}>
+                          <Icon className={`w-5.5 h-5.5 ${accentText}`} />
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">Plan Key · {plan.key}</div>
+                          <div className="text-lg font-extrabold text-foreground">{plan.name || formatPlanLabel(plan.key)}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">{formatPlanPrice(plan)} · {plan.public ? 'Visible in plans listing' : 'Internal / not listed'}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${
+                          plan.public
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200'
+                            : 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                        }`}>
+                          {plan.public ? 'Public' : 'Hidden'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Display Name</label>
+                        <input
+                          type="text"
+                          value={plan.name || ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'name', e.target.value)}
+                          placeholder="Plan name"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Monthly Price (USD cents)</label>
+                        <div className="relative">
+                          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-semibold pointer-events-none">¢</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={plan.monthly_amount_cents}
+                            onChange={(e) => updatePricingPlanField(plan.key, 'monthly_amount_cents', e.target.value)}
+                            placeholder="e.g. 7900 = $79"
+                            className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl pl-8 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all font-mono"
+                          />
+                        </div>
+                        <div className="text-[10px] mt-1.5 text-slate-500 dark:text-slate-400">Display preview: {formatPlanPrice(plan)}</div>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Interval</label>
+                        <select
+                          value={plan.interval || 'month'}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'interval', e.target.value)}
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all"
+                        >
+                          <option value="month">month</option>
+                          <option value="year">year</option>
+                          <option value="trial">trial</option>
+                          <option value="one_time">one_time</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Listed Publicly</label>
+                        <div className="flex gap-2 h-[42px]">
+                          <button
+                            type="button"
+                            onClick={() => updatePricingPlanField(plan.key, 'public', true)}
+                            className={`flex-1 rounded-xl border px-3.5 py-2 text-xs font-bold transition-colors ${
+                              plan.public
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                                : 'border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80'
+                            }`}
+                          >
+                            Public
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updatePricingPlanField(plan.key, 'public', false)}
+                            className={`flex-1 rounded-xl border px-3.5 py-2 text-xs font-bold transition-colors ${
+                              !plan.public
+                                ? 'border-slate-500/40 bg-slate-500/15 text-slate-200'
+                                : 'border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80'
+                            }`}
+                          >
+                            Hidden
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Short Description</label>
+                        <input
+                          type="text"
+                          value={plan.description || ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'description', e.target.value)}
+                          placeholder="One-line plan summary (e.g. Up to 20 tables · 5,000 sessions/mo)"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Tagline</label>
+                        <input
+                          type="text"
+                          value={plan.tagline || ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'tagline', e.target.value)}
+                          placeholder="Catchy tagline (e.g. For growing venues)"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-5">
+                      {plan.key === 'trial' && (
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Trial Days</label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={plan.defaults?.trial_days ?? ''}
+                            onChange={(e) => updatePricingPlanField(plan.key, 'defaults.trial_days', e.target.value)}
+                            placeholder="Blank = default"
+                            className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all font-mono"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Max Tables</label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={plan.defaults?.max_tables ?? ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'defaults.max_tables', e.target.value)}
+                          placeholder="Blank = Unlimited"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Max Sessions/Mo</label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={plan.defaults?.max_monthly_sessions ?? ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'defaults.max_monthly_sessions', e.target.value)}
+                          placeholder="Blank = Unlimited"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all font-mono"
+                        />
+                      </div>
+                      <div className={plan.key === 'trial' ? 'lg:col-span-2' : 'lg:col-span-3'}>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Support Tier</label>
+                        <input
+                          type="text"
+                          value={plan.defaults?.support_tier || ''}
+                          onChange={(e) => updatePricingPlanField(plan.key, 'defaults.support_tier', e.target.value)}
+                          placeholder="e.g. Standard, Priority, 24/7, Dedicated"
+                          className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
+                      {[
+                        { key: 'defaults.can_generate_qr', label: 'Generate QR' },
+                        { key: 'defaults.can_use_dual_phone_sessions', label: 'Dual-Phone' },
+                        { key: 'defaults.can_export_analytics', label: 'Export Analytics' },
+                        { key: 'defaults.can_use_custom_qr_branding', label: 'Custom QR Brand' },
+                        { key: 'defaults.can_access_support', label: 'Support Access' }
+                      ].map((toggle) => (
+                        <button
+                          key={toggle.key}
+                          type="button"
+                          onClick={() => updatePricingPlanField(plan.key, toggle.key, !(plan.defaults?.[toggle.key.slice('defaults.'.length)] === true))}
+                          className={`rounded-xl border px-3 py-2.5 text-[11px] font-bold uppercase tracking-wider transition-colors ${
+                            plan.defaults?.[toggle.key.slice('defaults.'.length)] === true
+                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                              : 'border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80'
+                          }`}
+                        >
+                          <span className="mr-1.5 opacity-70">
+                            {plan.defaults?.[toggle.key.slice('defaults.'.length)] === true ? '✓' : '○'}
+                          </span>
+                          {toggle.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">Features List (one feature per line)</label>
+                      <textarea
+                        value={(plan.features || []).join('\n')}
+                        onChange={(e) => updatePricingPlanField(plan.key, 'features', e.target.value)}
+                        placeholder={'One feature per line, e.g.:\nUnlimited single-phone sessions\nDual-phone pairing\nStripe billing dashboard'}
+                        rows={5}
+                        className="w-full bg-slate-50/90 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/10 transition-all leading-relaxed"
+                      />
+                      <div className="text-[10px] mt-1.5 text-slate-500 dark:text-slate-400">
+                        {(plan.features || []).length} feature line{(plan.features || []).length === 1 ? '' : 's'} parsed.
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {(!pricingEditorForm.plans || pricingEditorForm.plans.length === 0) && !pricingEditorLoading && (
+                <div className="rounded-2xl border border-dashed border-border bg-muted/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                  No plans loaded. Click Refresh or reload the page.
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       <AnimatePresence>
         {editingQuestion && (
           <motion.div
@@ -2833,11 +3450,6 @@ export default function SuperAdminDashboard() {
                       ? tenantAddressLookup.error
                       : 'Latitude and longitude are filled automatically when the address is recognized.'}
                 </div>
-                {(editForm.latitude && editForm.longitude) && (
-                  <div className="text-xs text-slate-500">
-                    {Number(editForm.latitude).toFixed(5)}, {Number(editForm.longitude).toFixed(5)}
-                  </div>
-                )}
                 {((editForm.latitude && editForm.longitude) || editForm.address) && (
                   <div className="rounded-xl overflow-hidden border border-slate-700">
                     <MapDisplay
@@ -2848,6 +3460,49 @@ export default function SuperAdminDashboard() {
                     />
                   </div>
                 )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <FormField
+                    label="Geofence Radius (meters)"
+                    type="number"
+                    placeholder="100"
+                    min={5}
+                    max={5000}
+                    step={5}
+                    value={editForm.geofenceRadius}
+                    onChange={(value) => {
+                      const raw = String(value ?? '');
+                      if (!raw || raw === '-') {
+                        setEditForm((c) => ({ ...c, geofenceRadius: '100' }));
+                        return;
+                      }
+                      const asNum = Number(raw);
+                      const clamped = Number.isFinite(asNum)
+                        ? Math.max(5, Math.min(5000, Math.floor(asNum)))
+                        : 100;
+                      setEditForm((c) => ({ ...c, geofenceRadius: String(clamped) }));
+                    }}
+                  />
+                  <FormField
+                    label="Latitude"
+                    type="number"
+                    placeholder="0.0000000"
+                    step="any"
+                    value={editForm.latitude}
+                    onChange={(value) => setEditForm((current) => ({ ...current, latitude: value }))}
+                  />
+                  <FormField
+                    label="Longitude"
+                    type="number"
+                    placeholder="0.0000000"
+                    step="any"
+                    value={editForm.longitude}
+                    onChange={(value) => setEditForm((current) => ({ ...current, longitude: value }))}
+                  />
+                </div>
+                <div className="text-[11px] text-slate-500 -mt-1">
+                  Typical radius: 50–200 m (covers the inside of the restaurant).
+                  Range clamped to 5–5000 m.
+                </div>
                 <div className="flex gap-3 pt-2">
                   <button
                     type="button"
@@ -2973,46 +3628,79 @@ export default function SuperAdminDashboard() {
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {([
-                          { key: 'trial', accent: 'amber', Icon: Clock, desc: '14-day evaluation, full feature access', price: '$0' },
-                          { key: 'starter', accent: 'cyan', Icon: Zap, desc: 'Up to 10 tables · 500 sessions/mo', price: '$49/mo' },
-                          { key: 'premium', accent: 'violet', Icon: Rocket, desc: 'Unlimited tables · priority support', price: '$149/mo' },
-                        ]).map(({ key, accent, Icon, desc, price }) => {
-                          const active = billingPlanForm.plan === key;
-                          const accentRing =
-                            accent === 'amber'
-                              ? 'border-amber-500/50 bg-amber-500/5 shadow-[0_0_0_1px_rgba(245,158,11,0.2)]'
-                              : accent === 'cyan'
-                                ? 'border-cyan-500/50 bg-cyan-500/5 shadow-[0_0_0_1px_rgba(34,211,238,0.2)]'
-                                : 'border-violet-500/50 bg-violet-500/5 shadow-[0_0_0_1px_rgba(168,85,247,0.2)]';
-                          const iconTint =
-                            accent === 'amber'
-                              ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
-                              : accent === 'cyan'
-                                ? 'text-cyan-300 bg-cyan-500/15 border-cyan-500/30'
-                                : 'text-violet-300 bg-violet-500/15 border-violet-500/30';
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => setBillingPlanForm((f) => ({ ...f, plan: key }))}
-                              className={`text-left rounded-2xl border p-4 transition-all ${
-                                active ? accentRing : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
-                              }`}
-                            >
-                              <div className="flex items-start justify-between">
-                                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${iconTint}`}>
-                                  <Icon size={18} />
+                        {(() => {
+                          const catalog = resolvePlanCatalog(billingOverview);
+                          const visiblePlans = catalog.filter((p) => ['trial', 'starter', 'premium'].includes(p.key));
+                          const planByKey = new Map(catalog.map((p) => [p.key, p]));
+                          return visiblePlans.map((rawPlan) => {
+                            const plan = buildPlanDisplayRow(rawPlan);
+                            const active = billingPlanForm.plan === plan.key;
+                            const accentRing =
+                              plan.accent === 'amber'
+                                ? 'border-amber-500/50 bg-amber-500/5 shadow-[0_0_0_1px_rgba(245,158,11,0.2)]'
+                                : plan.accent === 'cyan'
+                                  ? 'border-cyan-500/50 bg-cyan-500/5 shadow-[0_0_0_1px_rgba(34,211,238,0.2)]'
+                                  : 'border-violet-500/50 bg-violet-500/5 shadow-[0_0_0_1px_rgba(168,85,247,0.2)]';
+                            const iconTint =
+                              plan.accent === 'amber'
+                                ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
+                                : plan.accent === 'cyan'
+                                  ? 'text-cyan-300 bg-cyan-500/15 border-cyan-500/30'
+                                  : 'text-violet-300 bg-violet-500/15 border-violet-500/30';
+                            const raw = planByKey.get(plan.key);
+                            const defaults = raw?.defaults || {};
+                            return (
+                              <button
+                                key={plan.key}
+                                type="button"
+                                onClick={() => setBillingPlanForm((f) => ({ ...f, plan: plan.key }))}
+                                className={`text-left rounded-2xl border p-4 transition-all ${
+                                  active ? accentRing : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${iconTint}`}>
+                                    <plan.Icon size={18} />
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="text-lg font-extrabold text-white">{plan.price}</div>
+                                  </div>
                                 </div>
-                                <div className="text-right">
-                                  <div className="text-lg font-extrabold text-white">{price}</div>
+                                <div className="mt-3 text-sm font-bold text-white">{formatPlanLabel(plan.key)}</div>
+                                <div className="mt-1 text-xs text-slate-400 leading-5">{plan.desc}</div>
+                                <div className="mt-3 space-y-1">
+                                  {Array.isArray(raw?.features) && raw.features.slice(0, 3).map((feature) => (
+                                    <div key={feature} className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                                      <span className={`h-1.5 w-1.5 rounded-full ${
+                                        plan.accent === 'amber' ? 'bg-amber-400' :
+                                        plan.accent === 'cyan' ? 'bg-cyan-400' : 'bg-violet-400'
+                                      }`} />
+                                      {feature}
+                                    </div>
+                                  ))}
                                 </div>
-                              </div>
-                              <div className="mt-3 text-sm font-bold text-white">{formatPlanLabel(key)}</div>
-                              <div className="mt-1 text-xs text-slate-400 leading-5">{desc}</div>
-                            </button>
-                          );
-                        })}
+                                {plan.key !== 'trial' && (
+                                  <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                                    {Number.isFinite(Number(defaults.max_tables)) && (
+                                      <div>Tables: <span className="text-slate-300">{defaults.max_tables}</span></div>
+                                    )}
+                                    {Number.isFinite(Number(defaults.max_monthly_sessions)) ? (
+                                      <div>Sessions/mo: <span className="text-slate-300">{Number(defaults.max_monthly_sessions).toLocaleString()}</span></div>
+                                    ) : (
+                                      <div>Sessions/mo: <span className="text-slate-300">Unlimited</span></div>
+                                    )}
+                                    {defaults.dual_phone !== false && (
+                                      <div>Dual mode: <span className="text-slate-300">{defaults.can_use_dual_phone_sessions === false ? 'No' : 'Yes'}</span></div>
+                                    )}
+                                    {typeof defaults.can_generate_qr === 'boolean' && (
+                                      <div>QR self-serve: <span className="text-slate-300">{defaults.can_generate_qr ? 'Yes' : 'SA-only'}</span></div>
+                                    )}
+                                  </div>
+                                )}
+                              </button>
+                            );
+                          });
+                        })()}
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3160,7 +3848,7 @@ export default function SuperAdminDashboard() {
                   )}
                 </div>
 
-                {/* Panel: Trial QR Provisioning */}
+                {/* Panel: SA Provisioning (Create Tables + QRs for any plan) */}
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
                   <button
                     type="button"
@@ -3172,8 +3860,8 @@ export default function SuperAdminDashboard() {
                         <QrCode size={18} />
                       </div>
                       <div>
-                        <div className="text-sm font-bold text-white">Trial QR Provisioning</div>
-                        <div className="text-xs text-slate-500 mt-0.5">Create single or batch table QR codes for trial tenants</div>
+                        <div className="text-sm font-bold text-white">Provision Tables / QRs</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Create single or batch table QR codes for this restaurant (SA-only)</div>
                       </div>
                     </div>
                     <ChevronDown
@@ -3185,10 +3873,10 @@ export default function SuperAdminDashboard() {
                     <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
                       <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                         <div className="text-sm text-slate-300 leading-6">
-                          During the trial period, tables and QR codes are provisioned here by Super Admin. The Restaurant Admin cannot self-serve QR registration unless explicitly entitled.
+                          All tables and QR codes are provisioned by the Catalyst Super Admin. The Restaurant Admin dashboard does not receive QR creation tools. Create a single table, or generate a numbered range with a label pattern.
                         </div>
                         <div className="text-xs text-slate-500 max-w-xs shrink-0 lg:text-right">
-                          Provisioned tables receive the canonical scan URL and an audit trail entry in restaurant_tables linked to your admin user.
+                          Provisioned tables receive the canonical scan URL and an audit-trail entry in restaurant_tables linked to your admin user.
                         </div>
                       </div>
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -3201,7 +3889,7 @@ export default function SuperAdminDashboard() {
                             disabled={billingActionLoading}
                             className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold py-2.5 transition-all disabled:opacity-50"
                           >
-                            Provision 1 Trial QR
+                            Provision 1 Table QR
                           </button>
                         </div>
                         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
@@ -3225,11 +3913,14 @@ export default function SuperAdminDashboard() {
                   )}
                 </div>
 
-                {/* Panel: Registered Tables / Print */}
+                {/* Panel: Registered Tables / Print + Preview QR */}
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 transition-colors duration-300 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setOpenPanel(openPanel === 'tables-print' ? null : 'tables-print')}
+                    onClick={() => {
+                      if (openPanel !== 'tables-print') ensureSaTableQrPreviews();
+                      setOpenPanel(openPanel === 'tables-print' ? null : 'tables-print');
+                    }}
                     className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-900/40 transition-colors"
                   >
                     <div className="flex items-center gap-3">
@@ -3237,8 +3928,8 @@ export default function SuperAdminDashboard() {
                         <Printer size={18} />
                       </div>
                       <div>
-                        <div className="text-sm font-bold text-white">Registered Tables / Print</div>
-                        <div className="text-xs text-slate-500 mt-0.5">Print or download provisioned table QR codes</div>
+                        <div className="text-sm font-bold text-white">Registered Tables / Print &amp; Preview QR</div>
+                        <div className="text-xs text-slate-500 mt-0.5">Inline preview, print or download any provisioned table QR code</div>
                       </div>
                     </div>
                     <ChevronDown
@@ -3250,7 +3941,7 @@ export default function SuperAdminDashboard() {
                     <div className="px-5 pb-5 pt-1 border-t border-slate-800 space-y-4">
                       <div className="flex flex-wrap items-center gap-2 justify-between">
                         <div className="text-sm text-slate-300">
-                          Print or download any provisioned table QR directly from Super Admin. Paper size below applies to all print actions on this tenant.
+                          Print or download any provisioned table QR directly from Super Admin. Paper size applies to all print actions on this tenant.
                         </div>
                         <div className="flex flex-wrap items-center gap-2 justify-start">
                           <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2">
@@ -3288,6 +3979,15 @@ export default function SuperAdminDashboard() {
                                   <Download size={14} />
                                   {saBulkPrinting ? 'Downloading…' : hasTables ? `Download All PNG (${tables.length})` : 'Download All PNG'}
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { clearSaTableQrPreviewsCache(); ensureSaTableQrPreviews(); }}
+                                  disabled={!hasTables || saTableQrPreviewsLoading}
+                                  className="rounded-xl border border-slate-700 bg-slate-900/60 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold px-3.5 py-2 transition-all flex items-center gap-1.5"
+                                  title="Refresh QR previews"
+                                >
+                                  {saTableQrPreviewsLoading ? 'Loading…' : 'Refresh QR'}
+                                </button>
                               </>
                             );
                           })()}
@@ -3299,7 +3999,7 @@ export default function SuperAdminDashboard() {
                         if (tables.length === 0) {
                           return (
                             <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
-                              No tables have been provisioned for this tenant yet. Use the <span className="text-amber-300 font-semibold">Trial QR Provisioning</span> panel above to add the first table.
+                              No tables have been provisioned for this tenant yet. Use the <span className="text-amber-300 font-semibold">Provision Tables / QRs</span> panel above to add the first table.
                             </div>
                           );
                         }
@@ -3308,7 +4008,7 @@ export default function SuperAdminDashboard() {
                             {tables.map((t) => (
                               <div
                                 key={t.id}
-                                className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3"
+                                className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-4"
                               >
                                 <div>
                                   <span className="text-xs font-bold tracking-wider text-violet-400 uppercase">Table Number</span>
@@ -3325,7 +4025,7 @@ export default function SuperAdminDashboard() {
                                     ) : (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 text-slate-300 border border-slate-500/30">
                                         <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-                                        RA Registered
+                                        Legacy RA
                                       </span>
                                     )}
                                     {t.created_at && (
@@ -3335,6 +4035,31 @@ export default function SuperAdminDashboard() {
                                     )}
                                   </div>
                                 </div>
+
+                                {/* Inline QR Preview — fixes "QR display failure" */}
+                                <div className="w-full flex items-center justify-center">
+                                  {saTableQrPreviews[String(t.id)] ? (
+                                    <div className="w-[180px] h-[180px] rounded-2xl bg-white p-3 border border-slate-700 shadow-inner flex items-center justify-center">
+                                      <img
+                                        src={saTableQrPreviews[String(t.id)]}
+                                        alt={`QR code for table ${String(t.table_number)}`}
+                                        className="w-full h-full object-contain"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="w-[180px] h-[180px] rounded-2xl bg-slate-950/60 border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-500 text-xs">
+                                      {saTableQrPreviewsLoading ? (
+                                        <>
+                                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-slate-400 mb-2"></div>
+                                          Loading QR…
+                                        </>
+                                      ) : (
+                                        'Preview unavailable'
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
                                 <div className="flex gap-2">
                                   <button
                                     type="button"
@@ -3370,26 +4095,6 @@ export default function SuperAdminDashboard() {
                           </div>
                         );
                       })()}
-
-                      {saDeleteConfirmTable && (
-                        <Modal
-                          isOpen={Boolean(saDeleteConfirmTable)}
-                          onClose={() => !saDeletingTableId && setSaDeleteConfirmTable(null)}
-                          variant="danger"
-                          size="md"
-                          title={`Delete table ${String(saDeleteConfirmTable.table_number || saDeleteConfirmTable.id || '')}?`}
-                          subtitle="This removes the table registration and its QR code from this tenant. Any existing scans will stop working. This action cannot be undone."
-                          icon={<Trash2 size={28} className="text-rose-300" />}
-                          actionLabel={saDeletingTableId ? 'Deleting…' : 'Yes, delete this table'}
-                          actionVariant="danger"
-                          actionLoading={Boolean(saDeletingTableId)}
-                          actionDisabled={Boolean(saDeletingTableId)}
-                          closeLabel={saDeletingTableId ? 'Deleting…' : 'Cancel'}
-                          closeVariant="secondary"
-                          closeDisabled={Boolean(saDeletingTableId)}
-                          onAction={handleSaDeleteTable}
-                        />
-                      )}
                     </div>
                   )}
                 </div>
@@ -3464,6 +4169,136 @@ export default function SuperAdminDashboard() {
             </motion.div>
           </motion.div>
         )}
+
+        {/* --- Global Delete Confirmation Modals (always mounted, not inside any panel) --- */}
+        {saDeleteConfirmTable && (
+          <Modal
+            isOpen={Boolean(saDeleteConfirmTable)}
+            onClose={() => !saDeletingTableId && setSaDeleteConfirmTable(null)}
+            variant="danger"
+            size="md"
+            align="left"
+            title={`Delete table ${String(saDeleteConfirmTable.table_number || saDeleteConfirmTable.id || '')}?`}
+            subtitle="This removes the table registration and its QR code from this tenant. Any existing scans will stop working. This action cannot be undone."
+            icon={<Trash2 size={28} className="text-rose-300" />}
+            actionLabel={saDeletingTableId ? 'Deleting…' : 'Delete Table & QR'}
+            actionVariant="danger"
+            actionLoading={Boolean(saDeletingTableId)}
+            actionDisabled={Boolean(saDeletingTableId)}
+            closeLabel={saDeletingTableId ? 'Deleting…' : 'Cancel'}
+            closeVariant="secondary"
+            closeDisabled={Boolean(saDeletingTableId)}
+            onAction={handleSaDeleteTable}
+          >
+            <div className="space-y-3 text-left">
+              <div className="rounded-xl border border-rose-500/20 bg-rose-950/20 p-4">
+                <div className="text-xs font-bold uppercase tracking-wider text-rose-200/70 mb-1">Table Details</div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-[11px] uppercase text-rose-200/60">Number</div>
+                    <div className="font-bold text-white">{String(saDeleteConfirmTable.table_number || '—')}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-rose-200/60">Token</div>
+                    <div className="font-mono text-xs text-rose-100 truncate">{String(saDeleteConfirmTable.table_token || saDeleteConfirmTable.id || '—')}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {saDeleteTenant && (
+          <Modal
+            isOpen={Boolean(saDeleteTenant)}
+            onClose={() => !saDeleteTenantLoading && (setSaDeleteTenant(null), setSaDeleteTenantInput(''))}
+            variant="danger"
+            size="md"
+            align="left"
+            title={`Delete "${saDeleteTenant.tenant?.name}" permanently?`}
+            subtitle={`This will permanently remove the restaurant and all its admin accounts. This cannot be undone or restored.`}
+            icon={<AlertTriangle size={28} className="text-rose-300" />}
+            actionLabel={saDeleteTenantLoading ? 'Deleting…' : 'Yes, permanently delete'}
+            actionVariant="danger"
+            actionLoading={saDeleteTenantLoading}
+            actionDisabled={saDeleteTenantLoading || saDeleteTenantInput !== saDeleteTenant.tenant?.slug}
+            closeLabel={saDeleteTenantLoading ? 'Deleting…' : 'Cancel'}
+            closeVariant="secondary"
+            closeDisabled={saDeleteTenantLoading}
+            onAction={executePermanentDeleteTenant}
+          >
+            <div className="space-y-4 text-left">
+              <div className="rounded-xl border border-rose-500/20 bg-rose-950/20 p-4">
+                <div className="grid grid-cols-1 gap-3 text-sm">
+                  <div>
+                    <div className="text-[11px] uppercase text-rose-200/60">Restaurant</div>
+                    <div className="font-bold text-white">{saDeleteTenant.tenant?.name}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-rose-200/60">Required confirmation slug</div>
+                    <div className="font-mono text-xs text-rose-100 tracking-wider inline-flex items-center gap-1.5 mt-1">
+                      <code className="px-2 py-1 rounded-md bg-rose-500/15 border border-rose-500/30">{saDeleteTenant.tenant?.slug}</code>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <label className="block space-y-2">
+                <div className="text-sm font-semibold text-rose-100">Type the slug above to confirm:</div>
+                <input
+                  autoFocus
+                  type="text"
+                  value={saDeleteTenantInput}
+                  onChange={(e) => setSaDeleteTenantInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && saDeleteTenantInput === saDeleteTenant.tenant?.slug && !saDeleteTenantLoading) {
+                      e.preventDefault();
+                      executePermanentDeleteTenant();
+                    }
+                  }}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder={saDeleteTenant.tenant?.slug || ''}
+                  className="w-full px-4 py-3 rounded-xl bg-slate-950/60 border border-slate-700 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500/60 transition-all font-mono tracking-wider text-sm"
+                />
+                {saDeleteTenantInput && saDeleteTenantInput !== saDeleteTenant.tenant?.slug && (
+                  <div className="text-xs text-rose-300/80 flex items-center gap-1.5">
+                    <AlertCircle size={12} />
+                    Does not match — check for typos.
+                  </div>
+                )}
+              </label>
+            </div>
+          </Modal>
+        )}
+
+        {saDeleteQuestion && (
+          <Modal
+            isOpen={Boolean(saDeleteQuestion)}
+            onClose={() => !saDeleteQuestionLoading && setSaDeleteQuestion(null)}
+            variant="danger"
+            size="sm"
+            align="left"
+            title={
+              saDeleteQuestion.mode === 'single'
+                ? 'Delete this question?'
+                : `Delete ${saDeleteQuestion.count} question${saDeleteQuestion.count === 1 ? '' : 's'}?`
+            }
+            subtitle={
+              saDeleteQuestion.mode === 'single'
+                ? 'This question will be removed from every deck in this context that references it. This action cannot be undone.'
+                : `${saDeleteQuestion.count} question${saDeleteQuestion.count === 1 ? ' is' : 's are'} about to be permanently removed. This action cannot be undone.`
+            }
+            icon={<Trash2 size={26} className="text-rose-300" />}
+            actionLabel={saDeleteQuestionLoading ? 'Deleting…' : (saDeleteQuestion.mode === 'single' ? 'Delete Question' : `Delete ${saDeleteQuestion.count} Questions`)}
+            actionVariant="danger"
+            actionLoading={saDeleteQuestionLoading}
+            actionDisabled={saDeleteQuestionLoading}
+            closeLabel={saDeleteQuestionLoading ? 'Deleting…' : 'Cancel'}
+            closeVariant="secondary"
+            closeDisabled={saDeleteQuestionLoading}
+            onAction={executeDeleteQuestion}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -3481,10 +4316,14 @@ function createEmptyMetrics() {
       active_sessions_now: 0,
       active_tables_now: 0,
       live_restaurants_now: 0,
+      active_restaurants_24h: 0,
       dual_sessions_now: 0,
       sessions_window: 0,
       qr_scans_window: 0,
-      question_views_window: 0
+      question_views_window: 0,
+      sessions_24h: 0,
+      tables_24h: 0,
+      engagement_24h: 0
     },
     live_restaurants: [],
     context_mix: [],
@@ -3494,6 +4333,23 @@ function createEmptyMetrics() {
 }
 
 function normalizeMetricsPayload(payload) {
+  const backendOnlyEventTypes = new Set([
+    'cleanup_job_started', 'cleanup_job_completed', 'cleanup_job_error',
+    'server_error', 'socket_error', 'client_error',
+    'reconnect_succeeded', 'reconnect_failed', 'desync_detected',
+    'session_expired', 'start_fresh_cancelled_timeout',
+    'deck_fallback_context', 'deck_empty',
+    'geofence_localhost_grace_applied', 'geofence_bypass_low_accuracy',
+    'geofence_check_location_denied', 'geofence_check_pending_coords'
+  ]);
+  const filteredRecent = Array.isArray(payload?.recent_activity)
+    ? payload.recent_activity.filter((ev) => {
+        if (!ev || typeof ev.event_type !== 'string') return false;
+        if (backendOnlyEventTypes.has(ev.event_type)) return false;
+        if (String(ev.restaurant_name || '').toLowerCase() === 'system') return false;
+        return true;
+      })
+    : [];
   return {
     ...createEmptyMetrics(),
     ...payload,
@@ -3504,7 +4360,7 @@ function normalizeMetricsPayload(payload) {
     live_restaurants: Array.isArray(payload?.live_restaurants) ? payload.live_restaurants : [],
     context_mix: Array.isArray(payload?.context_mix) ? payload.context_mix : [],
     activity_timeline: Array.isArray(payload?.activity_timeline) ? payload.activity_timeline : [],
-    recent_activity: Array.isArray(payload?.recent_activity) ? payload.recent_activity : []
+    recent_activity: filteredRecent
   };
 }
 
@@ -3574,10 +4430,10 @@ function ContextMixRow({ label, count, total, rangeLabel }) {
   const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
 
   return (
-    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/70 p-4 shadow-[0_2px_10px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300">
-      <div className="flex items-center justify-between gap-3 mb-2">
-        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span>
-        <span className="text-xs font-bold text-slate-600 dark:text-slate-400 tabular-nums">{count} sessions</span>
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/70 p-4 shadow-[0_2px_10px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300 min-h-[88px]">
+      <div className="flex items-center justify-between gap-3 mb-2 min-w-0">
+        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">{label}</span>
+        <span className="text-xs font-bold text-slate-600 dark:text-slate-400 tabular-nums whitespace-nowrap">{count} interactions</span>
       </div>
       <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
         <div
@@ -3585,31 +4441,48 @@ function ContextMixRow({ label, count, total, rangeLabel }) {
           style={{ width: `${percentage}%` }}
         />
       </div>
-      <div className="mt-2 text-xs text-slate-500 dark:text-slate-500">{percentage}% of the last {rangeLabel}</div>
+      <div className="mt-2 text-xs text-slate-500 dark:text-slate-500 truncate">{percentage}% of the last {rangeLabel}</div>
     </div>
   );
 }
 
 function LiveVenueCard({ restaurant }) {
+  const isLive = Boolean(restaurant.live_now);
   return (
     <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/80 p-4 shadow-[0_4px_16px_rgba(15,23,42,0.04)] dark:shadow-lg transition-colors duration-300">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            {isLive ? (
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse" />
+            ) : (
+              <span className="h-2.5 w-2.5 rounded-full bg-slate-500/40" />
+            )}
             <h4 className="text-base font-bold text-slate-900 dark:text-white">{restaurant.name}</h4>
           </div>
-          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">/{restaurant.slug}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
+            <span>/{restaurant.slug}</span>
+            <span className="text-slate-600/60 dark:text-slate-500/60">·</span>
+            {isLive ? (
+              <span className="text-amber-500 dark:text-amber-300 font-medium">Live now</span>
+            ) : (
+              <span>Last seen {formatRelativeTime(restaurant.last_activity_at)}</span>
+            )}
+          </div>
         </div>
-        <div className="rounded-2xl border border-cyan-200 dark:border-cyan-500/20 bg-cyan-50 dark:bg-cyan-500/10 px-3 py-2 text-right shadow-sm dark:shadow-none">
-          <div className="text-lg font-extrabold text-cyan-700 dark:text-cyan-200 tabular-nums">{restaurant.active_sessions}</div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-600/80 dark:text-cyan-300/80">Live Sessions</div>
+        <div className="rounded-2xl border border-violet-200 dark:border-violet-500/20 bg-violet-50 dark:bg-violet-500/10 px-3 py-2 text-right shadow-sm dark:shadow-none min-w-[88px]">
+          <div className="text-lg font-extrabold text-violet-700 dark:text-violet-200 tabular-nums">{restaurant.sessions_24h ?? 0}</div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-violet-600/80 dark:text-violet-300/80">Sessions · 24h</div>
+          {(restaurant.active_sessions ?? 0) > 0 && (
+            <div className="text-[10px] mt-1 text-violet-500/80 dark:text-violet-300/60">{restaurant.active_sessions} active right now</div>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 mt-4">
-        <MetricMini label="Tables" value={restaurant.active_tables} />
-        <MetricMini label="Last Activity" value={formatRelativeTime(restaurant.last_activity_at)} />
+      <div className="grid grid-cols-3 gap-3 mt-4">
+        <MetricMini label="Tables · 24h" value={restaurant.tables_24h ?? 0} />
+        <MetricMini label="Engagement" value={restaurant.engagement_signals_24h ?? 0} />
+        <MetricMini label="Live Tables" value={restaurant.active_tables ?? 0} />
       </div>
 
       <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3">
@@ -3671,8 +4544,9 @@ function LiveVenueMap({ restaurants }) {
                 <div className="relative flex h-4 w-4 items-center justify-center rounded-full border border-white/40 bg-cyan-400 shadow-lg shadow-cyan-500/30" />
                 <div className="pointer-events-none absolute left-1/2 top-5 z-10 hidden w-44 -translate-x-1/2 rounded-2xl border border-slate-700 bg-slate-950/95 px-3 py-2 text-left shadow-2xl group-hover:block">
                   <div className="text-xs font-bold text-white">{restaurant.name}</div>
-                  <div className="mt-1 text-[11px] text-slate-400">
-                    {restaurant.active_sessions} sessions · {restaurant.active_tables} tables
+                  <div className="text-[11px] text-slate-400">
+                    {restaurant.sessions_24h ?? 0} sessions·24h · {restaurant.tables_24h ?? 0} tables
+                    {(restaurant.active_sessions ?? 0) > 0 && ` · ${restaurant.active_sessions} now`}
                   </div>
                 </div>
               </div>
@@ -3700,7 +4574,7 @@ function RecentActivityRow({ event }) {
         <div>
           <div className="text-sm font-semibold text-slate-200">{formatMetricEventLabel(event.event_type)}</div>
           <div className="text-xs text-slate-500 mt-1">
-            {event.restaurant_name || 'Unknown restaurant'}
+            {event.restaurant_name || '—'}
             {event.table_token ? ` · Table ${event.table_token}` : ''}
           </div>
         </div>
@@ -3716,13 +4590,48 @@ function formatMetricEventLabel(eventType) {
   const map = {
     qr_scan_validated: 'QR Scan Validated',
     qr_scan_rejected: 'QR Scan Rejected',
+    qr_scan_invalid: 'QR Scan Malformed',
+    geofence_check_denied: 'Location Blocked (Handshake)',
+    welcome_geofence_denied: 'Location Blocked (Welcome)',
+    welcome_geolocation_request: 'Location Prompted',
+    welcome_screen_rendered: 'Welcome Screen Shown',
+    context_selected: 'Context Selected',
+    mode_selected: 'Mode Selected',
     session_created: 'Session Started',
-    question_viewed: 'Question Viewed',
+    session_resumed: 'Session Resumed (24h Rejoin)',
+    session_reconnect: 'Socket Rejoined',
+    session_end: 'Session Ended',
     session_paired: 'Dual Session Paired',
-    context_changed: 'Context Changed'
+    dual_pairing_requested: 'Dual Pairing Requested',
+    dual_partner_joined: 'Partner Joined Dual Session',
+    dual_pairing_failed: 'Dual Pairing Failed',
+    dual_full_rejected: 'Phone C Blocked (Dual Full)',
+    waiting_partner_ended: 'Dual Waiting Period Ended',
+    partner_reconnected: 'Partner Reconnected',
+    partner_disconnected: 'Partner Disconnected',
+    socket_joined_session: 'Socket Joined Session',
+    menu_opened: 'Session Menu Opened',
+    menu_closed: 'Session Menu Closed',
+    context_changed: 'Context Changed',
+    mode_changed: 'Mode Changed',
+    menu_reset_context_requested: 'Reset Context Pressed',
+    menu_reset_mode_requested: 'Reset Mode Pressed',
+    menu_start_fresh_pressed: 'Start Fresh Pressed',
+    menu_start_fresh_outcome: 'Start Fresh Routed',
+    start_fresh: 'Started Fresh Session',
+    session_destroyed: 'Dual Session Ended (Both Started Fresh)',
+    question_viewed: 'Question Viewed',
+    question_shown: 'Question Shown',
+    question_dwell_complete: 'Question Dwell Complete',
+    question_revealed: 'Answer Revealed (Tap)',
+    question_locked: 'Answer Locked (MCQ)',
+    question_advanced: 'Advanced to Next Question',
+    question_advance: 'Question Advanced',
+    hint_revealed: 'Hint Revealed',
+    mcq_answer_submitted: 'Multiple Choice Submitted'
   };
-
-  return map[eventType] || eventType.replace(/_/g, ' ');
+  if (map[eventType]) return map[eventType];
+  return String(eventType || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function formatRelativeTime(value) {
@@ -4068,6 +4977,61 @@ function SelectionCountBar({ label, total, selected, onSelectAll, onClear, size 
 function formatPlanLabel(plan) {
   const map = { trial: 'Trial', starter: 'Starter', premium: 'Premium', enterprise: 'Enterprise', free: 'Free', pro: 'Pro' };
   return map[plan] || 'Trial';
+}
+
+const PLAN_DISPLAY_ACCENTS = {
+  trial: { accent: 'amber', Icon: Clock },
+  starter: { accent: 'cyan', Icon: Zap },
+  premium: { accent: 'violet', Icon: Rocket },
+  enterprise: { accent: 'emerald', Icon: Crown }
+};
+
+const FALLBACK_PLAN_CATALOG = [
+  { key: 'trial', name: 'Trial', description: '14-day evaluation, full feature access', monthly_amount_cents: 0, interval: 'trial', currency: 'usd', public: false },
+  { key: 'starter', name: 'Starter', description: 'Up to 20 tables · 5,000 sessions/mo', monthly_amount_cents: 7900, interval: 'month', currency: 'usd', public: true },
+  { key: 'premium', name: 'Premium', description: 'Up to 200 tables · unlimited sessions', monthly_amount_cents: 24900, interval: 'month', currency: 'usd', public: true }
+];
+
+function resolvePlanCatalog(billingOverview) {
+  if (Array.isArray(billingOverview?.plan_catalog) && billingOverview.plan_catalog.length > 0) {
+    return billingOverview.plan_catalog;
+  }
+  return FALLBACK_PLAN_CATALOG;
+}
+
+function formatPlanPrice(plan) {
+  if (!plan) return '—';
+  const cents = Number(plan.monthly_amount_cents);
+  if (!Number.isFinite(cents) || cents === 0) return '$0';
+  const currency = String(plan.currency || 'usd').toUpperCase();
+  const symbol = currency === 'USD' ? '$' : `${currency} `;
+  const amount = (cents / 100).toFixed(Number.isInteger(cents / 100) ? 0 : 2);
+  const interval = plan.interval === 'month' ? '/mo' : '';
+  return `${symbol}${amount}${interval}`;
+}
+
+function buildPlanDisplayRow(plan) {
+  const cfg = PLAN_DISPLAY_ACCENTS[plan.key] || PLAN_DISPLAY_ACCENTS.starter;
+  const defaults = plan.defaults || {};
+  let summary = plan.description || '';
+  if (!summary) {
+    const parts = [];
+    if (Number.isFinite(Number(defaults.max_tables))) parts.push(`Up to ${defaults.max_tables} tables`);
+    if (Number.isFinite(Number(defaults.max_monthly_sessions))) {
+      parts.push(`${Number(defaults.max_monthly_sessions).toLocaleString()} sessions/mo`);
+    } else if (plan.key === 'premium' || plan.key === 'enterprise') {
+      parts.push('Unlimited sessions/mo');
+    }
+    if (defaults.support_tier) parts.push(`${defaults.support_tier} support`);
+    summary = parts.join(' · ');
+  }
+  return {
+    key: plan.key,
+    accent: cfg.accent,
+    Icon: cfg.Icon,
+    desc: summary,
+    price: formatPlanPrice(plan)
+  };
 }
 
 function FormField({ label, placeholder, value, onChange, type = 'text' }) {

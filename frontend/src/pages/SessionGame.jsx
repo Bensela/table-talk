@@ -10,6 +10,7 @@ import Modal from '../components/ui/Modal';
 import { getStoredParticipant, clearStoredParticipant, storeParticipant, setLastResetAt, clearDualSession } from '../utils/sessionStorage';
 import { useSocket, useEnsureSessionRoom } from '../context/SocketContext';
 import { SCANNER_ROUTE } from '../constants/routes';
+import useAnalytics from '../hooks/useAnalytics';
 
 // Hook for session activity tracking
 function useSessionActivity(sessionId, participantId) {
@@ -87,6 +88,10 @@ function LogoutScreen({ navigate }) {
 export default function SessionGame() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const { fireSession } = useAnalytics();
+  
+  const questionShownAtRef = useRef(null);
+  const previousQuestionIdRef = useRef(null);
   
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -95,6 +100,60 @@ export default function SessionGame() {
   useEffect(() => {
     questionIdRef.current = question?.question_id || null;
   }, [question]);
+
+  // Funnel event: each time a distinct question is rendered, emit question_shown
+  // and compute the previous question's dwell time.
+  useEffect(() => {
+    const qid = question?.question_id;
+    if (!qid) return;
+    if (qid === previousQuestionIdRef.current) return;
+
+    const now = Date.now();
+    const latency_ms = questionShownAtRef.current ? now - questionShownAtRef.current : null;
+
+    if (previousQuestionIdRef.current && latency_ms != null) {
+      fireSession({
+        event_type: 'question_dwell_complete',
+        event_data: {
+          question_id: previousQuestionIdRef.current,
+          dwell_ms: latency_ms,
+          mode,
+          context,
+          position_index: question?.position_index ?? null
+        },
+        ids: { session_id: sessionId, participant_id: participantId }
+      });
+    }
+
+    fireSession({
+      event_type: 'question_shown',
+      event_data: {
+        question_id: qid,
+        type: question?.type || null,
+        position_index: question?.position_index ?? null,
+        difficulty: question?.difficulty ?? null,
+        mode,
+        context
+      },
+      ids: { session_id: sessionId, participant_id: participantId }
+    });
+
+    fireSession({
+      event_type: 'question_viewed',
+      event_data: {
+        question_id: qid,
+        type: question?.type || null,
+        position_index: question?.position_index ?? null,
+        difficulty: question?.difficulty ?? null,
+        mode,
+        context
+      },
+      ids: { session_id: sessionId, participant_id: participantId }
+    });
+
+    previousQuestionIdRef.current = qid;
+    questionShownAtRef.current = now;
+  }, [question?.question_id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [dualStatus, setDualStatus] = useState(null);
@@ -114,8 +173,12 @@ export default function SessionGame() {
   }, [hasPartnerJoined]);
   
   const [conversationStarted, setConversationStarted] = useState(false);
+  const [nextIntentCount, setNextIntentCount] = useState(0); // State 1 ready count (0, 1, 2)
+  const [advanceIntentCount, setAdvanceIntentCount] = useState(0); // State 2 Next Question count (0, 1, 2)
   const [pendingSwitchContext, setPendingSwitchContext] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState(null);
+  const [nullQRetry, setNullQRetry] = useState(0);
+  const coalesceFetchRef = useRef({ lastRunAt: 0, pendingTimer: null, running: false });
   const [modalState, setModalState] = useState({ 
     isOpen: false, 
     title: '', 
@@ -222,8 +285,17 @@ export default function SessionGame() {
     // Listeners
     const onConnect = () => {
       console.log('✅ [SessionGame] Socket Connected');
+      const isReconnect = reconnectAttempts.current > 0;
       setIsConnected(true);
       reconnectAttempts.current = 0;
+
+      if (isReconnect) {
+        fireSession({
+          event_type: 'reconnect_succeeded',
+          event_data: { source: 'socket.connect' },
+          ids: { session_id: sessionId, participant_id: participantId }
+        });
+      }
       
       // Re-assert join on reconnect
       socket.emit('join_session', { 
@@ -345,11 +417,26 @@ export default function SessionGame() {
     const onConnectError = (err) => {
       console.error('❌ Socket Connection Error:', err.message);
       setIsConnected(false);
+      reconnectAttempts.current = (reconnectAttempts.current || 0) + 1;
+      fireSession({
+        event_type: 'reconnect_failed',
+        event_data: {
+          source: 'socket.connect_error',
+          message: err && err.message ? String(err.message).slice(0, 400) : null,
+          attempt: reconnectAttempts.current
+        },
+        ids: { session_id: sessionId, participant_id: participantId }
+      });
     };
 
     const onDisconnect = (reason) => {
       console.log('🔌 Disconnected:', reason);
       setIsConnected(false);
+      fireSession({
+        event_type: 'session_reconnect',
+        event_data: { source: 'socket.disconnect', reason: String(reason || '').slice(0, 200) },
+        ids: { session_id: sessionId, participant_id: participantId }
+      });
     };
 
     const onError = (data) => {
@@ -399,6 +486,8 @@ export default function SessionGame() {
 
     const onAdvanceQuestion = (data) => {
       console.log('Received advance_question event', data);
+      setNextIntentCount(0);
+      setAdvanceIntentCount(0);
       fetchCurrentQuestion();
       setIsRevealed(false);
       setWaitingForPartner(false);
@@ -444,14 +533,31 @@ export default function SessionGame() {
     };
 
     const onNextIntentUpdate = ({ count }) => {
-      // Only set partnerIsReady if we are NOT in conversation mode. 
-      // If we are already in conversation mode, "Next Question" clicks shouldn't trigger "Partner is ready!"
+      setNextIntentCount(count || 0);
+      // partnerIsReady is true when partner has clicked and we have not yet
       if (!conversationStarted) {
         setPartnerIsReady((prev) => {
-            if (!hasClickedNext && count >= 1) return true;
-            return prev;
+          if (!hasClickedNext && count >= 1 && !prev) return true;
+          if (hasClickedNext && count < 2) return prev;
+          if (count >= 2) return true;
+          return prev;
         });
       }
+    };
+
+    const onAdvanceIntentUpdate = ({ count }) => {
+      setAdvanceIntentCount(count || 0);
+    };
+
+    const onHintTapRevealed = ({ question_id }) => {
+      fireSession({
+        event_type: 'hint_revealed',
+        event_data: { question_id: question_id || null, source: 'socket.hint_tap_revealed' },
+        ids: { session_id: sessionId, participant_id: participantId }
+      });
+      // propagate to QuestionCard by setting the parent isRevealed via handleReveal's non-socket path:
+      // emit an event via window so QuestionCard component listener can pick it up.
+      window.dispatchEvent(new CustomEvent('tt:hint_revealed_sync', { detail: { question_id } }));
     };
     
     // Listen for context switch intents
@@ -550,6 +656,8 @@ export default function SessionGame() {
     socket.on('both_ready', onBothReady);
     socket.on('wait_timeout', onWaitTimeout);
     socket.on('next_intent_update', onNextIntentUpdate);
+    socket.on('advance_intent_update', onAdvanceIntentUpdate);
+    socket.on('hint_tap_revealed', onHintTapRevealed);
     socket.on('partner_context_intent', onPartnerContextIntent);
     socket.on('context_switch_cancelled', onContextSwitchCancelled);
     socket.on('partner_requested_fresh', onPartnerRequestedFresh);
@@ -577,31 +685,13 @@ export default function SessionGame() {
       socket.off('both_ready', onBothReady);
       socket.off('wait_timeout', onWaitTimeout);
       socket.off('next_intent_update', onNextIntentUpdate);
+      socket.off('advance_intent_update', onAdvanceIntentUpdate);
+      socket.off('hint_tap_revealed', onHintTapRevealed);
       socket.off('partner_context_intent', onPartnerContextIntent);
       socket.off('context_switch_cancelled', onContextSwitchCancelled);
       socket.off('partner_requested_fresh', onPartnerRequestedFresh);
-      socket.off('dual_group_terminated', onDualGroupTerminated);
     };
   }, [sessionId, participantId, hasClickedNext, globalSocket]);
-
-  // Handle Visibility Change (Background/Foreground)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log('[SessionGame] App foregrounded. Syncing state...');
-        fetchCurrentQuestion();
-        if (globalSocket && !globalSocket.connected) {
-            globalSocket.connect();
-        }
-      }
-    };
-    
-    // ... rest of visibility logic
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [sessionId, globalSocket]); 
 
   // Handle Visibility Change (Background/Foreground)
   useEffect(() => {
@@ -621,42 +711,101 @@ export default function SessionGame() {
     };
   }, [sessionId]); // Re-bind if sessionId changes 
 
-  const fetchCurrentQuestion = async () => {
-      try {
-        const pidParam = participantId ? `&participant_id=${encodeURIComponent(participantId)}` : '';
-        const res = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}${pidParam}`);
-        console.log('[SessionGame] State Response (Raw):', res);
-        console.log('[SessionGame] State Data:', res.data);
-        
-        if (res.data && res.data.current_question) {
-          console.log('[SessionGame] Setting question:', res.data.current_question);
-          setQuestion(res.data.current_question);
-        } else {
-          console.warn('[SessionGame] current_question is missing/null:', res.data);
-          setQuestion(null);
-        }
-        
-        // Ensure mode/context is up to date in case it changed remotely
-        if (res.data) {
-            setMode(res.data.mode);
-            setContext(res.data.context);
-            if (res.data.dual_status) {
-                setDualStatus(res.data.dual_status);
-            }
-            if (res.data.has_partner_joined !== undefined) {
-                setHasPartnerJoined(res.data.has_partner_joined);
-            }
-            if (res.data.dual_status === 'waiting' && res.data.waiting_reason) {
-                setWaitingCause(res.data.waiting_reason);
-            }
-        }
-      } catch (err) {
-        console.error('Error syncing state:', err);
-        if (err.response?.status === 403 && err.response.data?.error === 'INACTIVE') {
-          setError('Logged out due to inactivity. Scan the same table QR code to rejoin.');
-        }
+  const __fetchCurrentQuestionRaw = async () => {
+    try {
+      coalesceFetchRef.current.running = true;
+      const pidParam = participantId ? `&participant_id=${encodeURIComponent(participantId)}` : '';
+      const res = await api.get(`/sessions/${sessionId}/state?t=${Date.now()}${pidParam}`);
+      console.log('[SessionGame] State Data:', res.data);
+      
+      if (res.data && res.data.current_question) {
+        console.log('[SessionGame] Setting question:', res.data.current_question);
+        setQuestion(res.data.current_question);
+        setNullQRetry(0);
+      } else {
+        console.warn('[SessionGame] current_question is missing/null:', res.data);
+        setQuestion(null);
+        setNullQRetry(prev => Math.min(prev + 1, 10));
       }
-    };
+      
+      // Ensure mode/context is up to date in case it changed remotely
+      if (res.data) {
+          setMode(res.data.mode);
+          setContext(res.data.context);
+          if (res.data.dual_status) {
+              setDualStatus(res.data.dual_status);
+          }
+          if (res.data.has_partner_joined !== undefined) {
+              setHasPartnerJoined(res.data.has_partner_joined);
+          }
+          if (res.data.dual_status === 'waiting' && res.data.waiting_reason) {
+              setWaitingCause(res.data.waiting_reason);
+          }
+      }
+    } catch (err) {
+      console.error('Error syncing state:', err);
+      if (err.response?.status === 403 && err.response.data?.error === 'INACTIVE') {
+        setError('Logged out due to inactivity. Scan the same table QR code to rejoin.');
+      }
+      setNullQRetry(prev => Math.min(prev + 1, 10));
+    } finally {
+      coalesceFetchRef.current.running = false;
+      coalesceFetchRef.current.lastRunAt = Date.now();
+    }
+  };
+
+  /**
+   * Coalesced fetchCurrentQuestion:
+   * If called many times in a short window (< 250ms), we schedule ONE run at the end.
+   * If nothing is running and > 250ms since last run, execute immediately.
+   * Eliminates the triple-fire on initial load.
+   */
+  const fetchCurrentQuestion = () => {
+    const COALESCE_MS = 250;
+    const now = Date.now();
+    const ref = coalesceFetchRef.current;
+    const timeSinceLast = now - ref.lastRunAt;
+    if (timeSinceLast >= COALESCE_MS && !ref.running && !ref.pendingTimer) {
+      __fetchCurrentQuestionRaw();
+      return;
+    }
+    if (ref.pendingTimer) return;
+    const delay = Math.max(0, COALESCE_MS - timeSinceLast);
+    ref.pendingTimer = setTimeout(() => {
+      ref.pendingTimer = null;
+      if (ref.running) return;
+      __fetchCurrentQuestionRaw();
+    }, delay);
+  };
+
+  // Auto-retry when question is null: up to 3 retries with backoff, then context fallback
+  useEffect(() => {
+    if (loading || error) return;
+    if (question) return; // Nothing to retry
+
+    const attempt = nullQRetry;
+    if (attempt >= 3) {
+      // Fallback: try context switch to Exploring — it's guaranteed to have questions.
+      if (context !== 'Exploring') {
+        console.warn(`[SessionGame] 3 null-question retries exhausted; falling back to Exploring context automatically.`);
+        (async () => {
+          try {
+            await api.patch(`/sessions/${sessionId}`, { context: 'Exploring' });
+          } catch (err) {
+            console.warn('[SessionGame] Fallback context switch patch failed:', err);
+          }
+          fetchCurrentQuestion();
+        })();
+      } else {
+        console.warn(`[SessionGame] 3 retries exhausted even with Exploring context; stopping further auto-retries.`);
+      }
+      return;
+    }
+    const delays = [0, 300, 900];
+    const delay = delays[attempt] ?? 0;
+    const t = setTimeout(() => fetchCurrentQuestion(), delay);
+    return () => clearTimeout(t);
+  }, [nullQRetry, question, loading, error, context, sessionId]);
 
   const handleReveal = async () => {
     // If dual mode, emit socket event first for sync
@@ -676,9 +825,31 @@ export default function SessionGame() {
   };
 
   const handleNext = async () => {
+    // Capture when the user requested advance so we can measure sync latency on the next question_shown
+    const clickedAt = Date.now();
+
     // Single Phone Logic
     if (mode === 'single-phone' || mode === 'single') {
       try {
+        fireSession({
+          event_type: 'question_advance',
+          event_data: {
+            direction: 'next',
+            source: 'single_next_click',
+            from_question_id: question?.question_id || null,
+            click_ts: clickedAt
+          },
+          ids: { session_id: sessionId, participant_id: participantId }
+        });
+        fireSession({
+          event_type: 'question_advanced',
+          event_data: {
+            direction: 'next',
+            source: 'single_next_click',
+            from_question_id: question?.question_id || null
+          },
+          ids: { session_id: sessionId, participant_id: participantId }
+        });
         await api.post(`/sessions/${sessionId}/questions/next`);
         fetchCurrentQuestion();
         setIsRevealed(false);
@@ -689,6 +860,17 @@ export default function SessionGame() {
     } 
     
     // Dual Phone Logic
+    fireSession({
+      event_type: 'next_question_intent_clicked',
+      event_data: {
+        phase: 'phase_1_ready_toggle',
+        from_question_id: question?.question_id || null,
+        click_ts: clickedAt,
+        has_partner: hasPartnerJoined
+      },
+      ids: { session_id: sessionId, participant_id: participantId }
+    });
+
     if (socketRef.current?.connected) {
         // We do not setHasClickedNext(true) globally anymore here, because handleNext is used for both Phase 1 and Phase 2.
         // Wait, handleNext is passed to QuestionCard as `onNext`. QuestionCard ONLY calls it for Phase 1 (`handleNextIntent`).
@@ -738,18 +920,22 @@ export default function SessionGame() {
     );
   }
 
-  // Ensure question exists before rendering QuestionCard to prevent null prop errors
   if (!question && !loading && !error) {
-      // Fallback for empty deck or state sync issue
-      return (
-        <div className="min-h-screen flex items-center justify-center p-6 bg-white">
-           <div className="text-center">
-              <h2 className="text-xl font-bold text-gray-800 mb-2">No Question Available</h2>
-              <p className="text-gray-500 mb-6">We couldn't load the current question.</p>
-              <Button onClick={() => window.location.reload()} variant="black">Reload</Button>
-           </div>
+    // Graceful state: auto-retry + fallback is handled by the useEffect above (nullQRetry).
+    // Render a subtle loading placeholder so the user never sees a broken "Reload" screen.
+    return (
+      <div className="min-h-screen bg-[#F3EDE1] flex items-center justify-center p-6">
+        <div className="text-center space-y-3 max-w-sm">
+          <div className="mx-auto w-10 h-10 rounded-full border-2 border-[#DCD3C2] border-t-[#35332E] animate-spin" />
+          <h2 className="text-xl font-bold text-[#35332E]">Loading Question</h2>
+          <p className="text-[#6E6A60] text-sm">
+            {nullQRetry < 3
+              ? 'Syncing deck with table…'
+              : 'Preparing your first question…'}
+          </p>
         </div>
-      );
+      </div>
+    );
   }
 
   if (error) {
@@ -783,11 +969,7 @@ export default function SessionGame() {
   }
 
   return (
-    <div className="min-h-screen bg-white flex flex-col p-6 font-sans selection:bg-blue-100 selection:text-blue-900 relative overflow-hidden">
-      
-      {/* Background Ambience */}
-      <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-blue-50/60 rounded-full blur-3xl pointer-events-none opacity-40" />
-      <div className="absolute bottom-[-20%] right-[-20%] w-[500px] h-[500px] bg-purple-50/60 rounded-full blur-3xl pointer-events-none opacity-40" />
+    <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 font-sans selection:bg-[#DCD3C2] selection:text-[#35332E] relative overflow-hidden">
 
       {/* Modal Popup */}
       <Modal
@@ -815,23 +997,6 @@ export default function SessionGame() {
              }
           }}
         />
-        
-        <div className="flex items-center gap-2">
-          {/* Connection Status Indicator */}
-          {mode === 'dual-phone' && (
-            <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 animate-pulse'}`} 
-                 title={isConnected ? 'Connected' : 'Disconnected'}
-            />
-          )}
-          
-          <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide border ${
-            mode === 'dual-phone' 
-              ? 'bg-purple-50 text-purple-700 border-purple-100' 
-              : 'bg-blue-50 text-blue-700 border-blue-100'
-          }`}>
-            {mode === 'dual-phone' ? 'Dual Sync' : 'Single Mode'}
-          </div>
-        </div>
       </header>
 
       {dualStatus === 'waiting' && mode === 'dual-phone' ? (
@@ -865,7 +1030,30 @@ export default function SessionGame() {
             partnerIsReady={partnerIsReady}
             feedbackMessage={feedbackMessage}
             conversationStarted={conversationStarted}
+            nextIntentCount={nextIntentCount}
+            advanceIntentCount={advanceIntentCount}
             onAdvanceTurn={() => {
+                const clickedAt = Date.now();
+                fireSession({
+                  event_type: 'question_advance',
+                  event_data: {
+                    direction: 'next',
+                    source: 'dual_phase_2_next_question_click',
+                    from_question_id: question?.question_id || null,
+                    click_ts: clickedAt,
+                    conversation_started: conversationStarted
+                  },
+                  ids: { session_id: sessionId, participant_id: participantId }
+                });
+                fireSession({
+                  event_type: 'question_advanced',
+                  event_data: {
+                    direction: 'next',
+                    source: 'dual_phase_2_next_question_click',
+                    from_question_id: question?.question_id || null
+                  },
+                  ids: { session_id: sessionId, participant_id: participantId }
+                });
                 if (socketRef.current?.connected) {
                     socketRef.current.emit('advance_turn');
                     // We need to mark that THIS client has clicked the advance button

@@ -319,16 +319,186 @@ const PLAN_CATALOG = {
   }
 };
 
-function listPublicPlans() {
-  return SUPPORTED_PLANS.filter((k) => PLAN_CATALOG[k].public).map((k) => serializePlan(PLAN_CATALOG[k]));
+function clampInt(v, { min = 0, max = 1000000, defaultValue }) {
+  if (v == null || v === '') return defaultValue;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return defaultValue;
+  return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function listAllPlans() {
-  return SUPPORTED_PLANS.map((k) => serializePlan(PLAN_CATALOG[k]));
+function clampNullableInt(v, { min = 0, max = 10000000 }) {
+  if (v == null || v === '' || v === 'null' || v === 'unlimited') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function getPlan(planKey) {
-  return PLAN_CATALOG[String(planKey || '').toLowerCase()] || null;
+function sanitizeString(v, { maxLen = 220, allowEmpty = true, defaultValue = '' }) {
+  if (typeof v !== 'string') return defaultValue;
+  const s = v.trim();
+  if (s === '') return allowEmpty ? defaultValue : defaultValue;
+  return s.slice(0, maxLen);
+}
+
+function sanitizeStringArray(arr, { maxItems = 12, maxEach = 160 }) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((x) => sanitizeString(x, { maxLen: maxEach, allowEmpty: false }))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+/**
+ * Deep-clone and merge a stored override into the default PLAN_CATALOG.
+ * Only explicitly set keys on the override are overlaid — defaults remain the
+ * fallback so a partial save (e.g. user only changed Starter price) does
+ * not erase Premium features or the Trial plan defaults.
+ */
+function applyPlanOverride(catalog, overrideRaw) {
+  if (!overrideRaw || typeof overrideRaw !== 'object') return catalog;
+  const out = {};
+  for (const planKey of SUPPORTED_PLANS) {
+    const base = catalog[planKey];
+    if (!base) continue;
+    const patch = overrideRaw[planKey];
+    if (!patch || typeof patch !== 'object') {
+      out[planKey] = base;
+      continue;
+    }
+    const patchDefaults = patch.defaults && typeof patch.defaults === 'object' ? patch.defaults : {};
+    const baseDefaults = base.defaults || {};
+    out[planKey] = {
+      ...base,
+      name: sanitizeString(patch.name, { maxLen: 40, allowEmpty: false, defaultValue: base.name }),
+      description: sanitizeString(patch.description, { maxLen: 240, defaultValue: base.description }),
+      tagline: sanitizeString(patch.tagline, { maxLen: 140, defaultValue: base.tagline || '' }),
+      monthly_amount_cents: clampInt(patch.monthly_amount_cents, {
+        min: 0,
+        max: 999999,
+        defaultValue: base.monthly_amount_cents
+      }),
+      currency: sanitizeString(patch.currency, { maxLen: 6, allowEmpty: false, defaultValue: base.currency || 'usd' }).toLowerCase(),
+      interval: (['trial', 'month', 'year', 'custom'].includes(patch.interval) ? patch.interval : base.interval) || 'month',
+      public: typeof patch.public === 'boolean' ? patch.public : base.public === true,
+      features: Array.isArray(patch.features) && patch.features.length > 0
+        ? sanitizeStringArray(patch.features, { maxItems: 12, maxEach: 180 })
+        : Array.isArray(base.features) ? [...base.features] : [],
+      defaults: {
+        ...baseDefaults,
+        trial_days: patchDefaults.trial_days == null
+          ? baseDefaults.trial_days
+          : clampInt(patchDefaults.trial_days, { min: 1, max: 120, defaultValue: baseDefaults.trial_days }),
+        max_tables: patchDefaults.max_tables == null
+          ? baseDefaults.max_tables
+          : clampNullableInt(patchDefaults.max_tables, { min: 1, max: 10000 }),
+        max_monthly_sessions: patchDefaults.max_monthly_sessions == null
+          ? baseDefaults.max_monthly_sessions
+          : clampNullableInt(patchDefaults.max_monthly_sessions, { min: 1, max: 100000000 }),
+        can_use_dual_phone_sessions: typeof patchDefaults.can_use_dual_phone_sessions === 'boolean'
+          ? patchDefaults.can_use_dual_phone_sessions
+          : Boolean(baseDefaults.can_use_dual_phone_sessions),
+        can_generate_qr: typeof patchDefaults.can_generate_qr === 'boolean'
+          ? patchDefaults.can_generate_qr
+          : Boolean(baseDefaults.can_generate_qr),
+        can_export_analytics: typeof patchDefaults.can_export_analytics === 'boolean'
+          ? patchDefaults.can_export_analytics
+          : Boolean(baseDefaults.can_export_analytics),
+        can_use_custom_qr_branding: typeof patchDefaults.can_use_custom_qr_branding === 'boolean'
+          ? patchDefaults.can_use_custom_qr_branding
+          : Boolean(baseDefaults.can_use_custom_qr_branding),
+        can_access_support: typeof patchDefaults.can_access_support === 'boolean'
+          ? patchDefaults.can_access_support
+          : Boolean(baseDefaults.can_access_support),
+        support_tier: sanitizeString(patchDefaults.support_tier, {
+          maxLen: 30,
+          defaultValue: baseDefaults.support_tier || 'standard'
+        })
+      }
+    };
+  }
+  return out;
+}
+
+/**
+ * Load the effective PLAN_CATALOG, overlaying any platform_settings override
+ * saved via the Pricing Editor. Intentionally reads the override on every
+ * call so the SA dashboard Save → UI refresh applies instantly with no
+ * server restart (the platform_settings service has its own 15s cache).
+ */
+async function getEffectivePlanCatalog() {
+  try {
+    const stored = await platformSettings.getPlanCatalogOverride();
+    return {
+      catalog: applyPlanOverride(PLAN_CATALOG, stored.override),
+      override: stored
+    };
+  } catch (err) {
+    console.warn('[billingService] Using default plan catalog (DB read failed):', err.message);
+    return {
+      catalog: PLAN_CATALOG,
+      override: { stored: false, override: null, updated_at: null, source: 'default_failed', updated_by: null }
+    };
+  }
+}
+
+/**
+ * Validate + normalize a candidate override before writing it to the DB.
+ * Throws human-readable 400-style errors so the API surface is strict;
+ * returns a sanitized override object ready for save.
+ */
+async function validateAndNormalizePlanOverride(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('plan_catalog_override body must be an object of plan_key → { ... }');
+  }
+  const out = {};
+  for (const planKey of SUPPORTED_PLANS) {
+    const patch = raw[planKey];
+    if (!patch) continue;
+    if (typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error(`plan_catalog_override[${planKey}] must be an object`);
+    }
+    const row = applyPlanOverride(PLAN_CATALOG, { [planKey]: patch });
+    out[planKey] = {
+      name: row[planKey].name,
+      description: row[planKey].description,
+      tagline: row[planKey].tagline,
+      monthly_amount_cents: row[planKey].monthly_amount_cents,
+      currency: row[planKey].currency,
+      interval: row[planKey].interval,
+      public: row[planKey].public,
+      features: row[planKey].features,
+      defaults: row[planKey].defaults
+    };
+  }
+  const keys = Object.keys(out);
+  if (keys.length === 0) {
+    throw new Error('plan_catalog_override must set at least one plan; otherwise use Reset to defaults');
+  }
+  return out;
+}
+
+async function listPublicPlans() {
+  const { catalog } = await getEffectivePlanCatalog();
+  return SUPPORTED_PLANS.filter((k) => catalog[k].public).map((k) => serializePlan(catalog[k]));
+}
+
+async function listAllPlans() {
+  const { catalog } = await getEffectivePlanCatalog();
+  return SUPPORTED_PLANS.map((k) => serializePlan(catalog[k]));
+}
+
+async function getPlan(planKey) {
+  const { catalog } = await getEffectivePlanCatalog();
+  return catalog[String(planKey || '').toLowerCase()] || null;
+}
+
+async function getPlanDefaults(planKey) {
+  const plan = await getPlan(planKey);
+  return plan ? plan.defaults : null;
+}
+
+function getPlanCatalogDefaultsOnly() {
+  return applyPlanOverride(PLAN_CATALOG, null);
 }
 
 function serializePlan(plan) {
@@ -414,7 +584,7 @@ async function getRestaurantBilling(restaurantId) {
   if (result.rows.length === 0) return null;
 
   const row = result.rows[0];
-  const plan = getPlan(row.plan);
+  const plan = await getPlan(row.plan);
   const computed_status = deriveBillingStatusFromPlanAndDates(row);
 
   return {
@@ -425,7 +595,7 @@ async function getRestaurantBilling(restaurantId) {
 }
 
 async function setRestaurantPlan(restaurantId, { planKey, actorSuperAdminId, stripePriceIdOverride, trialDays, setActive = true }) {
-  const plan = getPlan(planKey);
+  const plan = await getPlan(planKey);
   if (!plan) {
     throw new Error(`Unsupported plan: ${planKey}`);
   }
@@ -479,9 +649,6 @@ async function setRestaurantPlan(restaurantId, { planKey, actorSuperAdminId, str
 async function provisionTrialQrForTable(restaurantId, tableNumber, { superAdminUserId }) {
   const billing = await getRestaurantBilling(restaurantId);
   if (!billing) throw new Error('Restaurant not found');
-  if (billing.plan !== 'trial') {
-    throw new Error('Trial QR provisioning is only for trial restaurants. For paid plans, use normal QR generation.');
-  }
   const slugRes = await db.query('SELECT slug FROM restaurants WHERE id = $1', [restaurantId]);
   const slug = slugRes.rows[0]?.slug;
   if (!slug) throw new Error('Restaurant slug not found');
@@ -580,7 +747,7 @@ async function createStripeCheckoutSession({ restaurantId, planKey, successUrl, 
   const billing = await getRestaurantBilling(restaurantId);
   if (!billing) throw new Error('Restaurant not found');
 
-  const plan = getPlan(planKey);
+  const plan = await getPlan(planKey);
   if (!plan || !plan.public) {
     throw new Error('Unsupported plan for checkout');
   }
@@ -703,10 +870,11 @@ async function handleStripeWebhook({ signature, rawBody }) {
           : (data.subscription ? await (await getStripeClient()).subscriptions.retrieve(typeof data.subscription === 'string' ? data.subscription : data.subscription.id) : null);
         if (!subscription) break;
 
-        const planKey = (subscription.metadata?.plan && getPlan(subscription.metadata.plan) && subscription.metadata.plan)
-          || 'starter';
+        const knownPlan = await getPlan(subscription.metadata?.plan);
+        const planKey = knownPlan ? subscription.metadata.plan : 'starter';
         const periodEnd = subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : null;
         const cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
+        const defaults = (knownPlan && knownPlan.defaults) || getPlanCatalogDefaultsOnly()[planKey]?.defaults || {};
 
         await db.query(
           `UPDATE restaurants
@@ -736,10 +904,10 @@ async function handleStripeWebhook({ signature, rawBody }) {
             subscription.items?.data?.[0]?.price?.id || null,
             periodEnd,
             cancelAtPeriodEnd,
-            planKey === 'premium' ? 200 : 20,
-            planKey === 'premium' ? null : 5000,
-            planKey === 'premium',
-            planKey === 'premium' ? 'priority' : 'standard'
+            Number.isFinite(Number(defaults.max_tables)) ? Number(defaults.max_tables) : (planKey === 'premium' ? 200 : 20),
+            Number.isFinite(Number(defaults.max_monthly_sessions)) ? Number(defaults.max_monthly_sessions) : (planKey === 'premium' ? null : 5000),
+            Boolean(defaults.can_use_custom_qr_branding) || planKey === 'premium',
+            defaults.support_tier || (planKey === 'premium' ? 'priority' : 'standard')
           ]
         );
         break;
@@ -880,6 +1048,24 @@ module.exports = {
   listPublicPlans,
   listAllPlans,
   getPlan,
+  getPlanDefaults,
+  getEffectivePlanCatalog,
+  validateAndNormalizePlanOverride,
+  resetPlanCatalogOverride: async () => {
+    try {
+      await require('./platformSettingsService').upsertSetting({
+        key: 'plan_catalog.override',
+        value: '',
+        isSecret: false,
+        actorUserId: null,
+        source: 'default'
+      });
+      return true;
+    } catch (err) {
+      console.warn('[billingService] resetPlanCatalogOverride failed:', err.message);
+      return false;
+    }
+  },
   getRestaurantBilling,
   setRestaurantPlan,
   provisionTrialQrForTable,

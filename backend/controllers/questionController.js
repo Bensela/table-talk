@@ -1,5 +1,6 @@
 const db = require('../db');
 const deckService = require('../services/deckService');
+const { insertSessionAnalyticsEvent } = require('../services/analyticsService');
 
 const getCurrentQuestion = async (req, res) => {
   const { session_id } = req.params;
@@ -21,12 +22,14 @@ const getCurrentQuestion = async (req, res) => {
       return res.status(404).json({ error: 'No questions available for this context' });
     }
 
-    // Log analytics
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [session_id, 'question_viewed', { question_id: question.question_id }]
-    );
+    await insertSessionAnalyticsEvent(session, {
+      event_type: 'question_viewed',
+      event_data: {
+        question_id: question.question_id,
+        position_index: question.position_index != null ? question.position_index : null,
+        deck_id: question.deck_session_id != null ? question.deck_session_id : null
+      }
+    });
 
     res.json(question);
   } catch (err) {
@@ -58,12 +61,10 @@ const nextQuestion = async (req, res) => {
       [session_id]
     );
 
-    // Log analytics
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [session_id, 'next_clicked', { new_index: newIndex }]
-    );
+    await insertSessionAnalyticsEvent(session, {
+      event_type: 'next_clicked',
+      event_data: { new_index: newIndex }
+    });
 
     res.json({ success: true, index: newIndex });
   } catch (err) {
@@ -92,12 +93,10 @@ const prevQuestion = async (req, res) => {
       [session_id]
     );
 
-    // Log analytics
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [session_id, 'prev_clicked', { new_index: newIndex }]
-    );
+    await insertSessionAnalyticsEvent(session, {
+      event_type: 'prev_clicked',
+      event_data: { new_index: newIndex }
+    });
 
     res.json({ success: true, index: newIndex });
   } catch (err) {
@@ -111,11 +110,15 @@ const revealAnswer = async (req, res) => {
   const { question_id } = req.body;
 
   try {
-    await db.query(
-      `INSERT INTO analytics_events (session_id, event_type, event_data)
-       VALUES ($1, $2, $3)`,
-      [session_id, 'answer_revealed', { question_id }]
+    const sessionRes = await db.query(
+      `SELECT session_id, restaurant_id, table_token FROM sessions WHERE session_id = $1`,
+      [session_id]
     );
+    const session = sessionRes.rows && sessionRes.rows[0] ? sessionRes.rows[0] : { session_id };
+    await insertSessionAnalyticsEvent(session, {
+      event_type: 'answer_revealed',
+      event_data: { question_id: question_id || null }
+    });
     res.json({ success: true });
   } catch (err) {
     console.error('Error logging reveal:', err);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { io } from 'socket.io-client';
@@ -7,12 +7,15 @@ import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
 import { storeParticipant, getStoredParticipant, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
+import useAnalytics from '../hooks/useAnalytics';
 
 export default function ModeSelection() {
   const { tableToken, restaurantSlug, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocket();
+  const { firePublic, fireSession } = useAnalytics();
+  const renderedRef = useRef(false);
   const [loading, setLoading] = useState(false);
   
   // View State: 'mode-select' only now
@@ -51,7 +54,31 @@ export default function ModeSelection() {
     }
   }, [sessionId, tableToken, context, navigate]);
 
+  // Funnel event: Mode selection screen rendered (once per mount)
+  useEffect(() => {
+    if (renderedRef.current) return;
+    renderedRef.current = true;
+    firePublic({
+      event_type: 'mode_screen_rendered',
+      event_data: {
+        restaurant_slug: restaurantSlug || null,
+        table_token: tableToken || null,
+        context: context || null,
+        has_session_id: Boolean(sessionId)
+      }
+    });
+  }, [restaurantSlug, tableToken, context, sessionId, firePublic]);
+
   const handleSinglePhone = async () => {
+    firePublic({
+      event_type: 'mode_selected',
+      event_data: {
+        choice: 'single-phone',
+        context: context || null,
+        restaurant_slug: restaurantSlug || null,
+        table_token: tableToken || null
+      }
+    });
     setLoading(true);
     try {
       const { data } = await createSession({
@@ -86,6 +113,15 @@ export default function ModeSelection() {
   const [createdSessionId, setCreatedSessionId] = useState(null); // Track session ID for websocket
 
   const handleStartDual = async () => {
+    firePublic({
+      event_type: 'mode_selected',
+      event_data: {
+        choice: 'dual-phone',
+        context: context || null,
+        restaurant_slug: restaurantSlug || null,
+        table_token: tableToken || null
+      }
+    });
     setLoading(true);
     try {
       const { data } = await createSession({

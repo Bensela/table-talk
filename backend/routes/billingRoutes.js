@@ -24,7 +24,7 @@ const { authenticateToken, requireRole } = require('../middleware/authMiddleware
 
 router.get('/plans', async (req, res) => {
   res.json({
-    plans: listPublicPlans(),
+    plans: await listPublicPlans(),
     billing_provider: (await billingService.hasBillingProvider()) ? 'stripe' : 'manual'
   });
 });
@@ -73,7 +73,7 @@ router.post('/tenant/checkout', authenticateToken, requireRole(['RESTAURANT_ADMI
     if (!restaurantId) return res.status(400).json({ error: 'No restaurant attached to user' });
     const frontendUrl = await billingService.getFrontendUrl();
     const { plan, successUrl, cancelUrl } = req.body || {};
-    const planObj = getPlan(plan);
+    const planObj = await getPlan(plan);
     if (!planObj || !planObj.public) {
       return res.status(400).json({ error: 'Invalid plan for checkout' });
     }
@@ -154,7 +154,7 @@ router.get('/overview', authenticateToken, requireRole(['SUPER_ADMIN']), async (
     return res.json({
       tenants: overview,
       summary: agg.rows[0] || {},
-      plan_catalog: listAllPlans(),
+      plan_catalog: await listAllPlans(),
       billing_provider: (await billingService.hasBillingProvider()) ? 'stripe' : 'manual'
     });
   } catch (err) {

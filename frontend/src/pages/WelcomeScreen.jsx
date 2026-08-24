@@ -5,10 +5,13 @@ import Button from '../components/ui/Button';
 import { resolveSession, joinDualSession, publicHandshake } from '../api';
 import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
+import { requestCurrentPositionWithFallback, requestHighAccuracyPosition, readGeolocationPermissionState } from '../utils/geolocation';
+import useAnalytics from '../hooks/useAnalytics';
 
 export default function WelcomeScreen() {
   const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
+  const { firePublic, fireSession } = useAnalytics();
 
   const activeRestaurantSlug = restaurantSlug || null;
 
@@ -18,9 +21,179 @@ export default function WelcomeScreen() {
   const [setupStatus, setSetupStatus] = useState('available'); // 'available', 'busy', 'granted'
   const [waitingForA, setWaitingForA] = useState(false);
   const [blockedError, setBlockedError] = useState(null);
-  const [subscriptionError, setSubscriptionError] = useState(null); // 'suspended' | 'invalid'
+  const [subscriptionError, setSubscriptionError] = useState(null); // 'suspended' | 'invalid' | 'geofence_denied'
+  const [geofenceInfo, setGeofenceInfo] = useState(null);
+  const [lastLocationAccuracyM, setLastLocationAccuracyM] = useState(null);
   const setupCompletedRef = useRef(false);
   const validatedRef = useRef(false);
+  const renderedRef = useRef(false);
+  const gpsUpgradeAttemptedRef = useRef(false);
+
+  async function attemptLowAccuracyBypass() {
+    setChecking(true);
+    setStatus('Connecting with reduced location accuracy...');
+    firePublic({
+      event_type: 'welcome_low_accuracy_bypass_attempt',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken,
+        distance_m: geofenceInfo?.distance_m ?? null,
+        configured_radius_m: geofenceInfo?.configured_radius_m ?? null,
+        last_accuracy_m: lastLocationAccuracyM,
+        gps_upgrade_attempted: gpsUpgradeAttemptedRef.current === true
+      }
+    });
+    let locationPayload = null;
+    let geolocationStatus = 'prompt';
+    const fallback = await requestCurrentPositionWithFallback({
+      acceptIfWithinMeters: 1000,
+      dedupeKey: `welcome-bypass:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}`
+    });
+    if (fallback.ok && fallback.coords) {
+      locationPayload = {
+        latitude: fallback.coords.latitude,
+        longitude: fallback.coords.longitude,
+        accuracy: fallback.coords.accuracy ?? null
+      };
+      setLastLocationAccuracyM(fallback.coords.accuracy ?? null);
+      geolocationStatus = 'granted';
+    } else {
+      geolocationStatus = fallback.status || 'denied';
+    }
+    try {
+      const result = await publicHandshake(activeRestaurantSlug, tableToken, {
+        location: locationPayload,
+        geolocationStatus,
+        bypass: 'low_accuracy_device'
+      });
+      firePublic({
+        event_type: 'welcome_low_accuracy_bypass_passed',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          distance_m: geofenceInfo?.distance_m ?? null,
+          configured_radius_m: geofenceInfo?.configured_radius_m ?? null,
+          low_accuracy_bypass_granted: result.data?.geofence?.low_accuracy_bypass_granted === true,
+          radius_overridden: result.data?.geofence?.radius_overridden === true
+        }
+      });
+      validatedRef.current = true;
+      setGeofenceInfo(null);
+      setSubscriptionError(null);
+      setChecking(false);
+      setStatus(null);
+    } catch (err) {
+      setChecking(false);
+      setStatus(null);
+      const code = err?.response?.data?.geofence_code;
+      if (err?.response?.status === 403 && code === 'OUTSIDE_RADIUS') {
+        setGeofenceInfo({
+          distance_m: err.response.data.distance_m,
+          configured_radius_m: err.response.data.configured_radius_m,
+          restaurant_name: err.response.data.restaurant_name || '',
+          suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
+          effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
+          radius_overridden: err.response.data.radius_overridden === true,
+          bypass_denied: true
+        });
+        firePublic({
+          event_type: 'welcome_low_accuracy_bypass_denied',
+          event_data: {
+            restaurant_slug: activeRestaurantSlug,
+            table_token: tableToken,
+            distance_m: err.response.data.distance_m,
+            configured_radius_m: err.response.data.configured_radius_m
+          }
+        });
+        setSubscriptionError('geofence_denied');
+        return;
+      }
+      if (err?.response?.status === 403) {
+        setSubscriptionError('suspended');
+      } else {
+        setSubscriptionError('invalid');
+      }
+    }
+  }
+
+  /**
+   * GPS high-accuracy upgrade + handshake re-run. Returns true if inside,
+   * false otherwise. On success it leaves the session flow continue (no
+   * navigation change since Welcome is already the destination route);
+   * on failure it refreshes geofenceInfo with upgraded distance.
+   */
+  async function upgradeToGpsAndRetryHandshake({ context = 'auto' } = {}) {
+    setStatus('Refining location with GPS...');
+    firePublic({
+      event_type: 'welcome_geolocation_gps_upgrade',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken,
+        context
+      }
+    });
+    const gps = await requestHighAccuracyPosition({
+      dedupeKey: `welcome-gps:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}:${context}`
+    });
+    if (gps.ok && gps.coords && typeof gps.coords.accuracy === 'number') {
+      setLastLocationAccuracyM(gps.coords.accuracy);
+    }
+    if (!gps.ok || !gps.coords) {
+      firePublic({
+        event_type: 'welcome_geolocation_gps_upgrade_failed',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          context,
+          status: gps.status,
+          error: gps.error || null
+        }
+      });
+      return false;
+    }
+    try {
+      await publicHandshake(activeRestaurantSlug, tableToken, {
+        location: { latitude: gps.coords.latitude, longitude: gps.coords.longitude },
+        geolocationStatus: 'granted'
+      });
+      firePublic({
+        event_type: 'welcome_geolocation_gps_upgrade_passed',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          context,
+          accuracy_m: gps.coords.accuracy ?? null
+        }
+      });
+      setGeofenceInfo(null);
+      validatedRef.current = true;
+      return true;
+    } catch (err2) {
+      firePublic({
+        event_type: 'welcome_geolocation_gps_upgrade_still_outside',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          context,
+          distance_m: err2?.response?.data?.distance_m ?? null,
+          configured_radius_m: err2?.response?.data?.configured_radius_m ?? null,
+          accuracy_m: gps.coords.accuracy ?? null
+        }
+      });
+      if (err2?.response?.status === 403 && err2?.response?.data?.geofence_code === 'OUTSIDE_RADIUS') {
+        setGeofenceInfo({
+          distance_m: err2.response.data.distance_m,
+          configured_radius_m: err2.response.data.configured_radius_m,
+          restaurant_name: err2.response.data.restaurant_name || '',
+          suggest_high_accuracy: err2.response.data.suggest_high_accuracy === true,
+          effective_radius_m: err2.response.data.effective_radius_m || err2.response.data.configured_radius_m,
+          radius_overridden: err2.response.data.radius_overridden === true,
+          gps_upgrade_failed: true
+        });
+      }
+      return false;
+    }
+  }
 
   // Save the resolved restaurant slug to session state on mount / update
   useEffect(() => {
@@ -31,6 +204,21 @@ export default function WelcomeScreen() {
     sessionStorage.setItem('restaurant_slug', activeRestaurantSlug);
   }, [activeRestaurantSlug]);
 
+  // Funnel event: Welcome screen rendered (once per mount)
+  useEffect(() => {
+    if (renderedRef.current || !activeRestaurantSlug || !tableToken) return;
+    renderedRef.current = true;
+    firePublic({
+      event_type: 'welcome_screen_rendered',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken,
+        has_stored_participant: Boolean(getStoredParticipant()?.participantId),
+        has_dual_backup: Boolean(getDualSession(tableToken))
+      }
+    });
+  }, [activeRestaurantSlug, tableToken, firePublic]);
+
   // ── Subscription & Table Validation ────────────────────────────────────────────
   // Runs once after socket connects to validate restaurant is active and table registered.
   useEffect(() => {
@@ -39,10 +227,115 @@ export default function WelcomeScreen() {
     async function validate() {
       validatedRef.current = true;
       try {
-        await publicHandshake(activeRestaurantSlug, tableToken);
+        // Best-effort two-stage geolocation: coarse first, upgrade to
+        // high-accuracy only if coarse returned a fix worse than ~250m.
+        // Permission read runs in parallel so we can tag events correctly.
+        const [permission, positionResult] = await Promise.all([
+          readGeolocationPermissionState(),
+          requestCurrentPositionWithFallback({
+            acceptIfWithinMeters: 250,
+            dedupeKey: `welcome:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}`
+          })
+        ]);
+        const locationPayload = positionResult.ok && positionResult.coords
+          ? { latitude: positionResult.coords.latitude, longitude: positionResult.coords.longitude }
+          : null;
+        if (positionResult.ok && positionResult.coords && typeof positionResult.coords.accuracy === 'number') {
+          setLastLocationAccuracyM(positionResult.coords.accuracy);
+        }
+        const geolocationStatus = positionResult.ok
+          ? 'granted'
+          : permission || (positionResult.status === 'denied' ? 'denied' : 'prompt');
+
+        firePublic({
+          event_type: 'welcome_geolocation_request',
+          event_data: {
+            restaurant_slug: activeRestaurantSlug,
+            table_token: tableToken,
+            permission_state: permission,
+            position_status: positionResult.status,
+            accuracy_m: positionResult.coords?.accuracy ?? null
+          }
+        });
+
+        const result = await publicHandshake(activeRestaurantSlug, tableToken, {
+          location: locationPayload,
+          geolocationStatus
+        });
+        // eslint-disable-next-line no-unused-vars
+        const _h = result;
         // Valid — proceed normally
       } catch (err) {
         if (err.response?.status === 403) {
+          if (err.response.data && err.response.data.geofence_code === 'OUTSIDE_RADIUS') {
+            // Auto-recovery: when backend detects a wildly-off distance it
+            // sets suggest_high_accuracy=true → do one GPS high-accuracy
+            // upgrade before failing closed.
+            const shouldAutoUpgrade =
+              !gpsUpgradeAttemptedRef.current &&
+              err.response.data.suggest_high_accuracy === true;
+            if (shouldAutoUpgrade) {
+              gpsUpgradeAttemptedRef.current = true;
+              firePublic({
+                event_type: 'welcome_geofence_suggested_upgrade',
+                event_data: {
+                  restaurant_slug: activeRestaurantSlug,
+                  table_token: tableToken,
+                  distance_m: err.response.data.distance_m,
+                  configured_radius_m: err.response.data.configured_radius_m
+                }
+              });
+              setChecking(true);
+              const upgraded = await upgradeToGpsAndRetryHandshake({ context: 'auto-from-validate' });
+              setChecking(false);
+              setStatus(null);
+              if (upgraded) {
+                // handshake inside the helper succeeded; clear error flow
+                return;
+              }
+              // still outside after GPS upgrade → show block
+              setGeofenceInfo({
+                distance_m: err.response.data.distance_m,
+                configured_radius_m: err.response.data.configured_radius_m,
+                restaurant_name: err.response.data.restaurant_name || '',
+                suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
+                effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
+                radius_overridden: err.response.data.radius_overridden === true,
+                gps_upgrade_failed: true
+              });
+              setSubscriptionError('geofence_denied');
+              firePublic({
+                event_type: 'welcome_geofence_denied',
+                event_data: {
+                  restaurant_slug: activeRestaurantSlug,
+                  table_token: tableToken,
+                  distance_m: err.response.data.distance_m,
+                  configured_radius_m: err.response.data.configured_radius_m,
+                  upgraded_gps: true
+                }
+              });
+              return;
+            }
+            setGeofenceInfo({
+              distance_m: err.response.data.distance_m,
+              configured_radius_m: err.response.data.configured_radius_m,
+              restaurant_name: err.response.data.restaurant_name || '',
+              suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
+              effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
+              radius_overridden: err.response.data.radius_overridden === true
+            });
+            setSubscriptionError('geofence_denied');
+            firePublic({
+              event_type: 'welcome_geofence_denied',
+              event_data: {
+                restaurant_slug: activeRestaurantSlug,
+                table_token: tableToken,
+                distance_m: err.response.data.distance_m,
+                configured_radius_m: err.response.data.configured_radius_m
+              }
+            });
+            return;
+          }
           setSubscriptionError('suspended');
         } else {
           setSubscriptionError('invalid');
@@ -58,7 +351,75 @@ export default function WelcomeScreen() {
       socket.on('connect', onConnect);
       return () => socket.off('connect', onConnect);
     }
-  }, [isConnected, socket, tableToken, activeRestaurantSlug]);
+  }, [isConnected, socket, tableToken, activeRestaurantSlug, firePublic]);
+
+  // ── Geofence Retry ────────────────────────────────────────────────────────────
+  // Asks for location again (handles user granting permission via browser prompt)
+  // and re-runs handshake. Explicit retry always starts with true GPS
+  // high-accuracy since the user is already at the "check again" interaction.
+  const retryGeolocationCheck = async () => {
+    setSubscriptionError(null);
+    setGeofenceInfo(null);
+    setChecking(true);
+    setStatus('Checking with GPS location...');
+
+    const upgraded = await upgradeToGpsAndRetryHandshake({ context: 'retry-button' });
+    if (upgraded) {
+      setChecking(false);
+      setStatus(null);
+      return;
+    }
+
+    try {
+      const positionResult = await requestCurrentPositionWithFallback({
+        acceptIfWithinMeters: 200,
+        dedupeKey: `welcome-retry:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}`
+      });
+      const locationPayload = positionResult.ok && positionResult.coords
+        ? { latitude: positionResult.coords.latitude, longitude: positionResult.coords.longitude }
+        : null;
+      const geolocationStatus = positionResult.ok ? 'granted' : positionResult.status;
+
+      await publicHandshake(activeRestaurantSlug, tableToken, {
+        location: locationPayload,
+        geolocationStatus
+      });
+
+      // Success — clear any prior geofence info and let the user continue.
+      validatedRef.current = true;
+      setGeofenceInfo(null);
+      setChecking(false);
+      setStatus(null);
+    } catch (err) {
+      setChecking(false);
+      setStatus(null);
+      if (err.response?.status === 403) {
+        if (err.response.data && err.response.data.geofence_code === 'OUTSIDE_RADIUS') {
+          // Last-gasp: if still wildly-outside + GPS not yet retried this run
+          if (!gpsUpgradeAttemptedRef.current && err.response.data.suggest_high_accuracy === true) {
+            gpsUpgradeAttemptedRef.current = true;
+            setChecking(true);
+            const finalPass = await upgradeToGpsAndRetryHandshake({ context: 'retry-fallback' });
+            setChecking(false);
+            if (finalPass) return;
+          }
+          setGeofenceInfo({
+            distance_m: err.response.data.distance_m,
+            configured_radius_m: err.response.data.configured_radius_m,
+            restaurant_name: err.response.data.restaurant_name || '',
+            suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
+            effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
+            radius_overridden: err.response.data.radius_overridden === true
+          });
+          setSubscriptionError('geofence_denied');
+          return;
+        }
+        setSubscriptionError('suspended');
+      } else {
+        setSubscriptionError('invalid');
+      }
+    }
+  };
 
   const contextPath = `/r/${activeRestaurantSlug}/t/${tableToken}/context`;
 
@@ -181,6 +542,14 @@ export default function WelcomeScreen() {
   const handleContinue = async () => {
     setChecking(true);
     setStatus('Connecting...');
+
+    firePublic({
+      event_type: 'welcome_continue_clicked',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken
+      }
+    });
     
     try {
       // 1. Check for existing credentials (active or backup from dual mode)
@@ -326,6 +695,90 @@ export default function WelcomeScreen() {
           <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-[#35332E]/20 text-[#35332E] hover:bg-[#35332E]/5">
             Go Home
           </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Geofence Denied: user is outside the restaurant's configured radius
+  if (subscriptionError === 'geofence_denied') {
+    return (
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ type: 'spring', duration: 0.8 }}
+          className="max-w-md w-full bg-white/70 border border-[#35332E]/10 rounded-3xl p-8 md:p-10 shadow-xl relative z-10"
+        >
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl bg-[#35332E]/10">
+            📍
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-[#35332E] mb-4 leading-tight">
+            Please visit us in person
+          </h1>
+          <p className="text-[#6E6A60] text-base leading-relaxed mb-4">
+            This table works only at{' '}
+            <span className="text-[#35332E] font-semibold">
+              {geofenceInfo?.restaurant_name || 'the restaurant'}
+            </span>
+            .
+          </p>
+          {geofenceInfo?.distance_m != null && (
+            <div className="rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] text-sm text-[#35332E] p-4 mb-6">
+              <div className="flex items-center justify-between">
+                <span className="text-[#6E6A60] text-xs uppercase tracking-[0.18em]">You are</span>
+                <span className="font-semibold">
+                  ~{Math.round(geofenceInfo.distance_m)} m away
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-[#6E6A60] text-xs uppercase tracking-[0.18em]">Table area</span>
+                <span>
+                  {geofenceInfo.configured_radius_m} m radius
+                </span>
+              </div>
+              {geofenceInfo.radius_overridden && (
+                <div className="mt-2 text-[11px] text-[#926B1A]">
+                  Dev mode detected — effective radius {geofenceInfo.effective_radius_m}m
+                </div>
+              )}
+            </div>
+          )}
+          <div className="space-y-3">
+            <Button onClick={retryGeolocationCheck} variant="ink" fullWidth className="shadow-lg">
+              {checking ? 'Checking location...' : 'Check again / Allow Location'}
+            </Button>
+            <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-[#35332E]/20 text-[#35332E] hover:bg-[#35332E]/5">
+              Scan Again / Home
+            </Button>
+            {(() => {
+              const suggestHigh = geofenceInfo?.suggest_high_accuracy === true;
+              const gpsUpgradeFailed = geofenceInfo?.gps_upgrade_failed === true || gpsUpgradeAttemptedRef.current === true;
+              const badAccuracy = lastLocationAccuracyM == null ? false : lastLocationAccuracyM > 200;
+              const distKmLarge = typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
+              const devGraceStillOutside =
+                geofenceInfo?.radius_overridden === true &&
+                typeof geofenceInfo?.distance_m === 'number' &&
+                typeof geofenceInfo?.effective_radius_m === 'number' &&
+                geofenceInfo.distance_m > geofenceInfo.effective_radius_m;
+              const devGraceMassiveDist =
+                devGraceStillOutside && typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
+              const shouldShow =
+                (suggestHigh && (gpsUpgradeFailed || badAccuracy || distKmLarge)) ||
+                devGraceMassiveDist;
+              if (!shouldShow) return null;
+              return (
+                <Button
+                  onClick={attemptLowAccuracyBypass}
+                  variant="ghost"
+                  fullWidth
+                  className="border border-[#926B1A]/30 text-[#926B1A] hover:bg-[#926B1A]/10 hover:text-[#825e17]"
+                >
+                  Temporarily use anyway (low accuracy device)
+                </Button>
+              );
+            })()}
+          </div>
         </motion.div>
       </div>
     );

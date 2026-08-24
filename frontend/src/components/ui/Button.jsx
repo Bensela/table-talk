@@ -37,6 +37,7 @@ export default function Button({
     outline: "bg-transparent border-2 border-gray-200 text-gray-900 hover:border-gray-900 hover:bg-gray-50 focus:ring-gray-200/50",
     ghost: "bg-transparent text-black hover:bg-gray-100/50 focus:ring-gray-200/30",
     danger: "bg-red-500 text-white hover:bg-red-600 shadow-lg shadow-red-500/30 focus:ring-red-500/40",
+    plain: "!bg-transparent !shadow-none !ring-0 !border-0 text-gray-700 font-medium disabled:!opacity-100 !p-0 disabled:!cursor-default"
   };
 
   const sizes = {

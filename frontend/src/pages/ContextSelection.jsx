@@ -1,11 +1,35 @@
+import { useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import useAnalytics from '../hooks/useAnalytics';
 
 export default function ContextSelection() {
   const { tableToken, restaurantSlug } = useParams();
   const navigate = useNavigate();
+  const { firePublic } = useAnalytics();
+  const renderedRef = useRef(false);
+
+  useEffect(() => {
+    if (renderedRef.current) return;
+    renderedRef.current = true;
+    firePublic({
+      event_type: 'context_screen_rendered',
+      event_data: {
+        restaurant_slug: restaurantSlug || null,
+        table_token: tableToken || null
+      }
+    });
+  }, [restaurantSlug, tableToken, firePublic]);
 
   const handleSelectContext = (context) => {
+    firePublic({
+      event_type: 'context_selected',
+      event_data: {
+        choice: context,
+        restaurant_slug: restaurantSlug || null,
+        table_token: tableToken || null
+      }
+    });
     const modePath = restaurantSlug
       ? `/r/${restaurantSlug}/t/${tableToken}/mode`
       : `/t/${tableToken}/mode`;

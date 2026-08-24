@@ -142,7 +142,8 @@ const init = async () => {
       '012_questions_sub_category.sql',
       '013_password_reset.sql',
       '014_billing_subscriptions.sql',
-      '015_payment_gateway_settings.sql'
+      '015_payment_gateway_settings.sql',
+      '016_geofence_radius.sql'
     ];
 
     // 3. Execute Migration Files

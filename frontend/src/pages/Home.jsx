@@ -5,9 +5,11 @@ import QRScanner from '../components/QRScanner';
 import Button from '../components/ui/Button';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import useAnalytics from '../hooks/useAnalytics';
 
 export default function Home() {
   const navigate = useNavigate();
+  const { firePublic } = useAnalytics();
 
   // If there's an error passed in state (e.g. from WelcomeScreen blocked session), show it
   // Wait, navigate state isn't currently used, we're using a raw alert in WelcomeScreen.
@@ -48,6 +50,15 @@ export default function Home() {
     const parsedTarget = extractTenantQrTarget(tableInput);
     if (parsedTarget) {
       setScanError('');
+      firePublic({
+        event_type: 'qr_decoded_success_frontend',
+        event_data: {
+          source: 'manual_input',
+          restaurant_slug: parsedTarget.restaurantSlug,
+          table_token: parsedTarget.tableToken,
+          qr_raw_truncated: String(tableInput || '').slice(0, 80)
+        }
+      });
       navigate(`/r/${parsedTarget.restaurantSlug}/t/${parsedTarget.tableToken}`);
       return;
     }
@@ -63,6 +74,15 @@ export default function Home() {
       if (parsedTarget) {
         setShowScanner(false);
         setScanError('');
+        firePublic({
+          event_type: 'qr_decoded_success_frontend',
+          event_data: {
+            source: 'camera_scan',
+            restaurant_slug: parsedTarget.restaurantSlug,
+            table_token: parsedTarget.tableToken,
+            qr_raw_truncated: String(decodedText || '').slice(0, 80)
+          }
+        });
         console.log('[Home] Navigating to:', `/r/${parsedTarget.restaurantSlug}/t/${parsedTarget.tableToken}`);
         navigate(`/r/${parsedTarget.restaurantSlug}/t/${parsedTarget.tableToken}`);
       } else {
