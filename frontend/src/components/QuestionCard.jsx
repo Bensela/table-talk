@@ -154,12 +154,12 @@ export default function QuestionCard({
 
   // ---------------- STATE BOOLEANS ----------------
   const state = conversationStarted ? 2 : 1;
-  const iClickedReadyFirst = isDualMode && state === 1 && nextIntentCount === 1 && !partnerIsReady;
+  const iClickedReadyFirst = isDualMode && state === 1 && (nextIntentCount >= 1) && !partnerIsReady;
   const partnerClickedReadyFirst = isDualMode && state === 1 && partnerIsReady;
   const partnerAdvancedFirst = isDualMode && state === 2 &&
     (feedbackMessage === "Partner is waiting for you to click Next!" ||
-     (advanceIntentCount === 1 && partnerIsReady));
-  const iAdvancedFirst = isDualMode && state === 2 && advanceIntentCount === 1 && !partnerAdvancedFirst;
+     ((advanceIntentCount >= 1) && partnerIsReady));
+  const iAdvancedFirst = isDualMode && state === 2 && (advanceIntentCount >= 1) && !partnerAdvancedFirst;
   const mcqAnswerLocked = isMultipleChoice && submitted && !localRevealed;
 
   // For MCQ Dual State 1 reveal: get partner selection ID
@@ -280,7 +280,7 @@ export default function QuestionCard({
             localRevealed={localRevealed}
             showReadyButton={showReadyButton}
             selectedOption={selectedOption}
-            iClickedReadyFirst={iClickedReadyFirst && !partnerClickedReadyFirst && nextIntentCount === 1}
+            iClickedReadyFirst={iClickedReadyFirst && !partnerClickedReadyFirst && nextIntentCount >= 1}
             partnerClickedReadyFirst={partnerClickedReadyFirst}
             iAdvancedFirst={iAdvancedFirst}
             partnerAdvancedFirst={partnerAdvancedFirst || feedbackMessage === 'Partner is waiting for you to click Next!'}

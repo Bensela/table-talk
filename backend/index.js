@@ -249,7 +249,9 @@ function getSessionState(sessionId) {
       answers: new Map(),
       nextIntent: new Set(),
       advanceIntent: new Set(),
-      revealUnstickTimer: null
+      revealUnstickTimer: null,
+      nextIntentUnstickTimer: null,
+      advanceIntentUnstickTimer: null
     });
   }
   return sessionStates.get(sessionId);
@@ -262,10 +264,37 @@ function clearSessionState(sessionId) {
     state.answers.clear();
     state.nextIntent.clear();
     state.advanceIntent.clear();
-    if (state.revealUnstickTimer) {
-      try { clearTimeout(state.revealUnstickTimer); } catch (_) {}
-      state.revealUnstickTimer = null;
+    for (const f of ['revealUnstickTimer','nextIntentUnstickTimer','advanceIntentUnstickTimer']) {
+      if (state[f]) {
+        try { clearTimeout(state[f]); } catch (_) {}
+        state[f] = null;
+      }
     }
+  }
+}
+
+// Resolve socket.role + socket.participantId for a given session, falling back to a
+// DB lookup when the socket object lost its role during reconnect/remount. If role
+// still cannot be determined, returns null (caller should early-return / ignore).
+async function resolveSocketRole(socket, fallbackParticipantId = null, fallbackSessionId = null) {
+  const sessionId = socket.sessionId || fallbackSessionId;
+  const participantId = socket.participantId || fallbackParticipantId;
+  if (!sessionId || !participantId) return null;
+  if (socket.role) return socket.role;
+  try {
+    const r = await db.query(
+      `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2 LIMIT 1`,
+      [sessionId, participantId]
+    );
+    const role = r.rows[0]?.role;
+    if (role) {
+      socket.role = role;
+      if (!socket.sessionId) socket.sessionId = sessionId;
+      if (!socket.participantId) socket.participantId = participantId;
+    }
+    return role || null;
+  } catch (_) {
+    return socket.role || null;
   }
 }
 
@@ -370,6 +399,40 @@ io.on('connection', (socket) => {
         }
       }
 
+      // Defense-in-depth for dual-phone: if a 3rd socket is somehow joining
+      // (slot leak from reclaim race or direct socket reuse), boot it. Checks
+      // actual DB count not in-memory room size so transient reconnects don't
+      // falsely boot a valid player returning.
+      if (pData.mode === 'dual-phone') {
+        const activeCnt = await db.query(`
+          SELECT COUNT(*)::int AS c FROM session_participants
+          WHERE session_id = $1 AND disconnected_at IS NULL
+          GROUP BY session_id
+        `, [session_id]);
+        const c = activeCnt.rows[0]?.c ?? 0;
+        if (c > 2) {
+          // More than 2 active in DB — kick this newly joining participant
+          // (unless it was already previously known-disconnected and just
+          // reconnecting). Only kick if its role caused c > 2.
+          const roleCount = await db.query(`
+            SELECT COUNT(*)::int AS c FROM session_participants
+            WHERE session_id = $1 AND role = $2 AND disconnected_at IS NULL
+          `, [session_id, pData.role]);
+          const rc = roleCount.rows[0]?.c ?? 0;
+          if (rc > 1 || c > 2) {
+            await db.query(
+              `UPDATE session_participants SET disconnected_at = NOW()
+               WHERE participant_id = $1`,
+              [participant_id]
+            );
+            socket.emit('error', { message: 'SESSION_FULL: 2 participants are already paired for this table. Please scan the QR again to start your own session.' });
+            socket.leave(session_id);
+            socket.sessionId = null;
+            return;
+          }
+        }
+      }
+
       await logSocketEvent(socket, 'socket_joined_session', {
         mode: pData.mode,
         dual_status: pData.dual_status,
@@ -385,12 +448,14 @@ io.on('connection', (socket) => {
   // Dual-Phone: Readiness Ritual
   socket.on('ready_toggled', async (data) => {
     if (!socket.sessionId) return;
+    const role = await resolveSocketRole(socket);
+    if (!role) return;
     const state = getSessionState(socket.sessionId);
-    state.ready.set(socket.role, data.ready);
+    state.ready.set(role, data.ready);
     
     io.to(socket.sessionId).emit('ready_status_update', { 
       participant_id: socket.participantId, 
-      role: socket.role, 
+      role,
       ready: data.ready 
     });
 
@@ -405,16 +470,24 @@ io.on('connection', (socket) => {
   // Dual-Phone: Reveal Logic
   socket.on('answer_submitted', async ({ selectionId }) => {
     if (!socket.sessionId || !socket.participantId) return;
+    const role = await resolveSocketRole(socket);
     const state = getSessionState(socket.sessionId);
     state.answers.set(String(socket.participantId), {
       participantId: socket.participantId,
-      role: socket.role || null,
+      role: role || null,
       optionId: selectionId
     });
 
     await logSocketEvent(socket, 'answer_submitted', { has_selection: Boolean(selectionId) });
 
-    const uniqueParticipants = state.answers.size;
+    // Use deduped unique participantId UUIDs as the count source of truth, not Map.size,
+    // because Map never shrinks during question (only cleared on advance). Also count
+    // distinct roles (A + B) as a robust alternate source of truth across reconnects.
+    const uniquePids = new Set();
+    for (const val of state.answers.values()) {
+      if (val.participantId) uniquePids.add(String(val.participantId));
+    }
+    const uniqueParticipants = uniquePids.size;
     const roleKeys = new Set();
     for (const val of state.answers.values()) {
       if (val.role) roleKeys.add(String(val.role));
@@ -430,19 +503,20 @@ io.on('connection', (socket) => {
       io.to(socket.sessionId).emit('reveal_answers', { selections });
       await logSocketEvent(socket, 'reveal_answers', {});
     } else {
-      socket.to(socket.sessionId).emit('partner_answered', { role: socket.role, participantId: socket.participantId });
+      socket.to(socket.sessionId).emit('partner_answered', { role: role || null, participantId: socket.participantId });
       // Safety unstick: if no reveal occurred within 18s of this submission (e.g. partner backgrounded),
       // broadcast reveal with what we have so users are not stuck on "Waiting for your partner".
       const unstickAt = Date.now() + 18 * 1000;
       const sid = socket.sessionId;
-      const snapshot = new Map(state.answers);
       if (!state.revealUnstickTimer) {
         state.revealUnstickTimer = setTimeout(async () => {
           try {
             const cur = getSessionState(sid);
             // If already revealed and cleared by advance, skip
             if (!cur || cur.answers.size === 0) return;
-            const curCount = cur.answers.size;
+            const curPids = new Set();
+            for (const v of cur.answers.values()) if (v.participantId) curPids.add(String(v.participantId));
+            const curCount = curPids.size;
             const curRoles = new Set();
             for (const v of cur.answers.values()) if (v.role) curRoles.add(String(v.role));
             const curBoth = curRoles.has('A') && curRoles.has('B');
@@ -453,7 +527,6 @@ io.on('connection', (socket) => {
               });
               if (Object.keys(selections).length > 0) {
                 io.to(sid).emit('reveal_answers', { selections });
-                await db.query('SELECT 1').then(() => {}).catch(() => {});
               }
             }
           } catch (_) {}
@@ -478,10 +551,13 @@ io.on('connection', (socket) => {
   // Turn Advancement
   socket.on('dual_next_intent', async () => {
     if (!socket.sessionId) return;
+    const role = await resolveSocketRole(socket);
+    // Null role → ignore, don't add a Set entry with 'null' that would only be one
+    if (!role) return;
     const state = getSessionState(socket.sessionId);
-    state.nextIntent.add(socket.role);
+    state.nextIntent.add(role);
     const count = state.nextIntent.size;
-    io.to(socket.sessionId).emit('next_intent_update', { count, required: 2, selfRole: socket.role });
+    io.to(socket.sessionId).emit('next_intent_update', { count, required: 2, selfRole: role });
     await logSocketEvent(socket, 'next_question_intent', {
       count,
       required: 2
@@ -489,15 +565,36 @@ io.on('connection', (socket) => {
     if (state.nextIntent.size >= 2) {
       io.to(socket.sessionId).emit('conversation_start');
       await logSocketEvent(socket, 'conversation_start', {});
+    } else {
+      // Safety unstick: if partner hasn't responded in 12s, auto-send
+      // conversation_start so users are never left on a permanently stuck
+      // "Waiting for partner" ready-intent screen (e.g. partner's socket lost
+      // role during reconnect and never sent its intent to the server).
+      if (!state.nextIntentUnstickTimer) {
+        const sid = socket.sessionId;
+        state.nextIntentUnstickTimer = setTimeout(async () => {
+          try {
+            const cur = getSessionState(sid);
+            if (!cur) return;
+            // Only fire if we still haven't reached 2 clicks (nothing advanced).
+            if (cur.nextIntent.size < 2) {
+              io.to(sid).emit('conversation_start');
+              await logSocketEvent(socket, 'conversation_start', { unstick: true });
+            }
+          } catch (_) {}
+        }, 12 * 1000);
+      }
     }
   });
 
   socket.on('advance_turn', async () => {
     if (!socket.sessionId) return;
+    const role = await resolveSocketRole(socket);
+    if (!role) return;
     const state = getSessionState(socket.sessionId);
-    state.advanceIntent.add(socket.role);
+    state.advanceIntent.add(role);
     const turnCount = state.advanceIntent.size;
-    io.to(socket.sessionId).emit('advance_intent_update', { count: turnCount, required: 2, selfRole: socket.role });
+    io.to(socket.sessionId).emit('advance_intent_update', { count: turnCount, required: 2, selfRole: role });
     await logSocketEvent(socket, 'advance_turn_intent', {
       count: turnCount,
       required: 2
@@ -515,6 +612,29 @@ io.on('connection', (socket) => {
       }
     } else {
       socket.to(socket.sessionId).emit('partner_waiting_to_advance');
+      // 12s safety unstick for next-question advance: same pattern as above.
+      if (!state.advanceIntentUnstickTimer) {
+        const sid = socket.sessionId;
+        state.advanceIntentUnstickTimer = setTimeout(async () => {
+          try {
+            const cur = getSessionState(sid);
+            if (!cur) return;
+            if (cur.advanceIntent.size < 2) {
+              const r = await db.query('SELECT * FROM sessions WHERE session_id = $1', [sid]);
+              if (r.rows[0]) {
+                await deckService.advanceDeck(r.rows[0]);
+                clearSessionState(sid);
+                io.to(sid).emit('advance_question');
+                await logSocketEvent(socket, 'both_ready_advance_fired', {
+                  unstick: true,
+                  context: r.rows[0].context || null,
+                  mode: r.rows[0].mode || null
+                });
+              }
+            }
+          } catch (_) {}
+        }, 12 * 1000);
+      }
     }
   });
 

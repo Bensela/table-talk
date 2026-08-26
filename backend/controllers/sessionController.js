@@ -282,15 +282,37 @@ const joinDualPhoneSession = async (req, res) => {
         }
     } else {
         // We are reclaiming a disconnected role
-        // Delete the old disconnected participant
-        await db.query(`
+        // STRICT: Only delete rows that are STILL stale/disconnected at query time
+        // (disconnected_at IS NOT NULL AND last_seen_at >90s old OR NULL). Otherwise
+        // the real participant has already reconnected and cleared disconnected_at,
+        // so we must not steal their slot — return SESSION_FULL instead. Previously,
+        // the DELETE used only WHERE disconnected_at IS NOT NULL without rowCount
+        // verification, so if the real participant reconnected between resolveSession
+        // SELECT and this DELETE, we'd silently delete 0 rows then proceed to INSERT
+        // a colliding role or leak slots for Phone C.
+        const delRes = await db.query(`
           DELETE FROM session_participants
-          WHERE session_id = $1 AND role = $2 AND disconnected_at IS NOT NULL
+          WHERE session_id = $1 AND role = $2
+            AND disconnected_at IS NOT NULL
+            AND (last_seen_at IS NULL OR last_seen_at <= NOW() - INTERVAL '90 seconds')
+          RETURNING participant_id
         `, [validSession.session_id, reclaim_role]);
+        if (delRes.rowCount === 0) {
+          return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'stale_reclaim_slot_gone' });
+        }
     }
 
     // 4. Create Participant (Role B or Reclaimed Role)
     const assignedRole = reclaim_role || 'B';
+    // Strict pre-check before INSERT: count participants to ensure < 2, regardless of
+    // race conditions between concurrent joins.
+    const preCheck = await db.query(`
+      SELECT count(*) as count FROM session_participants
+      WHERE session_id = $1 AND disconnected_at IS NULL
+    `, [validSession.session_id]);
+    if ((parseInt(preCheck.rows[0].count, 10) || 0) >= 2) {
+      return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'precheck_count_full' });
+    }
     const participantId = crypto.randomUUID();
     const participantToken = crypto.randomBytes(32).toString('hex');
     const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
@@ -303,7 +325,7 @@ const joinDualPhoneSession = async (req, res) => {
       );
     } catch (err) {
       if (err.code === '23505') { // Unique constraint violation (session_id, role)
-         return res.status(409).json({ error: 'SESSION_FULL' });
+         return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'unique_role_violation' });
       }
       throw err;
     }
@@ -981,48 +1003,49 @@ const resolveSession = async (req, res) => {
         });
       } else if (dualSession.dual_status === 'paired') {
         // A and B already exist.
-        // User C (no token) scans QR.
-        // CHECK: Is there a slot available?
-        // We know dual_status='paired' usually means full.
-        // But maybe one participant "left" (terminated)?
-        // Let's check participant count.
-        
-        const participants = await db.query(`
-            SELECT count(*) as count FROM session_participants 
-            WHERE session_id = $1 AND disconnected_at IS NULL
+        // STRICT: Before considering ANY reclaim path, count active participants
+        // (disconnected_at IS NULL). If we already have 2 non-disconnected
+        // participants in DB, Phone C must never join this session — no matter
+        // what transient disconnected_at rows exist. This fixes the race where
+        // Phone B briefly flagged disconnected during a reconnect while Phone A
+        // (and Phone C) scanned Continue simultaneously: previously C was offered
+        // reclaim_dual on role B's stale disconnected row even though B already
+        // rejoined and cleared disconnected_at, producing 3 phones in one room.
+        const activeCountRes = await db.query(`
+          SELECT count(*) as count FROM session_participants
+          WHERE session_id = $1 AND disconnected_at IS NULL
         `, [dualSession.session_id]);
-        
-        const activeCount = parseInt(participants.rows[0].count);
-        
-        // If actually full (2 active participants), then Start New.
-        // But wait, the requirement says: "Phone B quitting and rescanning... rejoins same group".
-        // If Phone B quits (clears storage), they have NO device_token.
-        // So they fall into this block.
-        // If we strictly block them here, they can't rejoin.
-        // However, "quitting" usually implies they want to leave?
-        // "Start Fresh" clears storage.
-        // But if they just "closed tab" and cleared storage by accident?
-        // The rule says: "Phone B... rejoins the same group... even after context changes."
-        // If they lost their token, they are anonymous. We can't identify them as "The Original Phone B".
-        // UNLESS we allow re-claiming the slot if it's "open" (disconnected)?
-        
-        // Let's check if a role is disconnected.
+        const activeCount = parseInt(activeCountRes.rows[0].count, 10) || 0;
+        if (activeCount >= 2) {
+          return res.json({
+            action: 'start_new',
+            reason: 'dual_session_full'
+          });
+        }
+
+        // Still under 2 active -> maybe a role is genuinely abandoned.
+        // STRICT reclaim: only allow role reclaim if that role's participant row
+        // has BOTH disconnected_at IS NOT NULL AND a stale last_seen (>90 seconds
+        // ago). If the real participant is actually actively playing, last_seen
+        // will be current and we refuse to reclaim their seat.
         const disconnectedRole = await db.query(`
             SELECT role FROM session_participants
-            WHERE session_id = $1 AND disconnected_at IS NOT NULL
+            WHERE session_id = $1
+              AND disconnected_at IS NOT NULL
+              AND (last_seen_at IS NULL OR last_seen_at <= NOW() - INTERVAL '90 seconds')
         `, [dualSession.session_id]);
-        
-        if (disconnectedRole.rows.length > 0) {
+
+        if (disconnectedRole.rows.length > 0 && activeCount < 2) {
             const roleToReclaim = disconnectedRole.rows[0].role;
-            console.log(`[API] Reclaiming disconnected role ${roleToReclaim} for session ${dualSession.session_id}`);
-            
+            console.log(`[API] Reclaiming STALE disconnected role ${roleToReclaim} for session ${dualSession.session_id}`);
+
             return res.json({
               action: 'reclaim_dual',
               session_id: dualSession.session_id,
               role: roleToReclaim
             });
         }
-        
+
         return res.json({
           action: 'start_new',
           reason: 'dual_session_full'

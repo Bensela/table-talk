@@ -157,13 +157,23 @@ export default function SessionGame() {
   const [isRevealed, setIsRevealed] = useState(false);
   const [waitingForPartner, setWaitingForPartner] = useState(false);
   const [dualStatus, setDualStatus] = useState(null);
+  const dualStatusRef = useRef(null);
   const [waitingCause, setWaitingCause] = useState('initial');
   const waitingCauseRef = useRef('initial');
-  useEffect(() => {
-      waitingCauseRef.current = waitingCause;
-  }, [waitingCause]);
   const [partnerSelections, setPartnerSelections] = useState({});
   const [mode, setMode] = useState('single-phone');
+  const modeRef = useRef('single-phone');
+  // Synchronous refs (set directly inside event listeners, before any React state
+  // setter runs) so any state-setting callbacks invoked mid-batch during socket
+  // event storms always read the latest intent value — never waiting on React
+  // state batching / useEffect reconciliation (which can be 1-3 ms later and is
+  // why mid-batch ref reads via useEffect returned stale "initial" in the
+  // Single=>Dual upgrade Start Fresh race).
+  const waitingFreshLockRef = useRef(false);  // partner_requested_fresh / Start Fresh intent asserted
+  useEffect(() => { dualStatusRef.current = dualStatus; }, [dualStatus]);
+  useEffect(() => { waitingCauseRef.current = waitingCause; }, [waitingCause]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+  
   const [context, setContext] = useState('Exploring');
   const [isConnected, setIsConnected] = useState(false);
   const [participantId, setParticipantId] = useState(null);
@@ -327,16 +337,20 @@ export default function SessionGame() {
             return; // Ignore our own join event
         }
         
+        // BULLETPROOF early-exit: if Start Fresh / partner_single waiting lock
+        // flag is set synchronously by partner_requested_fresh, do NOT mutate
+        // any dual state here — not even 'prev === waiting' checks (which rely
+        // on React state batching) and not waitingCause (which relies on
+        // useEffect reconciliation). This guard catches mid-batch socket events
+        // fired within 0-3ms of partner_requested_fresh, before React has
+        // committed any of the state setter calls.
+        if (waitingFreshLockRef.current === true) {
+            fetchCurrentQuestion();
+            return;
+        }
+        
         // Use a callback to get current dualStatus without putting it in dependency array
         setDualStatus(prev => {
-             // If we are already in a Start Fresh waiting state, do NOT overwrite it
-             // with 'paired' — partner_requested_fresh has already locked the UI to
-             // Waiting. This fixes a race where: X presses Start Fresh (emits
-             // partner_requested_fresh → waiting), then X's socket disconnects due
-             // to redirect, causing Y's socket to briefly reconnect/rejoin, which
-             // fires dual_partner_joined again. Without this guard, the second event
-             // would flip dualStatus back to 'paired' and clear waitingCause, so the
-             // "Waiting for Partner" Start Fresh screen never renders on Y.
              if (prev === 'waiting') {
                   const wc = waitingCauseRef.current;
                   if (wc === 'partner_fresh' || wc === 'partner_single') {
@@ -359,15 +373,13 @@ export default function SessionGame() {
              return 'paired';
         });
         
-        // Similarly: only reset waitingCause to 'initial' if we are NOT in a
-        // Start Fresh / partner-single waiting state.
         setWaitingCause(prev => {
+            if (waitingFreshLockRef.current === true) return prev;
             if (prev === 'partner_fresh' || prev === 'partner_single') return prev;
             return 'initial';
         });
         setHasPartnerJoined(true);
         
-        // Fetch question to ensure we're synced
         fetchCurrentQuestion();
     };
     
@@ -389,17 +401,28 @@ export default function SessionGame() {
             setModalState(prev => ({ ...prev, isOpen: false }));
         }
         if (data.mode) {
+            modeRef.current = data.mode;
             setMode(data.mode);
         }
         if (data.dual_status) {
+            dualStatusRef.current = data.dual_status;
             setDualStatus(data.dual_status);
             if (data.dual_status === 'paired') {
+              waitingCauseRef.current = 'initial';
+              waitingFreshLockRef.current = false;
               setWaitingCause('initial');
             } else if (data.dual_status === 'waiting' && data.waiting_reason === 'partner_fresh') {
+              waitingFreshLockRef.current = true;
+              waitingCauseRef.current = 'partner_fresh';
+              if (data.mode) modeRef.current = data.mode;
+              else modeRef.current = 'dual-phone';
               setWaitingCause('partner_fresh');
             } else if (data.dual_status === 'waiting' && data.waiting_reason === 'partner_single') {
+              waitingFreshLockRef.current = true;
+              waitingCauseRef.current = 'partner_single';
               setWaitingCause('partner_single');
             } else if (data.dual_status === 'waiting' && data.waiting_reason) {
+              waitingCauseRef.current = data.waiting_reason;
               setWaitingCause(data.waiting_reason);
             }
         }
@@ -410,7 +433,9 @@ export default function SessionGame() {
     const onPartnerSwitchedMode = ({ newMode }) => {
         console.log("[SessionGame] Partner switched mode to:", newMode);
         if (newMode === 'single-phone') {
-            // Update dualStatus locally since partner is gone
+            waitingFreshLockRef.current = true;
+            dualStatusRef.current = 'waiting';
+            waitingCauseRef.current = 'partner_single';
             setDualStatus('waiting');
             setWaitingCause('partner_single');
             setFeedbackMessage("Partner has switched to Single Mode.");
@@ -636,9 +661,15 @@ export default function SessionGame() {
 
     // Listen for partner fresh intent
     const onPartnerRequestedFresh = () => {
-        // Force both mode + waiting state so the Waiting render branch at the
-        // bottom of the component (dualStatus === 'waiting' && mode === 'dual-phone')
-        // is satisfied even if a prior single→dual upgrade left mode stale locally.
+        // === SYNC REF SETTERS FIRST (before any React state setter) ===
+        // These MUST run synchronously inside the listener so that state
+        // callbacks (setDualStatus in onDualPartnerJoined) that are invoked
+        // mid-batch (e.g. dual_partner_joined fires 1ms later via reconnect)
+        // read the latest intent instead of a stale ref value.
+        waitingFreshLockRef.current = true;
+        modeRef.current = 'dual-phone';
+        waitingCauseRef.current = 'partner_fresh';
+        dualStatusRef.current = 'waiting';
         setMode('dual-phone');
         setWaitingCause('partner_fresh');
         setDualStatus('waiting');
@@ -931,6 +962,47 @@ export default function SessionGame() {
     // Redirect to Front Page
     window.location.href = '/';
   };
+
+  // === CRITICAL ORDERING: Waiting for Partner (Start Fresh) screen ===
+  // Check this BEFORE the loading spinner / no-question early returns, because if a
+  // Start Fresh waiting state can arrive while we are still fetching a question, and we
+  // must not suppress the Waiting Partner UI must render even if no question loaded or
+  // loading === true. The Waiting UI has no dependency on a question being
+  // present, so its render should unconditionally wins over loading states
+  // (otherwise Start Fresh intent can be visually suppressed by the spinner / loading
+  // "Loading conversation..." spinner / placeholder.
+  if (dualStatusRef.current === 'waiting' && modeRef.current === 'dual-phone') {
+    const wc = waitingCauseRef.current;
+    return (
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 font-sans selection:bg-[#DCD3C2] selection:text-[#35332E] relative overflow-hidden">
+        <header className="flex justify-between items-center mb-8 relative z-10">
+          <SessionMenu
+            tableToken={tableToken}
+            currentContext={context}
+            currentMode={modeRef.current}
+            socketRef={socketRef}
+            onSessionChange={(data) => {
+               if (data.pendingContext) setPendingSwitchContext(data.pendingContext);
+            }}
+          />
+        </header>
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-center">
+            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner relative">
+              <div className="absolute inset-0 border-4 border-blue-500 rounded-full border-t-transparent animate-spin opacity-50"></div>
+              <span className="text-3xl">📱</span>
+            </div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-3 tracking-tight">Waiting for Partner</h2>
+            <p className="text-gray-500 max-w-xs mx-auto text-base">
+              {wc === 'partner_fresh'
+                ? "Your partner requested Start Fresh. Wait here or switch to Single Mode..."
+                : wc === 'partner_single'
+                  ? "Your partner has switched to Single Mode. Wait or switch to Single Mode..."
+                  : "Ask them to scan the QR code on the table to sync their device."}
+            </p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading && !question) {
     return (

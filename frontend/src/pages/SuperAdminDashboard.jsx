@@ -7,6 +7,7 @@ import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
 import Modal from '../components/ui/Modal';
 import ThemeToggle from '../components/ui/ThemeToggle';
+import { contextLabel } from '../utils/contextLabels';
 
 export default function SuperAdminDashboard() {
   const { checking, logout } = useAdminAuth();
@@ -2576,6 +2577,7 @@ export default function SuperAdminDashboard() {
                   options={['All', 'Exploring', 'Established', 'Mature', 'Unassigned']}
                   selected={selectedContext}
                   onSelect={setSelectedContext}
+                  formatter={contextLabel}
                 />
                 <FilterGroup
                   label="Question Type"
@@ -2661,7 +2663,7 @@ export default function SuperAdminDashboard() {
                     <div className="flex flex-wrap items-center justify-between gap-3 min-w-0">
                       <div className="min-w-0 shrink-0">
                         <div className="flex items-center gap-3 flex-wrap">
-                          <div className="text-lg font-bold text-slate-900 dark:text-white whitespace-nowrap">{contextGroup.label}</div>
+                          <div className="text-lg font-bold text-slate-900 dark:text-white whitespace-nowrap">{contextLabel(contextGroup.label)}</div>
                           <ContextPill label={contextGroup.label} />
                         </div>
                         <div className="text-xs text-slate-600 dark:text-slate-200/80 mt-1">
@@ -2927,7 +2929,7 @@ export default function SuperAdminDashboard() {
                                             </button>
 
                                             <div className="mt-2.5 flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-none">
-                                              <QuestionChip label={contextGroup.label} compact />
+                                              <QuestionChip label={contextLabel(contextGroup.label)} compact />
                                               <QuestionChip label={formatQuestionTypeCompact(typeGroup.label)} tone="accent" compact />
                                               <QuestionChip label={formatDifficulty(difficulty)} tone={difficulty} compact />
                                             </div>
@@ -3370,6 +3372,7 @@ export default function SuperAdminDashboard() {
                     value={questionForm.context}
                     options={['Exploring', 'Established', 'Mature']}
                     onChange={(value) => setQuestionForm((current) => ({ ...current, context: value }))}
+                    formatter={contextLabel}
                   />
                   <SelectField
                     label="Question Type"
@@ -4432,7 +4435,7 @@ function ContextMixRow({ label, count, total, rangeLabel }) {
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/70 p-4 shadow-[0_2px_10px_rgba(15,23,42,0.03)] dark:shadow-none transition-colors duration-300 min-h-[88px]">
       <div className="flex items-center justify-between gap-3 mb-2 min-w-0">
-        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">{label}</span>
+        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">{contextLabel(label)}</span>
         <span className="text-xs font-bold text-slate-600 dark:text-slate-400 tabular-nums whitespace-nowrap">{count} interactions</span>
       </div>
       <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
@@ -5161,7 +5164,7 @@ function DifficultyStatCard({ label, value, tone }) {
 function ContextPill({ label }) {
   return (
     <span className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold ${getContextPillClasses(label)}`}>
-      {label}
+      {contextLabel(label)}
     </span>
   );
 }
