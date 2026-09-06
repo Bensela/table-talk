@@ -20,6 +20,7 @@ router.post('/tenants', authenticateToken, requireRole(['SUPER_ADMIN']), adminCo
 router.patch('/tenants/:id', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.updateTenant);
 router.delete('/tenants/:id', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.deleteTenantPermanent);
 router.get('/metrics/overview', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.getSuperAdminMetrics);
+router.get('/metrics/export', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.exportSuperAdminMetrics);
 router.get('/questions', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.getGlobalQuestions);
 router.post('/questions/import', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.importGlobalQuestions);
 router.patch('/questions/:id', authenticateToken, requireRole(['SUPER_ADMIN']), adminController.updateGlobalQuestion);

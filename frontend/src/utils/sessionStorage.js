@@ -65,3 +65,19 @@ export function clearStoredParticipant() {
 export function setLastResetAt() {
   sessionStorage.setItem('last_reset_at', new Date().toISOString());
 }
+
+export function getRestaurantSlug() {
+  try {
+    const fromSession = sessionStorage.getItem('restaurant_slug');
+    if (fromSession && typeof fromSession === 'string' && fromSession.length > 0) {
+      return fromSession;
+    }
+  } catch { /* ignore */ }
+  try {
+    const fromLocal = localStorage.getItem('restaurant_slug');
+    if (fromLocal && typeof fromLocal === 'string' && fromLocal.length > 0) {
+      return fromLocal;
+    }
+  } catch { /* ignore */ }
+  return null;
+}

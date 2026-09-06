@@ -1,12 +1,90 @@
 const db = require('../db');
 const deckService = require('../services/deckService');
 const { insertAnalyticsEvent, insertSessionAnalyticsEvent } = require('../services/analyticsService');
+const {
+  validateTempGeoAccessToken
+} = require('../controllers/publicController');
 
 const crypto = require('crypto');
 
 const SESSION_DURATION_HOURS = 24;
 
 const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
+
+/**
+ * Session-level temp-access geolocation gate. If the request carries a
+ * temporary access token we verify it's scoped to the resolved restaurant
+ * + table and hasn't expired. Expired tokens → explicit 410 so the frontend
+ * clears the stale token and re-prompts for GPS or a fresh temp access
+ * window. Invalid/other errors only block when a token is present but bad
+ * (tamper protection), not when no token is supplied at all.
+ *
+ * Returns: { passed: boolean, response_body: object|null, status: number|null }
+ */
+async function validateSessionTempGeoAccess(req, { table_token, restaurant_id, restaurant_slug }) {
+  // No token → pass through silently (rely on handshake + session JWT).
+  const bodyTok =
+    (req.body && (req.body.temp_access_token || req.body.tempGeoToken)) || null;
+  const queryTok =
+    (req.query && (req.query.temp_access_token || req.query.tempGeoToken)) || null;
+  const authz = (req.headers && (req.headers.authorization || req.headers.Authorization)) || null;
+  const hasBearer =
+    typeof authz === 'string' && authz.trim().toLowerCase().startsWith('bearer ');
+  const hasToken = Boolean(bodyTok || queryTok || hasBearer);
+  if (!hasToken) {
+    return { passed: true, response_body: null, status: null };
+  }
+  let resolvedRestaurantId = restaurant_id || null;
+  if (!resolvedRestaurantId && (restaurant_id || restaurant_slug)) {
+    try {
+      resolvedRestaurantId = await resolveRestaurantId(restaurant_id || null, restaurant_slug || null);
+    } catch (_) { resolvedRestaurantId = null; }
+  }
+  const scopeOpts = {
+    restaurant_id: resolvedRestaurantId || null,
+    table_token: table_token != null ? String(table_token) : null
+  };
+  let check;
+  try {
+    check = validateTempGeoAccessToken(req, scopeOpts);
+  } catch (e) {
+    check = {
+      valid: false,
+      token_present: true,
+      error_code: 'TOKEN_INVALID',
+      error: 'Invalid temporary access token'
+    };
+  }
+  if (check.valid) {
+    return { passed: true, response_body: null, status: null, check };
+  }
+  if (check && check._not_a_temp_token) {
+    return { passed: true, response_body: null, status: null };
+  }
+  if (check.error_code === 'TOKEN_EXPIRED') {
+    return {
+      passed: false,
+      status: 410,
+      response_body: {
+        error: check.error || 'Temporary access window has expired.',
+        geofence_code: 'TEMP_ACCESS_EXPIRED',
+        temp_access_expired: true
+      }
+    };
+  }
+  // Token present but invalid (tampered, wrong restaurant, wrong table) →
+  // hard 401 so caller drops the token instead of silently pretending no
+  // temp access ever existed. No PII leaked.
+  return {
+    passed: false,
+    status: 401,
+    response_body: {
+      error: check.error || 'Temporary access token is invalid.',
+      geofence_code: 'TEMP_ACCESS_INVALID',
+      temp_access_valid: false
+    }
+  };
+}
 
 async function resolveRestaurantId(restaurant_id, restaurant_slug) {
   if (!restaurant_id && !restaurant_slug) {
@@ -68,6 +146,38 @@ const createSession = async (req, res) => {
     return res.status(400).json({ error: 'table_token is required' });
   }
 
+  // Temp-access token (geofence bypass) validation. The token is scoped to
+  // restaurant + table; if the session request is signed but the token is
+  // EXPIRED, we refuse the request entirely. This enforces the "access is
+  // automatically revoked once the temporary access window expires" rule.
+  //
+  // Note: a missing token is fine; only a present-but-invalid/expired token
+  // is rejected here since it means the user previously fell back to temp
+  // access and that window has lapsed.
+  let tempAccessInfo = { valid: false, token_present: false };
+  try {
+    tempAccessInfo = validateTempGeoAccessToken(req, {
+      restaurant_id: null, // resolved below
+      table_token: String(table_token)
+    });
+  } catch (e) {
+    tempAccessInfo = { valid: false, token_present: true, error_code: 'TOKEN_INVALID' };
+  }
+  if (tempAccessInfo.token_present && !tempAccessInfo.valid) {
+    if (tempAccessInfo.error_code === 'TOKEN_EXPIRED') {
+      return res.status(410).json({
+        error:
+          tempAccessInfo.error ||
+          'Temporary access window has expired. Please enable location services or request a new temporary access window.',
+        geofence_code: 'TEMP_ACCESS_EXPIRED',
+        temp_access_expired: true
+      });
+    }
+    // Tampering: drop quietly so the user is routed through the normal
+    // handshake + GPS gate. We will re-validate with the resolved restaurant
+    // id below after lookup.
+  }
+
   // Optional: Validate context and mode if provided
   if (context && !['Exploring', 'Established', 'Mature'].includes(context)) {
     return res.status(400).json({ error: 'Invalid context' });
@@ -79,6 +189,29 @@ const createSession = async (req, res) => {
 
   try {
     const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+
+    // Re-validate temp access with the resolved restaurant id so it can't
+    // be reused across restaurants.
+    if (tempAccessInfo.token_present) {
+      const scoped = validateTempGeoAccessToken(req, {
+        restaurant_id: resolvedRestaurantId,
+        table_token: String(table_token)
+      });
+      if (!scoped.valid) {
+        if (scoped.error_code === 'TOKEN_EXPIRED') {
+          return res.status(410).json({
+            error:
+              scoped.error ||
+              'Temporary access window has expired.',
+            geofence_code: 'TEMP_ACCESS_EXPIRED',
+            temp_access_expired: true
+          });
+        }
+        tempAccessInfo = { ...scoped, token_present: true };
+      } else {
+        tempAccessInfo = scoped;
+      }
+    }
 
     // 1. Determine Session Group
     const sessionGroupId = crypto.randomUUID();
@@ -235,6 +368,16 @@ const joinDualPhoneSession = async (req, res) => {
   const { table_token, restaurant_id, restaurant_slug, session_id, reclaim_role } = req.body;
 
   try {
+    // Temp-access gate: if token is present/expired/invalid → explicit HTTP 410/401.
+    const geoGate = await validateSessionTempGeoAccess(req, {
+      table_token,
+      restaurant_id,
+      restaurant_slug
+    });
+    if (!geoGate.passed) {
+      return res.status(geoGate.status || 410).json(geoGate.response_body);
+    }
+
     let validSession = null;
 
     if (session_id) {
@@ -377,7 +520,27 @@ const joinDualPhoneSession = async (req, res) => {
 const getSession = async (req, res) => {
   const { session_id } = req.params;
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
     const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    if (sessionResult.rows.length > 0) {
+      const s = sessionResult.rows[0];
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: s.table_token,
+        restaurant_id: s.restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
     if (sessionResult.rows.length === 0) {
       return res.status(404).json({ error: 'Session not found' });
     }
@@ -411,6 +574,27 @@ const updateSession = async (req, res) => {
   const { mode, position_index, context } = req.body; // Support mode, context and position_index updates
 
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
+    const preSession = await db.query('SELECT table_token, restaurant_id FROM sessions WHERE session_id = $1', [session_id]);
+    if (preSession.rows.length > 0) {
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: preSession.rows[0].table_token,
+        restaurant_id: preSession.rows[0].restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
+
     let updatedSession = null;
 
     // 1. Handle Context Update (e.g., Switching Maturity in Dual Mode)
@@ -520,6 +704,15 @@ const updateSession = async (req, res) => {
 const endSession = async (req, res) => {
   const { session_id } = req.params;
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
     console.log(`[API] Explicitly ending session ${session_id}...`);
 
     // 1. Get Session Details first to find the deck_session and context
@@ -527,6 +720,14 @@ const endSession = async (req, res) => {
     
     if (sessionResult.rows.length > 0) {
       const session = sessionResult.rows[0];
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: session.table_token,
+        restaurant_id: session.restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
       
       // 2. Reset Deck Session
       // When a session is explicitly ended via "End Session", we must reset the deck progress
@@ -576,6 +777,15 @@ const endSession = async (req, res) => {
 const getSessionByTable = async (req, res) => {
   const { table_token } = req.params;
   try {
+    const geoGate = await validateSessionTempGeoAccess(req, {
+      table_token,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoGate.passed) {
+      return res.status(geoGate.status || 410).json(geoGate.response_body);
+    }
+
     // Only return sessions that are explicitly waiting for a partner (Dual Mode)
     // This allows multiple Single Mode sessions to coexist without blocking each other
     // and allows Phone C to start a new session even if A & B are paired.
@@ -602,6 +812,30 @@ const heartbeat = async (req, res) => {
   const { participant_id } = req.body;
 
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
+    const sesh = await db.query(
+      `SELECT table_token, restaurant_id FROM sessions WHERE session_id = $1`,
+      [session_id]
+    );
+    if (sesh.rows.length > 0) {
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: sesh.rows[0].table_token,
+        restaurant_id: sesh.rows[0].restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
+
     // Update both session and participant activity
     await db.query(`
       UPDATE sessions SET last_activity_at = NOW() WHERE session_id = $1
@@ -628,6 +862,15 @@ const resumeSessionByQr = async (req, res) => {
   }
 
   try {
+    const geoGate = await validateSessionTempGeoAccess(req, {
+      table_token,
+      restaurant_id,
+      restaurant_slug
+    });
+    if (!geoGate.passed) {
+      return res.status(geoGate.status || 410).json(geoGate.response_body);
+    }
+
     const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
     const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
 
@@ -675,6 +918,17 @@ const resolveSession = async (req, res) => {
   }
 
   try {
+    // Temp-access geolocation gate: explicit 410/401 if a present token has
+    // expired or is invalid for this restaurant/table combination.
+    const geoGate = await validateSessionTempGeoAccess(req, {
+      table_token,
+      restaurant_id,
+      restaurant_slug
+    });
+    if (!geoGate.passed) {
+      return res.status(geoGate.status || 410).json(geoGate.response_body);
+    }
+
     const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
 
     // 1. Attempt Resume by Device Token
@@ -718,22 +972,65 @@ const resolveSession = async (req, res) => {
         
         // If it's the SAME table, resume normally
         if (activeSession.table_token === table_token) {
-           // ... (Resume Logic) ...
-           // Before resuming, check if this user has a pending "fresh_intent" that they are trying to bypass by rescanning
-           // If they scan the SAME table, we should clear their fresh_intent so they rejoin seamlessly
-           const intentField = activeSession.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
-           await db.query(`
-             UPDATE sessions 
-             SET ${intentField} = FALSE 
-             WHERE session_id = $1
-           `, [activeSession.session_id]);
-           
-           // If both are false now, clear the timestamp
-           await db.query(`
-             UPDATE sessions 
-             SET fresh_intent_at = NULL 
-             WHERE session_id = $1 AND fresh_intent_a = FALSE AND fresh_intent_b = FALSE
-           `, [activeSession.session_id]);
+           // Simplified flow: if this is a dual-phone session with only one Start Fresh
+           // press that is ALREADY older than 20 seconds (timeout window expired), do
+           // NOT resume it — treat as ended and let user start a brand new session.
+           // This covers the edge case where both the server setTimeout + join_session
+           // didn't run (backend restart + partner never reconnected within 20s window).
+           // Relies on existing fresh_intent_at/fresh_intent_a/b columns — no schema.
+           if (activeSession.mode === 'dual-phone') {
+             const stale = await db.query(
+               `SELECT fresh_intent_a, fresh_intent_b, fresh_intent_at, dual_group_id, restaurant_id
+                FROM sessions WHERE session_id = $1`,
+               [activeSession.session_id]
+             );
+             const sf = stale.rows[0];
+             if (sf) {
+               const onlyOne = Boolean(sf.fresh_intent_a) !== Boolean(sf.fresh_intent_b);
+               const over = sf.fresh_intent_at && (Date.now() - new Date(sf.fresh_intent_at).getTime() >= 20 * 1000);
+               if (onlyOne && over) {
+                 try {
+                   await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [activeSession.session_id]);
+                   if (sf.dual_group_id) {
+                     try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [sf.dual_group_id]); } catch (_) {}
+                     try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [sf.dual_group_id]); } catch (_) {}
+                   }
+                 } catch (_) {}
+                 // Skip resume; fall through to start_new_session path below.
+               } else {
+                 // Inside 20s window or no one-sided Start Fresh → normal resume.
+                 // Before resuming, check if this user has a pending "fresh_intent" that
+                 // they are trying to bypass by rescanning; clear their intent so the
+                 // ongoing dual session with their partner resumes seamlessly.
+                 const intentField = activeSession.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+                 await db.query(`
+                   UPDATE sessions 
+                   SET ${intentField} = FALSE 
+                   WHERE session_id = $1
+                 `, [activeSession.session_id]);
+                 
+                 // If both are false now, clear the timestamp
+                 await db.query(`
+                   UPDATE sessions 
+                   SET fresh_intent_at = NULL 
+                   WHERE session_id = $1 AND fresh_intent_a = FALSE AND fresh_intent_b = FALSE
+                 `, [activeSession.session_id]);
+               }
+             }
+           } else {
+             // Non-dual: clear my own fresh_intent before resume (defensive)
+             const intentField = activeSession.role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
+             await db.query(`
+               UPDATE sessions 
+               SET ${intentField} = FALSE 
+               WHERE session_id = $1
+             `, [activeSession.session_id]);
+             await db.query(`
+               UPDATE sessions 
+               SET fresh_intent_at = NULL 
+               WHERE session_id = $1 AND fresh_intent_a = FALSE AND fresh_intent_b = FALSE
+             `, [activeSession.session_id]);
+           }
 
            const resumeResult = await db.query(`
             SELECT s.session_id, s.mode, s.context, s.created_at, sp.participant_id, sp.role, s.dual_group_id, s.dual_status
@@ -1068,7 +1365,27 @@ const resolveSession = async (req, res) => {
 const getSessionState = async (req, res) => {
   const { session_id } = req.params;
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
     const sessionResult = await db.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
+    if (sessionResult.rows.length > 0) {
+      const s = sessionResult.rows[0];
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: s.table_token,
+        restaurant_id: s.restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
     if (sessionResult.rows.length === 0) {
       return res.status(404).json({ error: 'Session not found' });
     }
@@ -1115,6 +1432,7 @@ const getSessionState = async (req, res) => {
     // Check if partner ever joined
     const participantsResult = await db.query('SELECT role FROM session_participants WHERE session_id = $1', [session_id]);
     const hasPartnerJoined = participantsResult.rows.length > 1;
+    const oneSidedFresh = Boolean(session.fresh_intent_a) !== Boolean(session.fresh_intent_b);
     const waitingReason =
       session.dual_status === 'waiting'
         ? (session.fresh_intent_a || session.fresh_intent_b)
@@ -1123,6 +1441,79 @@ const getSessionState = async (req, res) => {
             ? 'partner_single'
             : 'initial'
         : null;
+    const secondsRemaining =
+      oneSidedFresh && session.fresh_intent_at
+        ? Math.max(0, 20 - Math.floor((Date.now() - new Date(session.fresh_intent_at).getTime()) / 1000))
+        : null;
+
+    // Pull live synchronization counters from the in-memory socket state.
+    // If the server was recently restarted these maps are empty (all 0) but
+    // we fall back to a safe heuristic so reconnected clients are not stuck.
+    let nextIntentCount = 0;
+    let advanceIntentCount = 0;
+    let readyCount = 0;
+    let conversationStarted = false;
+    try {
+      // Try multiple channels in order of reliability. require.main is Node's documented
+      // way to reach the entry module, but under dev Vite proxy reload / test harnesses
+      // require.main can be swapped. As a belt-and-suspenders fallback we also reach the
+      // same singleton via a process global set in index.js.
+      let snap = null;
+      // Path #1: global (most reliable — always attached at index.js boot)
+      if (typeof global.__tableTalkSessionStateSnapshot === 'function') {
+        snap = global.__tableTalkSessionStateSnapshot(session_id);
+      }
+      // Path #2: require.main.exports (original path, used in production directly)
+      if (!snap && typeof require !== 'undefined' && require.main && require.main.exports && typeof require.main.exports.getSessionStateSnapshot === 'function') {
+        snap = require.main.exports.getSessionStateSnapshot(session_id);
+      }
+      // Path #3: direct relative import (works when this file is loaded from the same node_modules tree)
+      if (!snap) {
+        try {
+          const idx = require('../index');
+          if (idx && typeof idx.getSessionStateSnapshot === 'function') {
+            snap = idx.getSessionStateSnapshot(session_id);
+          }
+        } catch (_) { /* avoid circular-require exceptions */ }
+      }
+      if (snap) {
+        nextIntentCount = typeof snap.nextIntentCount === 'number' ? snap.nextIntentCount : 0;
+        advanceIntentCount = typeof snap.advanceIntentCount === 'number' ? snap.advanceIntentCount : 0;
+        readyCount = typeof snap.readyCount === 'number' ? snap.readyCount : 0;
+        conversationStarted = Boolean(snap.conversationStarted);
+      }
+    } catch (_) { /* ignore — server restarted, maps cleared */ }
+    // Safe heuristic fallback if in-memory maps were cleared (server restart):
+    // OLD BUG (L1489 REMOVED):
+    //   `if (!conversationStarted && position_index > 0) conversationStarted = true;`
+    //   This hard-coded conversation_started=true for EVERY QUESTION after the
+    //   very first deck position, permanently skipping the "I'm Ready" phase on
+    //   Rounds 2+, because deck advance always increments position_index to >=1.
+    //   We NEVER infer from position_index alone — only intent counts count for
+    //   determining per-question phase state. Each new question STARTS with
+    //   "I'm Ready" regardless of how many previous rounds were completed.
+    //   Fix per user's explicit 2026-08-30 directive:
+    //     "at any new question revealed the flow should start with 'I am Ready'
+    //      process then 'Next Question' process then New Question reveal with
+    //      'I am Ready' Process then 'Next Question' ......"
+    // (If MCQ has been answered there's no explicit DB column for "locked answers
+    //  persisted", but since we cleared the intent Sets via clearSessionState
+    //  after the MCQ advance_question broadcasted, the NEW open-ended question
+    //  at deck position+1 correctly starts at 0/0 intents → "I'm Ready".)
+    // If nextIntentCount is >=2 both clicked → conversationStarted = true regardless
+    if (nextIntentCount >= 2) {
+      conversationStarted = true;
+    }
+    // OLD BUG (L1507 REMOVED):
+    //   `if (advanceIntentCount >= 1) conversationStarted = true;`
+    //   Duplicate of index.js L406 OR-clause bug: any single click of Next Question
+    //   in the session's entire LIFETIME once rendered conversation_started=true
+    //   in HTTP replies (until clearSessionState ran), and clearSessionState and
+    //   the state broadcast were racing. Removing this — conversationStarted is
+    //   ONLY derived from nextIntentCount >= 2 (both users already Ready'd).
+    //   This is the ONLY correct per-question phase definition:
+    //     Phase 1 (Ready)    : nextIntentCount 0..1
+    //     Phase 2 (Conversation Started) : nextIntentCount >= 2
 
     res.json({
       session_id: session.session_id,
@@ -1132,7 +1523,9 @@ const getSessionState = async (req, res) => {
       position_index: position_index,
       current_question: question, // Will be null if deck empty
       has_partner_joined: hasPartnerJoined,
-      waiting_reason: waitingReason
+      waiting_reason: waitingReason,
+      seconds_remaining: secondsRemaining,
+      fresh_intent_at: session.fresh_intent_at
     });
   } catch (err) {
     console.error('Error getting session state:', err);
@@ -1149,6 +1542,30 @@ const freshIntent = async (req, res) => {
   }
 
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
+    const sesh = await db.query(
+      `SELECT table_token, restaurant_id FROM sessions WHERE session_id = $1`,
+      [session_id]
+    );
+    if (sesh.rows.length > 0) {
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: sesh.rows[0].table_token,
+        restaurant_id: sesh.rows[0].restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
+
     // 1. Get Role
     const participant = await db.query(`
       SELECT role FROM session_participants 
@@ -1178,8 +1595,13 @@ const freshIntent = async (req, res) => {
     
     const { fresh_intent_a, fresh_intent_b, dual_group_id, table_token } = updateResult.rows[0];
 
-    // Notify partner via socket if possible
-    const io = require('../index').io;
+    // Notify partner via socket if possible and clear any in-flight context change
+    // (workflow cleanup on HTTP fresh_intent path when socket handler was skipped).
+    const server = require('../index');
+    const io = server?.io;
+    if (typeof server?.clearPendingContexts === 'function') {
+      try { server.clearPendingContexts(session_id); } catch (_) {}
+    }
     if (io) {
        io.to(session_id).emit('partner_requested_fresh', { role });
     }
@@ -1239,8 +1661,13 @@ const freshIntent = async (req, res) => {
           // isn't already ended.
           if (s.rows[0]?.mode === 'dual-phone' && s.rows[0]?.dual_status !== 'ended') {
             await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [session_id]);
+            // Simplified flow: arm the 20-second auto-termination timer on server (via shared
+            // helper exported from index.js). Uses existing fresh_intent_at column — no schema.
+            try {
+              if (typeof server?.armSingleFreshTimeout === 'function') server.armSingleFreshTimeout(session_id);
+            } catch (_) {}
             if (io) {
-              io.to(session_id).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone' });
+              io.to(session_id).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone', seconds_remaining: 20 });
             }
           }
         } catch (e) {}
@@ -1259,6 +1686,30 @@ const upgradeToDual = async (req, res) => {
   const { participant_id } = req.body;
 
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
+    const sesh = await db.query(
+      `SELECT table_token, restaurant_id FROM sessions WHERE session_id = $1`,
+      [session_id]
+    );
+    if (sesh.rows.length > 0) {
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: sesh.rows[0].table_token,
+        restaurant_id: sesh.rows[0].restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
+
     // Verify participant
     const participant = await db.query(`
       SELECT role FROM session_participants 
@@ -1283,6 +1734,13 @@ const upgradeToDual = async (req, res) => {
     const sessionData = session.rows[0];
 
     if (sessionData.mode === 'dual-phone') {
+      // Flow #2 tighten: when switching BACK to Dual (resume), clear any stale
+      // context-change intents left over from before the Single→Dual flip so the
+      // rejoining user does not see a stale "Change Deck?" modal.
+      try {
+        const srv = require('../index');
+        if (typeof srv?.clearPendingContexts === 'function') srv.clearPendingContexts(session_id);
+      } catch (_) {}
       return res.json({ success: true, message: 'Already in dual mode' });
     }
 
@@ -1374,6 +1832,15 @@ const upgradeToDual = async (req, res) => {
  */
 const postSessionEvent = async (req, res) => {
   try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
     const body = req.body || {};
     const eventType = typeof body.event_type === 'string' ? body.event_type.trim().slice(0, 50) : '';
     const sessionId = body.session_id || null;
@@ -1394,6 +1861,17 @@ const postSessionEvent = async (req, res) => {
       [sessionId]
     );
     const session = sessionRes.rows && sessionRes.rows[0] ? sessionRes.rows[0] : null;
+
+    if (session) {
+      const geoScoped = await validateSessionTempGeoAccess(req, {
+        table_token: session.table_token,
+        restaurant_id: session.restaurant_id,
+        restaurant_slug: null
+      });
+      if (!geoScoped.passed) {
+        return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+      }
+    }
 
     const event = await insertAnalyticsEvent({
       event_type: eventType,

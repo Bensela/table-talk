@@ -377,8 +377,11 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
       {loading && (
         <div className="fixed inset-0 bg-[#F3EDE1]/80 backdrop-blur-sm flex items-center justify-center z-50">
            <div className="flex flex-col items-center gap-4">
-             <div className="animate-spin rounded-full h-12 w-12 border-4 border-[#35332E] border-t-transparent"></div>
-             <p className="text-gray-500 font-bold animate-pulse">Starting Session...</p>
+             <div className="w-20 h-20 bg-[#FBF7EF] rounded-full flex items-center justify-center relative shadow-[inset_0_2px_6px_rgba(53,51,46,0.08)]">
+               <div className="absolute inset-0 rounded-full border-4 border-[#35332E] border-t-transparent animate-spin opacity-60"></div>
+               <img src="/catalyst-logo.png" alt="" className="w-10 h-10 object-contain relative z-10" draggable={false} />
+             </div>
+             <p className="text-[#6E6A60] font-bold animate-pulse">Starting Session...</p>
            </div>
         </div>
       )}

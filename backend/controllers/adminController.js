@@ -57,8 +57,27 @@ function parseOptionalNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function getMetricsRangeConfig(rangeKey) {
+function getMetricsRangeConfig(rangeKey, opts = {}) {
   const normalized = String(rangeKey || '24h').trim().toLowerCase();
+
+  if (normalized === 'month' || normalized === 'this-month' || normalized === 'this_month') {
+    const start = new Date(Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      1, 0, 0, 0, 0
+    ));
+    const end = new Date();
+    return {
+      key: 'this_month',
+      sqlInterval: null,
+      seriesInterval: '1 day',
+      bucketFormat: 'Mon DD',
+      bucketTrunc: 'day',
+      startAt: start,
+      endAt: end,
+      useExplicitBounds: true
+    };
+  }
 
   if (normalized === '7d') {
     return {
@@ -80,6 +99,24 @@ function getMetricsRangeConfig(rangeKey) {
     };
   }
 
+  if (normalized === 'custom' && opts.startAt && opts.endAt) {
+    const ms = Math.max(1, opts.endAt.getTime() - opts.startAt.getTime());
+    const days = ms / (1000 * 60 * 60 * 24);
+    const bucketTrunc = days <= 2 ? 'hour' : 'day';
+    const bucketFormat = bucketTrunc === 'hour' ? 'HH24:00' : 'Mon DD';
+    const seriesInterval = bucketTrunc === 'hour' ? '1 hour' : '1 day';
+    return {
+      key: 'custom',
+      sqlInterval: null,
+      seriesInterval,
+      bucketFormat,
+      bucketTrunc,
+      startAt: opts.startAt,
+      endAt: opts.endAt,
+      useExplicitBounds: true
+    };
+  }
+
   return {
     key: '24h',
     sqlInterval: '24 hours',
@@ -87,6 +124,72 @@ function getMetricsRangeConfig(rangeKey) {
     bucketFormat: 'HH24:00',
     bucketTrunc: 'hour'
   };
+}
+
+/**
+ * Build a WHERE clause fragment (and matching params) for analytics_events / sessions
+ * window queries. Supports both:
+ *   - preset ranges (NOW() - INTERVAL 'X')
+ *   - explicit custom bounds (startAt <= ts < endAt, inclusive start, exclusive end)
+ *
+ * Returns: { whereSql (string without leading WHERE), params (array) }
+ *
+ * @param {object} range  Result of getMetricsRangeConfig()
+ * @param {string} tsColumn  SQL column expression to compare against (e.g. "ae.timestamp")
+ * @param {object} [opts]
+ * @param {number} [opts.paramOffset]   Starting $N index (1-based) if chaining in a larger query
+ */
+function buildRangeWhere(range, tsColumn, opts = {}) {
+  const params = [];
+  const clauses = [];
+  let idx = (opts.paramOffset || 0);
+  const $ = () => `$${++idx}`;
+
+  if (range.useExplicitBounds && range.startAt && range.endAt) {
+    clauses.push(`${tsColumn} >= ${$()}::timestamptz`);
+    params.push(range.startAt.toISOString());
+    clauses.push(`${tsColumn} <  ${$()}::timestamptz`);
+    params.push(range.endAt.toISOString());
+  } else if (range.sqlInterval) {
+    clauses.push(`${tsColumn} >= NOW() - INTERVAL '${range.sqlInterval}'`);
+  }
+
+  return {
+    whereSql: clauses.length ? clauses.join(' AND ') : 'TRUE',
+    params,
+    nextParamIdx: idx
+  };
+}
+
+/**
+ * Convert a Date (or anything Date-parseable) to strict ISO8601 UTC with milliseconds:
+ *   2026-08-29T20:18:14.123Z
+ * Excel/Numbers/Sheets all parse this natively when CSV encoding is UTF-8 BOM.
+ */
+function toIsoUtc(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toISOString();
+}
+
+/**
+ * Escape a single CSV field to RFC-4180 + Excel compatibility:
+ *  - null/undefined → empty string
+ *  - strings containing comma, quote, CR, or LF → wrapped in double quotes
+ *    with internal " doubled.
+ */
+function escapeCsvField(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'string') value = String(value);
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function toCsvLine(columns) {
+  return columns.map(escapeCsvField).join(',') + '\r\n';
 }
 
 function buildInviteEmail(restaurantName, inviteEmail, inviteUrl) {
@@ -1076,11 +1179,32 @@ async function deleteTenantPermanent(req, res) {
  */
 async function getSuperAdminMetrics(req, res) {
   try {
-    const range = getMetricsRangeConfig(req.query.range);
+    // Resolve start/end dates. Accept ISO strings from query, or pass through
+    // to getMetricsRangeConfig for custom range handling.
+    const rawStart = (req.query.start_at && String(req.query.start_at).trim()) || null;
+    const rawEnd = (req.query.end_at && String(req.query.end_at).trim()) || null;
+    const opts = {};
+    if (rawStart) {
+      const s = new Date(rawStart);
+      if (!Number.isNaN(s.getTime())) opts.startAt = s;
+    }
+    if (rawEnd) {
+      const e = new Date(rawEnd);
+      if (!Number.isNaN(e.getTime())) opts.endAt = e;
+    }
+    const range = getMetricsRangeConfig(req.query.range, opts);
     const bucketTrunc = range.bucketTrunc;
     const bucketFormat = range.bucketFormat;
     const sqlInterval = range.sqlInterval;
     const seriesInterval = range.seriesInterval;
+    const aeRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: 0 });
+    const sRange = buildRangeWhere(range, 's.created_at', { paramOffset: aeRange.nextParamIdx });
+    const globalExcludeAe = `COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${aeRange.nextParamIdx + 1}`;
+    const globalExcludeS = `s.restaurant_id <> $${sRange.nextParamIdx + 1}`;
+    const aeParams = [...aeRange.params, GLOBAL_RESTAURANT_ID];
+    const sParams = [...sRange.params, GLOBAL_RESTAURANT_ID];
+    const aeWhere = `${aeRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND ${globalExcludeAe}`;
+    const sWhere = `${sRange.whereSql} AND ${globalExcludeS}`;
 
     const [restaurantSummaryResult, questionSummaryResult, overviewResult, liveRestaurantsResult, contextMixResult, timelineResult, recentActivityResult] = await Promise.all([
       db.query(
@@ -1213,18 +1337,23 @@ async function getSuperAdminMetrics(req, res) {
       ),
       db.query(
         `SELECT COALESCE(context, 'Unknown') AS label, COUNT(*) AS count
-         FROM sessions
-         WHERE restaurant_id <> $1
-           AND created_at >= NOW() - INTERVAL '${sqlInterval}'
+         FROM sessions s
+         WHERE ${sWhere}
          GROUP BY COALESCE(context, 'Unknown')
          ORDER BY COUNT(*) DESC`,
-        [GLOBAL_RESTAURANT_ID]
+        sParams
       ),
       db.query(
         `WITH hours AS (
            SELECT generate_series(
-             date_trunc('${bucketTrunc}', NOW()) - INTERVAL '${sqlInterval}' + INTERVAL '${seriesInterval}',
-             date_trunc('${bucketTrunc}', NOW()),
+             ${range.useExplicitBounds
+               ? `date_trunc('${bucketTrunc}', $1::timestamptz)`
+               : `date_trunc('${bucketTrunc}', NOW()) - INTERVAL '${sqlInterval}' + INTERVAL '${seriesInterval}'`
+             },
+             ${range.useExplicitBounds
+               ? `date_trunc('${bucketTrunc}', $2::timestamptz) - INTERVAL '1 microsecond'`
+               : `date_trunc('${bucketTrunc}', NOW())`
+             },
              INTERVAL '${seriesInterval}'
            ) AS hour_bucket
          )
@@ -1236,9 +1365,17 @@ async function getSuperAdminMetrics(req, res) {
          FROM hours
          LEFT JOIN analytics_events ae
            ON date_trunc('${bucketTrunc}', ae.timestamp) = hours.hour_bucket
-          AND ae.timestamp >= NOW() - INTERVAL '${sqlInterval}'
+          AND (
+            ${range.useExplicitBounds
+              ? `ae.timestamp >= $3::timestamptz AND ae.timestamp < $4::timestamptz`
+              : `ae.timestamp >= NOW() - INTERVAL '${sqlInterval}'`
+            }
+          )
          GROUP BY hours.hour_bucket
-         ORDER BY hours.hour_bucket`
+         ORDER BY hours.hour_bucket`,
+        range.useExplicitBounds
+          ? [range.startAt.toISOString(), range.endAt.toISOString(), range.startAt.toISOString(), range.endAt.toISOString()]
+          : []
       ),
       db.query(
         `SELECT
@@ -1250,7 +1387,6 @@ async function getSuperAdminMetrics(req, res) {
            ae.restaurant_id AS ae_restaurant_id,
            ae.table_token AS ae_table_token,
            ae.anonymous_id,
-           -- Prefer: restaurant from denormalized column -> event_data json -> sessions join -> name in event_data
            COALESCE(
              r.name,
              ae.event_data->>'restaurant_name',
@@ -1272,10 +1408,7 @@ async function getSuperAdminMetrics(req, res) {
          LEFT JOIN sessions s ON s.session_id = ae.session_id
          LEFT JOIN restaurants r ON r.id IN (ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid)
          LEFT JOIN restaurants r_default ON r_default.id IN (s.restaurant_id, ae.restaurant_id)
-         WHERE ae.timestamp >= NOW() - INTERVAL '${sqlInterval}'
-           -- Only user-visible, user-initiated or user-impacting lifecycles.
-           -- Explicitly EXCLUDED: backend cron jobs (cleanup_*), server-side
-           -- errors, socket transport-level reconnects, auto-expiry.
+         WHERE ${aeWhere}
            AND ae.event_type IN (
              'qr_scan_validated', 'qr_scan_rejected', 'qr_scan_invalid',
              'geofence_check_denied', 'welcome_geofence_denied',
@@ -1296,7 +1429,8 @@ async function getSuperAdminMetrics(req, res) {
              'hint_revealed', 'mcq_answer_submitted'
            )
          ORDER BY ae.timestamp DESC
-         LIMIT 20`
+         LIMIT 20`,
+        aeParams
       )
     ]);
 
@@ -1315,18 +1449,48 @@ async function getSuperAdminMetrics(req, res) {
     };
 
     // Compute windowed overview numbers: qr_scans, question_views, created sessions in chosen interval
-    const intervalQuery = await db.query(
-      `SELECT
-         (SELECT COUNT(*) FROM sessions WHERE restaurant_id <> $1 AND created_at >= NOW() - INTERVAL '${sqlInterval}') AS sessions_window,
-         (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'qr_scan_validated' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS qr_scans_window,
-         (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'question_viewed' AND timestamp >= NOW() - INTERVAL '${sqlInterval}') AS question_views_window`,
-      [GLOBAL_RESTAURANT_ID]
-    );
-    const windowOverview = intervalQuery.rows?.[0] || {};
+    //
+    // CRITICAL: We rebuild all three WHERE clauses with SEQUENTIAL paramOffsets because
+    // this single db.query() call contains 3 inlined subqueries. The earlier sWhere / aeWhere
+    // were numbered for SEPARATE parallel Promise.all queries (each starting at $1) and
+    // would COLLIDE when inlined into the same SQL statement (all three referencing $1,
+    // causing PostgreSQL 08P01 "bind provides N params but prepared requires 1").
+    //   Placeholder layout:
+    //     Subquery 1 (sessions_window):     $1 .. $#sParams
+    //     Subquery 2 (qr_scans_window):     $#sParams+1  .. $#sParams+#aeQrParams
+    //     Subquery 3 (question_views):      $#sParams+#aeQrParams+1  ..  $end
+    let windowOverview = {};
+    {
+      const iq_sRange = buildRangeWhere(range, 's.created_at', { paramOffset: 0 });
+      const iq_sGlobalIdx = iq_sRange.nextParamIdx + 1;
+      const iq_sWhere = `${iq_sRange.whereSql} AND s.restaurant_id <> $${iq_sGlobalIdx}`;
+      const iq_sParams = [...iq_sRange.params, GLOBAL_RESTAURANT_ID];
+
+      const iq_aeQrRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: iq_sParams.length });
+      const iq_aeQrGlobalIdx = iq_aeQrRange.nextParamIdx + 1;
+      const iq_aeQrWhere = `${iq_aeQrRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${iq_aeQrGlobalIdx}`;
+      const iq_aeQrParams = [...iq_aeQrRange.params, GLOBAL_RESTAURANT_ID];
+
+      const iq_aeQvRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: iq_sParams.length + iq_aeQrParams.length });
+      const iq_aeQvGlobalIdx = iq_aeQvRange.nextParamIdx + 1;
+      const iq_aeQvWhere = `${iq_aeQvRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${iq_aeQvGlobalIdx}`;
+      const iq_aeQvParams = [...iq_aeQvRange.params, GLOBAL_RESTAURANT_ID];
+
+      const intervalQuery = await db.query(
+        `SELECT
+           (SELECT COUNT(*) FROM sessions s WHERE ${iq_sWhere}) AS sessions_window,
+           (SELECT COUNT(*) FROM analytics_events ae WHERE event_type = 'qr_scan_validated' AND ${iq_aeQrWhere}) AS qr_scans_window,
+           (SELECT COUNT(*) FROM analytics_events ae WHERE event_type = 'question_viewed' AND ${iq_aeQvWhere}) AS question_views_window`,
+        [...iq_sParams, ...iq_aeQrParams, ...iq_aeQvParams]
+      );
+      windowOverview = intervalQuery.rows?.[0] || {};
+    }
 
     res.json({
       generated_at: new Date().toISOString(),
       range: range.key,
+      range_start_at: range.useExplicitBounds && range.startAt ? toIsoUtc(range.startAt) : null,
+      range_end_at: range.useExplicitBounds && range.endAt ? toIsoUtc(range.endAt) : null,
       overview: {
         total_restaurants: Number(restaurantSummary.total_restaurants || 0),
         active_restaurants: Number(restaurantSummary.active_restaurants || 0),
@@ -1366,6 +1530,584 @@ async function getSuperAdminMetrics(req, res) {
   } catch (err) {
     console.error('Get super admin metrics error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Validate + resolve export window params, return { range, error, httpStatus }.
+ * Rules:
+ *  - Super Admin only (already enforced at the route; we also double-check user role)
+ *  - Max window: 93 days (1 quarter-ish) to prevent full-history abuse
+ *  - start_at must be a valid ISO timestamp
+ *  - end_at must be a valid ISO timestamp and must be STRICTLY AFTER start_at
+ *  - If `range` preset provided, it computes bounds via getMetricsRangeConfig
+ *    (which has built-in this_month / custom / 24h / 7d / 30d)
+ */
+function resolveExportWindow(req) {
+  const q = req.query || {};
+  let rawStart = (q.start_at && String(q.start_at).trim()) || null;
+  let rawEnd = (q.end_at && String(q.end_at).trim()) || null;
+  const preset = String(q.range || '24h').trim().toLowerCase();
+
+  // Short-circuit: preset=this_month sets start/end automatically
+  if (preset === 'this_month' || preset === 'month') {
+    return { range: getMetricsRangeConfig('this_month'), error: null };
+  }
+
+  // For 24h/7d/30d presets, we still use the explicit NOW()-interval SQL query
+  if (['24h', '7d', '30d'].includes(preset) && !rawStart && !rawEnd) {
+    return { range: getMetricsRangeConfig(preset), error: null };
+  }
+
+  // Otherwise require explicit start/end
+  if (!rawStart || !rawEnd) {
+    return { error: 'start_at and end_at (ISO8601 UTC) are required when range=custom', httpStatus: 400 };
+  }
+  const startAt = new Date(rawStart);
+  const endAt = new Date(rawEnd);
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+    return { error: 'start_at and end_at must be valid ISO8601 timestamps', httpStatus: 400 };
+  }
+  if (endAt.getTime() <= startAt.getTime()) {
+    return { error: 'end_at must be strictly after start_at', httpStatus: 400 };
+  }
+  const MAX_DAYS = 93;
+  if ((endAt.getTime() - startAt.getTime()) > MAX_DAYS * 24 * 60 * 60 * 1000) {
+    return { error: `Export window cannot exceed ${MAX_DAYS} days`, httpStatus: 400 };
+  }
+  const range = getMetricsRangeConfig('custom', { startAt, endAt });
+  return { range, error: null };
+}
+
+/**
+ * GET /api/admin/metrics/export
+ * Super Admin: full streaming export of analytics_events rows (with denormalized
+ * restaurant/session lookup), overview rows, context mix, activity timeline.
+ *
+ * Query params:
+ *  - format:      "csv" | "json"       (default: csv)
+ *  - range:       "24h" | "7d" | "30d" | "this_month" | "custom"
+ *  - start_at:    ISO8601 UTC timestamp (required when range=custom)
+ *  - end_at:      ISO8601 UTC timestamp (required when range=custom)
+ *  - dataset:     "events" | "overview" | "all"    (default: all)
+ *
+ * Security:
+ *  - authenticateToken + requireRole(['SUPER_ADMIN']) at the route level
+ *  - Also validates req.user.role === 'SUPER_ADMIN' inline as second layer
+ *  - Excludes rows without any restaurant context (where both ae.restaurant_id
+ *    AND event_data->>restaurant_id are NULL), so purely global admin-only
+ *    rows never leak tenant data
+ *
+ * Performance:
+ *  - CSV: chunked, streaming via `res.write` (no large in-memory string)
+ *  - analytics_events cursor reads in 500-row batches (keyset pagination on
+ *    timestamp, event_id) to keep peak memory bounded for large windows
+ */
+async function exportSuperAdminMetrics(req, res) {
+  try {
+    if (!req.user || req.user.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Super Admin role required' });
+    }
+
+    const format = (req.query.format && String(req.query.format).toLowerCase() === 'json') ? 'json' : 'csv';
+    const dataset = String(req.query.dataset || 'all').toLowerCase();
+
+    const window = resolveExportWindow(req);
+    if (window.error) {
+      return res.status(window.httpStatus || 400).json({ error: window.error });
+    }
+    const range = window.range;
+
+    const aeRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: 0 });
+    const aeParams = [...aeRange.params, GLOBAL_RESTAURANT_ID];
+    const aeWhere = `${aeRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${aeRange.params.length + 1}`;
+
+    // ---------- small (non-streaming) datasets we can materialize once ----------
+    let overviewData = null;
+    let contextMix = null;
+    let timeline = null;
+    const needsOverview = dataset === 'all' || dataset === 'overview';
+    if (needsOverview) {
+      // ============================================================
+      // OVERVIEW QUERY: sequential placeholder numbering for a single
+      // combined db.query() containing 3 standalone subqueries + 3
+      // windowed subqueries (sessions/qr/qv). Standalone live_now
+      // subqueries all compare to the SAME GLOBAL_RESTAURANT_ID so we
+      // share a single $N (param #1) rather than 3 separate placeholders
+      // — correct semantics and saves 2 params. All subsequent
+      // WHERE clauses build with paramOffset set to the cumulative
+      // previous length so placeholders are monotonic and unique.
+      // ============================================================
+      const oParamIdxStart = 1; // $1 used for all 3 live_restaurant global excludes
+      const o_shared_global = oParamIdxStart;
+      const o_next_after_global = o_shared_global + 0; // using same $1, no new slot
+
+      const ov_sRange = buildRangeWhere(range, 's.created_at', { paramOffset: o_next_after_global });
+      const ov_sParams = [...ov_sRange.params, GLOBAL_RESTAURANT_ID];
+      const ov_sGlobalIdx = ov_sRange.nextParamIdx + 1;
+      const ov_sWhere = `${ov_sRange.whereSql} AND s.restaurant_id <> $${ov_sGlobalIdx}`;
+      const offsetAfterS = o_next_after_global + ov_sParams.length;
+
+      const ov_aeQrRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: offsetAfterS });
+      const ov_aeQrParams = [...ov_aeQrRange.params, GLOBAL_RESTAURANT_ID];
+      const ov_aeQrGlobalIdx = ov_aeQrRange.nextParamIdx + 1;
+      const ov_aeQrWhere = `${ov_aeQrRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${ov_aeQrGlobalIdx}`;
+      const offsetAfterQr = offsetAfterS + ov_aeQrParams.length;
+
+      const ov_aeQvRange = buildRangeWhere(range, 'ae.timestamp', { paramOffset: offsetAfterQr });
+      const ov_aeQvParams = [...ov_aeQvRange.params, GLOBAL_RESTAURANT_ID];
+      const ov_aeQvGlobalIdx = ov_aeQvRange.nextParamIdx + 1;
+      const ov_aeQvWhere = `${ov_aeQvRange.whereSql} AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL) AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${ov_aeQvGlobalIdx}`;
+
+      const overviewParams = [
+        GLOBAL_RESTAURANT_ID,   // $1 — shared for all 3 live_now global excludes
+        ...ov_sParams,
+        ...ov_aeQrParams,
+        ...ov_aeQvParams
+      ];
+
+      // ============================================================
+      // CONTEXT MIX (single WHERE, sParams only): use the same
+      // placeholders as above since this runs in a SEPARATE db.query
+      // call from overviewQuery so $1 numbering is independent.
+      // ============================================================
+      const ctx_sRange = buildRangeWhere(range, 's.created_at', { paramOffset: 0 });
+      const ctx_sParams = [...ctx_sRange.params, GLOBAL_RESTAURANT_ID];
+      const ctx_sGlobalIdx = ctx_sRange.nextParamIdx + 1;
+      const ctx_sWhere = `${ctx_sRange.whereSql} AND s.restaurant_id <> $${ctx_sGlobalIdx}`;
+
+      // ============================================================
+      // TIMELINE QUERY: build ae range filter + global exclude with
+      // paramOffsets aligned to actual use of $1..$N in this QUERY
+      // (no hardcoded $5 — previously broke for relative ranges where
+      // only $1 existed and $2..$4 were empty causing 08P01).
+      //
+      // Layout for explicit bounds (custom):
+      //   $1 = series_start, $2 = series_end (generate_series)
+      //   $3 = ae_start,     $4 = ae_end       (ae.timestamp range)
+      //   $5 = GLOBAL_RESTAURANT_ID
+      // Layout for relative (24h etc):
+      //   $1 = GLOBAL_RESTAURANT_ID (only param — no explicit $2..$4)
+      // ============================================================
+      let timelineSql, timelineParams;
+      {
+        const tl_aeRange = buildRangeWhere(
+          range,
+          'ae.timestamp',
+          { paramOffset: range.useExplicitBounds ? 2 : 0 }
+        );
+        // after ae range placeholders, compute global exclude index
+        const tl_globalIdx = tl_aeRange.nextParamIdx + 1;
+        const tl_aeRangeWhere = tl_aeRange.whereSql;
+        const tl_seriesStart = range.useExplicitBounds
+          ? `date_trunc('${range.bucketTrunc}', $1::timestamptz)`
+          : `date_trunc('${range.bucketTrunc}', NOW()) - INTERVAL '${range.sqlInterval}' + INTERVAL '${range.seriesInterval}'`;
+        const tl_seriesEnd = range.useExplicitBounds
+          ? `date_trunc('${range.bucketTrunc}', $2::timestamptz) - INTERVAL '1 microsecond'`
+          : `date_trunc('${range.bucketTrunc}', NOW())`;
+        const tl_tsFormat = range.useExplicitBounds
+          ? `to_char(hours.b, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`
+          : `to_char(hours.b AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`;
+
+        timelineSql = `
+          WITH hours AS (
+            SELECT generate_series(
+              ${tl_seriesStart},
+              ${tl_seriesEnd},
+              INTERVAL '${range.seriesInterval}'
+            ) AS b
+          )
+          SELECT
+            to_char(hours.b, '${range.bucketFormat}') AS bucket_label,
+            ${tl_tsFormat} AS bucket_timestamp_utc,
+            COALESCE(SUM(CASE WHEN ae.event_type = 'qr_scan_validated' THEN 1 ELSE 0 END), 0) AS qr_scans,
+            COALESCE(SUM(CASE WHEN ae.event_type = 'session_created' THEN 1 ELSE 0 END), 0) AS sessions_started,
+            COALESCE(SUM(CASE WHEN ae.event_type = 'question_viewed' THEN 1 ELSE 0 END), 0) AS question_views
+          FROM hours
+          LEFT JOIN analytics_events ae
+            ON date_trunc('${range.bucketTrunc}', ae.timestamp) = hours.b
+           AND (${tl_aeRangeWhere})
+           AND (ae.restaurant_id IS NOT NULL OR (ae.event_data->>'restaurant_id') IS NOT NULL)
+           AND COALESCE(ae.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) <> $${tl_globalIdx}
+          GROUP BY hours.b
+          ORDER BY hours.b
+        `;
+        timelineParams = [
+          ...(range.useExplicitBounds ? [range.startAt.toISOString(), range.endAt.toISOString()] : []),
+          ...tl_aeRange.params,
+          GLOBAL_RESTAURANT_ID
+        ];
+      }
+
+      const [overviewQuery, contextQuery, timelineQuery] = await Promise.all([
+        db.query(
+          `SELECT
+             NOW() AS snapshot_utc,
+             (SELECT COUNT(*) FILTER (WHERE slug <> 'default') FROM restaurants) AS total_restaurants,
+             (SELECT COUNT(*) FILTER (WHERE slug <> 'default' AND billing_status = 'active') FROM restaurants) AS active_restaurants,
+             (SELECT COUNT(*) FROM sessions WHERE expires_at > NOW() AND COALESCE(dual_status, '') <> 'ended' AND restaurant_id <> $${o_shared_global}) AS active_sessions_now,
+             (SELECT COUNT(DISTINCT table_token) FROM sessions WHERE expires_at > NOW() AND COALESCE(dual_status, '') <> 'ended' AND restaurant_id <> $${o_shared_global}) AS active_tables_now,
+             (SELECT COUNT(DISTINCT restaurant_id) FROM sessions WHERE expires_at > NOW() AND COALESCE(dual_status, '') <> 'ended' AND restaurant_id <> $${o_shared_global}) AS live_restaurants_now,
+             (SELECT COUNT(*) FROM sessions s WHERE ${ov_sWhere}) AS sessions_window,
+             (SELECT COUNT(*) FROM analytics_events ae WHERE event_type = 'qr_scan_validated' AND ${ov_aeQrWhere}) AS qr_scans_window,
+             (SELECT COUNT(*) FROM analytics_events ae WHERE event_type = 'question_viewed' AND ${ov_aeQvWhere}) AS question_views_window`,
+          overviewParams
+        ),
+        db.query(
+          `SELECT COALESCE(s.context, 'Unknown') AS label, COUNT(*) AS count
+           FROM sessions s WHERE ${ctx_sWhere}
+           GROUP BY COALESCE(s.context, 'Unknown') ORDER BY COUNT(*) DESC`,
+          ctx_sParams
+        ),
+        db.query(timelineSql, timelineParams)
+      ]);
+      overviewData = overviewQuery.rows?.[0] || {};
+      contextMix = contextQuery.rows || [];
+      timeline = timelineQuery.rows || [];
+    }
+
+    const nowUtc = toIsoUtc(new Date());
+    const rangeStartIso = range.useExplicitBounds && range.startAt ? toIsoUtc(range.startAt) : '';
+    const rangeEndIso = range.useExplicitBounds && range.endAt ? toIsoUtc(range.endAt) : '';
+
+    if (format === 'json') {
+      const payload = {
+        exported_at: nowUtc,
+        range_key: range.key,
+        range_start_at_utc: rangeStartIso || null,
+        range_end_at_utc: rangeEndIso || null,
+        dataset
+      };
+      if (overviewData) {
+        payload.overview = {
+          generated_at_utc: toIsoUtc(overviewData.snapshot_utc),
+          total_restaurants: Number(overviewData.total_restaurants || 0),
+          active_restaurants: Number(overviewData.active_restaurants || 0),
+          active_sessions_now: Number(overviewData.active_sessions_now || 0),
+          active_tables_now: Number(overviewData.active_tables_now || 0),
+          live_restaurants_now: Number(overviewData.live_restaurants_now || 0),
+          sessions_window: Number(overviewData.sessions_window || 0),
+          qr_scans_window: Number(overviewData.qr_scans_window || 0),
+          question_views_window: Number(overviewData.question_views_window || 0)
+        };
+        payload.context_mix = contextMix.map((r) => ({ label: r.label, count: Number(r.count || 0) }));
+        payload.activity_timeline = timeline.map((r) => ({
+          bucket_label: r.bucket_label,
+          bucket_timestamp_utc: toIsoUtc(r.bucket_timestamp_utc),
+          qr_scans: Number(r.qr_scans || 0),
+          sessions_started: Number(r.sessions_started || 0),
+          question_views: Number(r.question_views || 0)
+        }));
+      }
+      if (dataset === 'all' || dataset === 'events') {
+        const eventsCursor = await db.query(
+          `SELECT
+             ae.event_id,
+             ae.event_type,
+             to_char(ae.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS event_timestamp_utc,
+             ae.session_id,
+             ae.participant_id,
+             COALESCE(ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid) AS restaurant_id,
+             COALESCE(r.name, ae.event_data->>'restaurant_name', r_default.name) AS restaurant_name,
+             COALESCE(r.slug, ae.event_data->>'restaurant_slug', r_default.slug) AS restaurant_slug,
+             COALESCE(s.table_token, ae.table_token, ae.event_data->>'table_token', ae.event_data->>'table_number') AS table_token,
+             ae.anonymous_id,
+             ae.event_data
+           FROM analytics_events ae
+           LEFT JOIN sessions s ON s.session_id = ae.session_id
+           LEFT JOIN restaurants r ON r.id IN (ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid)
+           LEFT JOIN restaurants r_default ON r_default.id IN (s.restaurant_id, ae.restaurant_id)
+           WHERE ${aeWhere}
+           ORDER BY ae.timestamp ASC, ae.event_id ASC`,
+          aeParams
+        );
+        payload.events = eventsCursor.rows.map((row) => ({
+          ...row,
+          event_timestamp_utc: toIsoUtc(row.event_timestamp_utc)
+        }));
+        payload.events_count = payload.events.length;
+      }
+      // Cache headers — sensitive admin-only data, no-cache
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="catalyst-sa-metrics-${range.key}-${Date.now()}.json"`
+      );
+      return res.status(200).json(payload);
+    }
+
+    // ---------- CSV (streaming) ----------
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="catalyst-sa-metrics-${range.key}-${Date.now()}.csv"`
+    );
+    // UTF-8 BOM at top of the file so Excel correctly detects UTF-8 without
+    // falling back to system codepage (CSV cross-platform compatibility).
+    const BOM = '\uFEFF';
+
+    // ---- METADATA HEADER BLOCK ----
+    res.write(BOM);
+    res.write(toCsvLine(['catalyst_sa_metrics_export', '', '', '', '', '', '', '', '', '', '']));
+    res.write(toCsvLine([
+      'export_generated_at_utc',
+      'range_key',
+      'range_start_at_utc',
+      'range_end_at_utc',
+      'exported_by_user_id',
+      'exported_by_role',
+      'super_admin_email_redacted',
+      'dataset',
+      'utc_format_iso8601',
+      '',
+      ''
+    ]));
+    res.write(toCsvLine([
+      nowUtc,
+      range.key,
+      rangeStartIso,
+      rangeEndIso,
+      String(req.user?.id || ''),
+      String(req.user?.role || ''),
+      '',
+      dataset,
+      'YYYY-MM-DDThh:mm:ss.sssZ',
+      '',
+      ''
+    ]));
+    res.write(toCsvLine(['', '', '', '', '', '', '', '', '', '', '']));
+
+    // ---- OVERVIEW SECTION ----
+    if (overviewData) {
+      res.write(toCsvLine(['# SECTION: OVERVIEW METRICS', '', '', '', '', '', '', '', '', '', '']));
+      res.write(toCsvLine([
+        'timestamp_utc',
+        'metric_section',
+        'metric_name',
+        'metric_value',
+        'metric_unit',
+        '',
+        '',
+        '',
+        '',
+        '',
+        ''
+      ]));
+      const snapshotAt = toIsoUtc(overviewData.snapshot_utc);
+      const overviewRows = [
+        ['total_restaurants', Number(overviewData.total_restaurants || 0), 'restaurants'],
+        ['active_restaurants', Number(overviewData.active_restaurants || 0), 'restaurants'],
+        ['active_sessions_now', Number(overviewData.active_sessions_now || 0), 'sessions'],
+        ['active_tables_now', Number(overviewData.active_tables_now || 0), 'tables'],
+        ['live_restaurants_now', Number(overviewData.live_restaurants_now || 0), 'restaurants'],
+        [`sessions_window_${range.key}`, Number(overviewData.sessions_window || 0), 'sessions'],
+        [`qr_scans_window_${range.key}`, Number(overviewData.qr_scans_window || 0), 'events'],
+        [`question_views_window_${range.key}`, Number(overviewData.question_views_window || 0), 'views']
+      ];
+      for (const [name, value, unit] of overviewRows) {
+        res.write(toCsvLine([snapshotAt, 'overview', name, value, unit, '', '', '', '', '', '']));
+      }
+      res.write(toCsvLine(['', '', '', '', '', '', '', '', '', '', '']));
+
+      // ---- CONTEXT MIX ----
+      res.write(toCsvLine(['# SECTION: CONTEXT MIX', '', '', '', '', '', '', '', '', '', '']));
+      res.write(toCsvLine([
+        'timestamp_utc',
+        'metric_section',
+        'context_label',
+        'count_sessions',
+        'window',
+        '',
+        '',
+        '',
+        '',
+        '',
+        ''
+      ]));
+      for (const r of contextMix) {
+        res.write(toCsvLine([
+          nowUtc,
+          'context_mix',
+          String(r.label || ''),
+          Number(r.count || 0),
+          range.key,
+          '',
+          '',
+          '',
+          '',
+          '',
+          ''
+        ]));
+      }
+      res.write(toCsvLine(['', '', '', '', '', '', '', '', '', '', '']));
+
+      // ---- ACTIVITY TIMELINE ----
+      res.write(toCsvLine(['# SECTION: ACTIVITY TIMELINE (time-series)', '', '', '', '', '', '', '', '', '', '']));
+      res.write(toCsvLine([
+        'timestamp_utc',
+        'metric_section',
+        'bucket_label',
+        'qr_scans',
+        'sessions_started',
+        'question_views',
+        'window',
+        '',
+        '',
+        '',
+        ''
+      ]));
+      for (const r of timeline) {
+        res.write(toCsvLine([
+          toIsoUtc(r.bucket_timestamp_utc),
+          'timeline',
+          String(r.bucket_label || ''),
+          Number(r.qr_scans || 0),
+          Number(r.sessions_started || 0),
+          Number(r.question_views || 0),
+          range.key,
+          '',
+          '',
+          '',
+          ''
+        ]));
+      }
+      res.write(toCsvLine(['', '', '', '', '', '', '', '', '', '', '']));
+    }
+
+    // ---- ANALYTICS EVENTS ----
+    if (dataset === 'all' || dataset === 'events') {
+      res.write(toCsvLine(['# SECTION: ANALYTICS EVENTS (time-ordered)', '', '', '', '', '', '', '', '', '', '']));
+      res.write(toCsvLine([
+        'timestamp_utc',
+        'event_id',
+        'event_type',
+        'restaurant_name',
+        'restaurant_slug',
+        'table_token',
+        'session_id',
+        'participant_id',
+        'anonymous_id',
+        'event_data_json'
+      ]));
+
+      // Keyset cursor: 500-row batches ordered by (timestamp ASC, event_id ASC).
+      // Avoids massive in-memory result sets for 30-day windows.
+      const BATCH_SIZE = 500;
+      let afterTs = null;
+      let afterEventId = null;
+      let batchNum = 0;
+      let totalEvents = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        batchNum += 1;
+        let sql;
+        let params;
+        if (afterTs && afterEventId) {
+          sql = `SELECT
+                   ae.event_id,
+                   ae.event_type,
+                   to_char(ae.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS event_timestamp_utc,
+                   ae.session_id,
+                   ae.participant_id,
+                   ae.anonymous_id,
+                   ae.event_data,
+                   COALESCE(r.name, ae.event_data->>'restaurant_name', r_default.name) AS restaurant_name,
+                   COALESCE(r.slug, ae.event_data->>'restaurant_slug', r_default.slug) AS restaurant_slug,
+                   COALESCE(s.table_token, ae.table_token, ae.event_data->>'table_token', ae.event_data->>'table_number') AS table_token
+                 FROM analytics_events ae
+                 LEFT JOIN sessions s ON s.session_id = ae.session_id
+                 LEFT JOIN restaurants r ON r.id IN (ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid)
+                 LEFT JOIN restaurants r_default ON r_default.id IN (s.restaurant_id, ae.restaurant_id)
+                 WHERE ${aeWhere}
+                   AND (ae.timestamp > $${aeParams.length + 1}::timestamptz
+                        OR (ae.timestamp = $${aeParams.length + 2}::timestamptz AND ae.event_id > $${aeParams.length + 3}::uuid))
+                 ORDER BY ae.timestamp ASC, ae.event_id ASC
+                 LIMIT ${BATCH_SIZE}`;
+          params = [...aeParams, afterTs, afterTs, afterEventId];
+        } else {
+          sql = `SELECT
+                   ae.event_id,
+                   ae.event_type,
+                   to_char(ae.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS event_timestamp_utc,
+                   ae.session_id,
+                   ae.participant_id,
+                   ae.anonymous_id,
+                   ae.event_data,
+                   COALESCE(r.name, ae.event_data->>'restaurant_name', r_default.name) AS restaurant_name,
+                   COALESCE(r.slug, ae.event_data->>'restaurant_slug', r_default.slug) AS restaurant_slug,
+                   COALESCE(s.table_token, ae.table_token, ae.event_data->>'table_token', ae.event_data->>'table_number') AS table_token
+                 FROM analytics_events ae
+                 LEFT JOIN sessions s ON s.session_id = ae.session_id
+                 LEFT JOIN restaurants r ON r.id IN (ae.restaurant_id, s.restaurant_id, (ae.event_data->>'restaurant_id')::uuid)
+                 LEFT JOIN restaurants r_default ON r_default.id IN (s.restaurant_id, ae.restaurant_id)
+                 WHERE ${aeWhere}
+                 ORDER BY ae.timestamp ASC, ae.event_id ASC
+                 LIMIT ${BATCH_SIZE}`;
+          params = aeParams;
+        }
+        const batch = await db.query(sql, params);
+        if (!batch.rows || batch.rows.length === 0) break;
+        for (const row of batch.rows) {
+          totalEvents += 1;
+          const eventJson = row.event_data != null
+            ? (typeof row.event_data === 'string' ? row.event_data : JSON.stringify(row.event_data))
+            : '';
+          res.write(toCsvLine([
+            toIsoUtc(row.event_timestamp_utc),
+            String(row.event_id || ''),
+            String(row.event_type || ''),
+            String(row.restaurant_name || ''),
+            String(row.restaurant_slug || ''),
+            String(row.table_token || ''),
+            String(row.session_id || ''),
+            String(row.participant_id || ''),
+            String(row.anonymous_id || ''),
+            eventJson
+          ]));
+        }
+        const last = batch.rows[batch.rows.length - 1];
+        afterTs = new Date(last.event_timestamp_utc).toISOString();
+        afterEventId = last.event_id;
+        if (batch.rows.length < BATCH_SIZE) break;
+        // Yield a tick between batches to not starve the event loop for huge exports.
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // ---- EVENTS FOOTER ----
+      res.write(toCsvLine(['', '', '', '', '', '', '', '', '', '', '']));
+      res.write(toCsvLine([
+        '# TOTALS: events_exported',
+        nowUtc,
+        String(totalEvents),
+        'events',
+        `batches=${batchNum}`,
+        '',
+        '',
+        '',
+        '',
+        '',
+        ''
+      ]));
+    }
+
+    return res.end();
+  } catch (err) {
+    console.error('[SA metrics export] failed:', err);
+    // If headers not yet sent, send proper JSON error. If streaming already
+    // started (res.write called) we can't change status, so abort the stream.
+    try {
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Export failed. Please try again with a narrower date range.' });
+      }
+      res.destroy && res.destroy(err);
+    } catch (_) { /* swallow */ }
+    return null;
   }
 }
 
@@ -1908,6 +2650,7 @@ module.exports = {
   updateTenant,
   deleteTenantPermanent,
   getSuperAdminMetrics,
+  exportSuperAdminMetrics,
   updateTenantProfile,
   getGlobalQuestions,
   updateGlobalQuestion,

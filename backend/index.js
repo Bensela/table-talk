@@ -68,6 +68,52 @@ const { cleanupSessions } = require('./jobs/cleanup');
 
 const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 
+// #region debug-point next-question-perf backend instrumentation (H2 | H5 | H1)
+// Evidence-only reporter. Reports to local Debug Server (http://127.0.0.1:7777/event).
+// Read env file for URL + session id when available.
+const __dbgBackendEnv = (() => {
+  try {
+    const e = require('fs').readFileSync(require('path').join(process.cwd(), '..', '.dbg', 'next-question-perf.env'), 'utf8');
+    return {
+      url: e.match(/DEBUG_SERVER_URL=(.+)/)?.[1] || 'http://127.0.0.1:7777/event',
+      sid: e.match(/DEBUG_SESSION_ID=(.+)/)?.[1] || 'next-question-perf'
+    };
+  } catch {
+    return { url: 'http://127.0.0.1:7777/event', sid: 'next-question-perf' };
+  }
+})();
+let __dbgSeq = 0;
+const __dbgBackend = (hypothesisId, location, msg, data = {}, runId = 'pre-fix') => {
+  try {
+    const payload = JSON.stringify({
+      sessionId: __dbgBackendEnv.sid,
+      runId,
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data: { seq: ++__dbgSeq, ...data },
+      ts: Date.now()
+    });
+    const u = new URL(__dbgBackendEnv.url);
+    const req = require('http').request({
+      hostname: u.hostname,
+      port: u.port || 80,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 400
+    });
+    req.on('error', () => {});
+    req.on('timeout', () => { try { req.destroy(); } catch {} });
+    req.write(payload);
+    req.end();
+  } catch (_) { /* silent if debug server down */ }
+};
+// #endregion
+
 const app = express();
 const server = http.createServer(app);
 
@@ -92,6 +138,70 @@ function clearSetupLockForTable(tableToken) {
   setupLocks.delete(tableToken);
   io.to(`setup_${tableToken}`).emit('setup_released');
 }
+
+function clearPendingContexts(sessionId) {
+  if (!sessionId) return;
+  const existing = pendingContexts.get(sessionId);
+  if (existing && existing._cleanupTimer) {
+    clearTimeout(existing._cleanupTimer);
+    existing._cleanupTimer = null;
+  }
+  pendingContexts.delete(sessionId);
+}
+module.exports.clearPendingContexts = clearPendingContexts;
+
+// Simplified flow: when only one side has pressed Start Fresh (single-sided), the
+// remaining partner has exactly 20 seconds to either: (a) press Switch to Single Mode
+// via the countdown modal, or (b) the dual session is auto-terminated server-side
+// and the remaining partner is bounced to the QR scanner page. This matches how the
+// app originally performed and removes all the "Menu→Single while partner still
+// connected" race-condition behavior. Uses existing `fresh_intent_at` (no schema).
+function armSingleFreshTimeout(sessionId) {
+  if (!sessionId) return;
+  const state = getSessionState(sessionId);
+  if (state.singleFreshTimeoutTimer) {
+    try { clearTimeout(state.singleFreshTimeoutTimer); } catch (_) {}
+  }
+  state.singleFreshTimeoutTimer = setTimeout(async () => {
+    try {
+      const r = await db.query(
+        `SELECT fresh_intent_a, fresh_intent_b, dual_group_id, table_token, restaurant_id, mode, dual_status
+         FROM sessions WHERE session_id = $1`,
+        [sessionId]
+      );
+      const row = r.rows[0];
+      if (!row) return;
+      const onlyOnePressed = Boolean(row.fresh_intent_a) !== Boolean(row.fresh_intent_b);
+      if (!onlyOnePressed) {
+        // Mutual or none — timer has nothing to do
+        return;
+      }
+      // 20 seconds have elapsed since first Start Fresh press; terminate the dual session
+      // server-side and bounce the remaining partner out.
+      await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [sessionId]);
+      if (row.dual_group_id) {
+        try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
+        try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
+      }
+      if (row.table_token) {
+        try { clearSetupLockForTable(row.table_token); } catch (_) {}
+      }
+      clearSessionState(sessionId);
+      clearPendingContexts(sessionId);
+      try {
+        await insertAnalyticsEvent({
+          session_id: sessionId,
+          restaurant_id: row.restaurant_id || null,
+          table_token: row.table_token || null,
+          event_type: 'session_end',
+          event_data: { reason: 'single_fresh_20s_timeout', dual_group_id: row.dual_group_id || null }
+        });
+      } catch (_) {}
+      io.to(sessionId).emit('single_fresh_timeout');
+    } catch (_) {}
+  }, 20 * 1000);
+}
+module.exports.armSingleFreshTimeout = armSingleFreshTimeout;
 
 // --- CORS Configuration ---
 const allowedOrigins = [
@@ -251,7 +361,8 @@ function getSessionState(sessionId) {
       advanceIntent: new Set(),
       revealUnstickTimer: null,
       nextIntentUnstickTimer: null,
-      advanceIntentUnstickTimer: null
+      advanceIntentUnstickTimer: null,
+      singleFreshTimeoutTimer: null
     });
   }
   return sessionStates.get(sessionId);
@@ -264,7 +375,7 @@ function clearSessionState(sessionId) {
     state.answers.clear();
     state.nextIntent.clear();
     state.advanceIntent.clear();
-    for (const f of ['revealUnstickTimer','nextIntentUnstickTimer','advanceIntentUnstickTimer']) {
+    for (const f of ['revealUnstickTimer','nextIntentUnstickTimer','advanceIntentUnstickTimer','singleFreshTimeoutTimer']) {
       if (state[f]) {
         try { clearTimeout(state[f]); } catch (_) {}
         state[f] = null;
@@ -272,6 +383,52 @@ function clearSessionState(sessionId) {
     }
   }
 }
+
+// HTTP-readable snapshot of the live in-memory socket state for a session. Used
+// by sessionController.getSessionState so reconnected clients (or HTTP reconcile
+// poll clients) can restore next_intent_count / advance_intent_count / ready_count
+// / conversation_started even when websocket events were dropped (Firefox mid-
+// unload, app backgrounded, device lock, or server restart fallback).
+function getSessionStateSnapshot(sessionId) {
+  if (!sessionId) return null;
+  const state = sessionStates.get(sessionId);
+  if (!state) {
+    return {
+      nextIntentCount: 0,
+      advanceIntentCount: 0,
+      readyCount: 0,
+      conversationStarted: false
+    };
+  }
+  const readyCount = state.ready.size;
+  const nextIntentCount = state.nextIntent.size;
+  const advanceIntentCount = state.advanceIntent.size;
+  // IMPORTANT: conversationStarted = nextIntentCount >= 2 ONLY.
+  // DO NOT OR with advanceIntentCount >= 1 (previous bug)!
+  // Because after clearSessionState zeroes both Sets for the NEW question,
+  // having advanceIntentCount in this OR caused "conversationStarted=true"
+  // to be computed during the 10-50ms race window between advance_question
+  // broadcast and clearSessionState actually clearing the Sets (async).
+  // This propagated to the frontend via HTTP reconcile AND join_session
+  // reconnect_replay → stuck conversationStarted=true permanently.
+  const conversationStarted = (nextIntentCount >= 2);
+  return {
+    nextIntentCount: Number(nextIntentCount) || 0,
+    advanceIntentCount: Number(advanceIntentCount) || 0,
+    readyCount: Number(readyCount) || 0,
+    conversationStarted: Boolean(conversationStarted)
+  };
+}
+module.exports.getSessionStateSnapshot = getSessionStateSnapshot;
+module.exports.clearSessionState = clearSessionState;
+module.exports.getSessionState = getSessionState;
+// #region fix H4:reconcile-stale-counts — attach snapshot to global so sessionController
+// can always reach it regardless of require.main being overridden (Vite proxy reload,
+// worker threads, or test harness that overwrite require.main).
+try {
+  global.__tableTalkSessionStateSnapshot = getSessionStateSnapshot;
+} catch (_) { /* ignore */ }
+// #endregion
 
 // Resolve socket.role + socket.participantId for a given session, falling back to a
 // DB lookup when the socket object lost its role during reconnect/remount. If role
@@ -352,14 +509,114 @@ io.on('connection', (socket) => {
         return;
       }
 
+      // Defense-in-depth: if this is a dual-phone session with a single-sided Start
+      // Fresh that was pressed MORE than 20 seconds ago (user closed browser, app
+      // backgrounded, server restarted mid-timer, etc.), treat the session as auto-
+      // terminated and bounce the reconnecting partner out to the QR scanner. Uses
+      // existing fresh_intent_at column (no schema).
+      if (pData.mode === 'dual-phone') {
+        const timeoutCheck = await db.query(
+          `SELECT fresh_intent_a, fresh_intent_b, fresh_intent_at, dual_group_id, table_token, restaurant_id
+           FROM sessions WHERE session_id = $1`,
+          [session_id]
+        );
+        const tf = timeoutCheck.rows[0];
+        const onlyOne = tf && (Boolean(tf.fresh_intent_a) !== Boolean(tf.fresh_intent_b));
+        const over20s = tf && tf.fresh_intent_at && (Date.now() - new Date(tf.fresh_intent_at).getTime() >= 20 * 1000);
+        if (onlyOne && over20s) {
+          try {
+            await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [session_id]);
+            if (tf.dual_group_id) {
+              try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [tf.dual_group_id]); } catch (_) {}
+              try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [tf.dual_group_id]); } catch (_) {}
+            }
+            if (tf.table_token) { try { clearSetupLockForTable(tf.table_token); } catch (_) {} }
+            clearSessionState(session_id);
+            clearPendingContexts(session_id);
+            try {
+              await insertAnalyticsEvent({
+                session_id,
+                restaurant_id: tf.restaurant_id || null,
+                table_token: tf.table_token || null,
+                event_type: 'session_end',
+                event_data: { reason: 'single_fresh_20s_timeout_on_join', dual_group_id: tf.dual_group_id || null }
+              });
+            } catch (_) {}
+          } catch (_) {}
+          socket.emit('single_fresh_timeout');
+          socket.emit('error', { message: 'Session timed out (partner did not respond to Start Fresh). Please scan the QR again.' });
+          return;
+        } else if (onlyOne && !over20s) {
+          // Rejoin inside the 20s window: re-arm 20s timer in case the earlier
+          // in-memory setTimeout was lost (server restart).
+          armSingleFreshTimeout(session_id);
+          if (pData.dual_status === 'waiting') {
+            const remaining = Math.max(0, 20 - Math.floor((Date.now() - new Date(tf.fresh_intent_at).getTime()) / 1000));
+            socket.emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone', seconds_remaining: remaining });
+          }
+        }
+      }
+
       const wasDisconnected = Boolean(pData.prev_disconnected_at);
 
       await db.query(`UPDATE session_participants SET disconnected_at = NULL, last_seen_at = NOW() WHERE participant_id = $1`, [participant_id]);
 
       socket.join(session_id);
+      // #region debug-point H2:bg-fg-rejoin-room
+      const roomsAfter = io.sockets.adapter.sids.get(socket.id);
+      const sizeAfter = (io.sockets.adapter.rooms.get(session_id) || new Set()).size;
+      __dbgBackend('H2', 'index.js:join_session', 'socket joined session room', {
+        socket_id: socket.id,
+        sid: session_id,
+        pid: participant_id,
+        role: pData.role,
+        mode: pData.mode,
+        size_before: sizeBefore,
+        size_after: sizeAfter,
+        was_disconnected: wasDisconnected,
+        rooms_for_socket: roomsAfter ? [...roomsAfter].slice(0, 10) : []
+      });
+      // #endregion
       socket.participantId = participant_id;
       socket.sessionId = session_id;
       socket.role = pData.role;
+
+      // Re-sync live intents to a reconnected socket so it does NOT regress back
+      // to Phase 1 ("I'm Ready") when conversation_started / next/advance intents
+      // were already set on the partner's side (Firefox mid-unload / backgrounding
+      // drops socket events, the reconnect path must re-emit them).
+      const snap = getSessionStateSnapshot(session_id);
+      if (pData.mode === 'dual-phone' && snap) {
+        // Ready / advance / next counts: each socket listener in the frontend uses
+        // these counts to restore its local state button to "Next Question" instead
+        // of stale "I'm Ready".
+        if (snap.readyCount > 0) {
+          socket.emit('ready_status_update', {
+            participant_id: socket.participantId,
+            role: socket.role,
+            ready_count: snap.readyCount,
+            ready: snap.readyCount >= 1
+          });
+        }
+        socket.emit('next_intent_update', {
+          count: snap.nextIntentCount,
+          required: 2,
+          selfRole: socket.role,
+          reconnect_replay: true
+        });
+        socket.emit('advance_intent_update', {
+          count: snap.advanceIntentCount,
+          required: 2,
+          selfRole: socket.role,
+          reconnect_replay: true
+        });
+        // If conversation already reached "Started" on both (next >= 2) OR there
+        // has been any advance intent at all, replay conversation_start to the
+        // rejoining socket so its button does NOT revert to "I'm Ready".
+        if (snap.conversationStarted) {
+          socket.emit('conversation_start', { reconnect_replay: true });
+        }
+      }
 
       // Sync Partner Status
       const room = io.sockets.adapter.rooms.get(session_id);
@@ -544,6 +801,13 @@ io.on('connection', (socket) => {
 
   socket.on('partner_switched_mode', async ({ newMode } = {}) => {
     if (!socket.sessionId) return;
+    // Defensive: resolve role for logging reliability across reconnect; this handler
+    // doesn't use role but helps us audit when mode switch races reconnection.
+    await resolveSocketRole(socket);
+    // Clear any pending context intents (if partner was mid-way through an unconfirmed
+    // context change, discarding them keeps the new mode/session clean and avoids
+    // "Change Deck?" modals appearing after user has already switched to Single/Dual).
+    clearPendingContexts(socket.sessionId);
     socket.to(socket.sessionId).emit('partner_switched_mode', { newMode });
     await logSocketEvent(socket, 'menu_mode_reset', { new_mode: newMode || null });
   });
@@ -553,10 +817,32 @@ io.on('connection', (socket) => {
     if (!socket.sessionId) return;
     const role = await resolveSocketRole(socket);
     // Null role → ignore, don't add a Set entry with 'null' that would only be one
-    if (!role) return;
+    if (!role) {
+      // #region debug-point H5:idempotency-missing | H2:role-null-after-reconnect
+      __dbgBackend('H5', 'index.js:dual_next_intent', 'dual_next_intent ignored because resolveSocketRole returned null (reconnect race window)', {
+        socket_id: socket.id, sid: socket.sessionId, pid: socket.participantId || null
+      });
+      // #endregion
+      return;
+    }
     const state = getSessionState(socket.sessionId);
+    const hadRoleBefore = state.nextIntent.has(role);
+    if (hadRoleBefore) {
+      __dbgBackend('H5', 'index.js:dual_next_intent:duplicate', 'IDEMPOTENCY GUARD DROPPED duplicate dual_next_intent packet (role already counted)', {
+        sid: socket.sessionId, pid: socket.participantId || null, role, current_count: state.nextIntent.size
+      });
+      return;
+    }
     state.nextIntent.add(role);
     const count = state.nextIntent.size;
+    __dbgBackend('H5', 'index.js:dual_next_intent', 'BE processed dual_next_intent (first-seen packet, counted)', {
+      sid: socket.sessionId,
+      pid: socket.participantId || null,
+      role,
+      had_role_before: false,
+      count_after_add: count,
+      ts: Date.now()
+    });
     io.to(socket.sessionId).emit('next_intent_update', { count, required: 2, selfRole: role });
     await logSocketEvent(socket, 'next_question_intent', {
       count,
@@ -590,10 +876,31 @@ io.on('connection', (socket) => {
   socket.on('advance_turn', async () => {
     if (!socket.sessionId) return;
     const role = await resolveSocketRole(socket);
-    if (!role) return;
+    if (!role) {
+      // #region debug-point H5:idempotency | H2:role-null-after-reconnect
+      __dbgBackend('H5', 'index.js:advance_turn', 'advance_turn ignored because resolveSocketRole returned null (reconnect race window)', {
+        socket_id: socket.id, sid: socket.sessionId, pid: socket.participantId || null
+      });
+      // #endregion
+      return;
+    }
     const state = getSessionState(socket.sessionId);
+    const hadRoleBefore = state.advanceIntent.has(role);
+    if (hadRoleBefore) {
+      __dbgBackend('H5', 'index.js:advance_turn:duplicate', 'IDEMPOTENCY GUARD DROPPED duplicate advance_turn packet (role already counted)', {
+        sid: socket.sessionId, pid: socket.participantId || null, role, current_count: state.advanceIntent.size
+      });
+      return;
+    }
     state.advanceIntent.add(role);
     const turnCount = state.advanceIntent.size;
+    __dbgBackend('H5', 'index.js:advance_turn', 'BE processed advance_turn (first-seen packet, counted)', {
+      sid: socket.sessionId,
+      pid: socket.participantId || null,
+      role,
+      had_role_before: false,
+      turn_count_after: turnCount
+    });
     io.to(socket.sessionId).emit('advance_intent_update', { count: turnCount, required: 2, selfRole: role });
     await logSocketEvent(socket, 'advance_turn_intent', {
       count: turnCount,
@@ -656,15 +963,14 @@ io.on('connection', (socket) => {
     const participantId = payload.participant_id || socket.participantId;
     if (!sessionId) return;
 
-    let role = socket.role;
-    if (!role && participantId) {
-      const r = await db.query(
-        `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
-        [sessionId, participantId]
-      );
-      role = r.rows[0]?.role;
-      if (role) socket.role = role;
-    }
+    // Cancel any in-flight context change first (workflow cleanup). Either party
+    // pressing Start Fresh means an unconfirmed context request should not follow
+    // them into a rejoin or a new session.
+    clearPendingContexts(sessionId);
+
+    // Resolve role via shared helper (falls back to DB lookup across reconnect windows
+    // where socket.role may still be null for ~100-300ms after connect).
+    const role = await resolveSocketRole(socket, participantId, sessionId);
     if (!role) return;
 
     const field = role === 'A' ? 'fresh_intent_a' : 'fresh_intent_b';
@@ -690,12 +996,20 @@ io.on('connection', (socket) => {
     });
 
     if (row?.fresh_intent_a && row?.fresh_intent_b) {
+      // Mutual Start Fresh: cancel any single-sided 20s timer (it was set on first press)
+      const state = getSessionState(sessionId);
+      if (state.singleFreshTimeoutTimer) {
+        try { clearTimeout(state.singleFreshTimeoutTimer); } catch (_) {}
+        state.singleFreshTimeoutTimer = null;
+      }
       await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [sessionId]);
       if (row.dual_group_id) {
         await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
         await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
       }
       if (row.table_token) clearSetupLockForTable(row.table_token);
+      clearSessionState(sessionId);
+      clearPendingContexts(sessionId);
       io.to(sessionId).emit('dual_group_terminated');
       await insertAnalyticsEvent({
         session_id: sessionId,
@@ -713,7 +1027,11 @@ io.on('connection', (socket) => {
       // on the partner device even though both phones were actively playing together.
       if (row?.mode === 'dual-phone' && row?.dual_status !== 'ended') {
         await db.query(`UPDATE sessions SET dual_status = 'waiting' WHERE session_id = $1`, [sessionId]);
-        io.to(sessionId).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone' });
+        io.to(sessionId).emit('session_updated', { dual_status: 'waiting', waiting_reason: 'partner_fresh', mode: 'dual-phone', seconds_remaining: 20 });
+        // Simplified flow: arm 20s auto-termination timer on server. If the remaining
+        // partner has not switched to Single Mode within 20 seconds, the session is
+        // terminated server-side and the remaining partner is bounced to QR scanner.
+        armSingleFreshTimeout(sessionId);
         await insertAnalyticsEvent({
           session_id: sessionId,
           participant_id: participantId,
@@ -723,7 +1041,8 @@ io.on('connection', (socket) => {
           event_data: {
             reason: 'start_fresh_single_side',
             waiting_partner: role === 'A' ? 'B' : 'A',
-            dual_status: 'waiting'
+            dual_status: 'waiting',
+            auto_timeout_seconds: 20
           }
         });
       }
@@ -803,26 +1122,43 @@ io.on('connection', (socket) => {
     const sessionId = socket.sessionId;
     if (!sessionId || !context) return;
 
-    let role = socket.role;
-    if (!role && socket.participantId) {
-      const r = await db.query(
-        `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
-        [sessionId, socket.participantId]
-      );
-      role = r.rows[0]?.role;
-      if (role) socket.role = role;
-    }
+    // FLOW #3 root cause fix: resolve role via helper instead of inline select so
+    // a reconnecting partner whose socket.role is null for ~100-300ms still writes
+    // to the correct A/B slot instead of a "null" slot, ensuring the mutual-match
+    // check (next.A === next.B) actually fires when both confirm same context.
+    const role = await resolveSocketRole(socket, socket.participantId, sessionId);
     if (!role) return;
 
-    const prev = pendingContexts.get(sessionId) || { A: null, B: null };
+    const prevRaw = pendingContexts.get(sessionId);
+    const prev = prevRaw ? { A: prevRaw.A, B: prevRaw.B } : { A: null, B: null };
     const next = { ...prev, [role]: context };
+
+    // Arm a 60s garbage-collection timer the first time an intent is stored for
+    // this session. Stale entries leak memory if partner backgrounds the app
+    // without confirming or cancelling. We clear the timer ourselves when the
+    // intent either commits (both agree) or fully cancels.
+    if (!prevRaw) {
+      next._cleanupTimer = setTimeout(() => {
+        const cur = pendingContexts.get(sessionId);
+        if (cur && cur._cleanupTimer) {
+          clearTimeout(cur._cleanupTimer);
+        }
+        pendingContexts.delete(sessionId);
+        io.to(sessionId).emit('context_switch_cancelled');
+      }, 60 * 1000);
+    } else if (prevRaw._cleanupTimer) {
+      next._cleanupTimer = prevRaw._cleanupTimer;
+    }
     pendingContexts.set(sessionId, next);
 
     socket.to(sessionId).emit('partner_context_intent', { context });
 
-    await logSocketEvent(socket, 'menu_context_reset', { context, count: Object.values(next).filter(Boolean).length, required: 2 });
+    const count = (next.A ? 1 : 0) + (next.B ? 1 : 0);
+    await logSocketEvent(socket, 'menu_context_reset', { context, count, required: 2 });
 
     if (next.A && next.B && next.A === next.B) {
+      // Clear the 60s timer we may have armed above before removing entry.
+      if (next._cleanupTimer) clearTimeout(next._cleanupTimer);
       pendingContexts.delete(sessionId);
       const updated = await db.query(
         `UPDATE sessions SET context = $1 WHERE session_id = $2 RETURNING restaurant_id, table_token, session_group_id, mode, dual_status`,
@@ -855,15 +1191,19 @@ io.on('connection', (socket) => {
 
   socket.on('cancel_context_switch', async () => {
     const sessionId = socket.sessionId;
-    const role = socket.role;
-    if (!sessionId || !role) return;
+    if (!sessionId) return;
+    const role = await resolveSocketRole(socket, socket.participantId, sessionId);
+    if (!role) return;
 
     const prev = pendingContexts.get(sessionId);
     if (!prev) return;
-    const next = { ...prev, [role]: null };
+    const next = { A: prev.A, B: prev.B };
+    next[role] = null;
     if (!next.A && !next.B) {
+      if (prev._cleanupTimer) clearTimeout(prev._cleanupTimer);
       pendingContexts.delete(sessionId);
     } else {
+      if (prev._cleanupTimer) next._cleanupTimer = prev._cleanupTimer;
       pendingContexts.set(sessionId, next);
     }
     socket.to(sessionId).emit('context_switch_cancelled');

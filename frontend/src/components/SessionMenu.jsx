@@ -10,7 +10,8 @@ import {
   setLastResetAt, 
   storeDualSession, 
   getDualSession, 
-  clearDualSession 
+  clearDualSession,
+  getRestaurantSlug
 } from '../utils/sessionStorage';
 import { SCANNER_ROUTE } from '../constants/routes';
 import useAnalytics from '../hooks/useAnalytics';
@@ -20,11 +21,46 @@ export default function SessionMenu({
   currentContext,
   currentMode,
   socketRef,
-  onSessionChange // Optional callback if parent needs to know
+  canSwitchToSingle,
+  onSwitchToSingle, // Optional: override handler for Switch to Single Mode. Used during Start Fresh countdown (20s window).
+  feedbackMessage,
+  setFeedbackMessage,
+  onSessionChange, // Optional callback if parent needs to know
+  localFreshInitiatedRef // Optional: synchronous ref set TRUE when *this* phone clicks Start Fresh. Skips Waiting UI on initiator.
 }) {
   const { fireSession, firePublic } = useAnalytics();
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [localFeedback, setLocalFeedback] = useState(null); // SessionMenu-only transient feedback (not shared with parent)
+
+  // Helper: show non-blocking transient feedback. Uses parent's setFeedbackMessage if
+  // provided (so it appears on the main session screen's banner, and survives menu
+  // close). If not provided, uses SessionMenu's own localFeedback + auto-dismiss.
+  const showFeedback = (message, { ttlMs = 5000 } = {}) => {
+    if (setFeedbackMessage) {
+      setFeedbackMessage(message);
+      if (ttlMs > 0) {
+        setTimeout(() => {
+          // Only clear if it still matches the exact message we set (avoid clobbering
+          // a newer/other message set in between).
+          setFeedbackMessage((prev) => (prev === message ? null : prev));
+        }, ttlMs);
+      }
+    } else {
+      setLocalFeedback(message);
+      if (ttlMs > 0) {
+        setTimeout(() => setLocalFeedback((prev) => (prev === message ? null : prev)), ttlMs);
+      }
+    }
+  };
+
+  // Simplified mode-switch rule: Dual → Single switch is ONLY allowed when the
+  // partner already pressed Start Fresh and left the dual session. Any other
+  // scenario (both still connected) requires Start Fresh first). If the caller did
+  // not pass canSwitchToSingle, allow switch only in fallback mode.
+  const canSwitchToSingleMode = typeof canSwitchToSingle === 'boolean'
+    ? canSwitchToSingle
+    : currentMode !== 'dual-phone';
 
   // Wrap open/close to log
   const openMenu = () => {
@@ -56,6 +92,13 @@ export default function SessionMenu({
   };
 
   const handleRestart = async () => {
+    // SET SYNCHRONOUS BEFORE ANY AWAIT / ANY NETWORK CALL.
+    // Skips all Waiting Partner UI writes and early-return guards in SessionGame
+    // so even if socket/poll writes dual_status=waiting during the 30ms redirect
+    // window, Phone A (this phone, initiator) NEVER renders the Waiting page.
+    if (localFreshInitiatedRef && typeof localFreshInitiatedRef === 'object') {
+      localFreshInitiatedRef.current = true;
+    }
     if (!tableToken) {
         console.error("[Menu] handleRestart called but tableToken is missing");
         return;
@@ -100,10 +143,24 @@ export default function SessionMenu({
            }
        }
        
-       // Also emit socket for realtime UI update (if connected)
-       if (socketRef?.current?.connected) {
-           console.log("[Menu] Sending Fresh Intent via Socket");
-           socketRef.current.emit('fresh_intent', { session_id: current.sessionId, participant_id: current.participantId });
+       // Also emit socket for realtime UI update (if connected). Use emit-with-ACK
+       // so Firefox does NOT silently drop this packet when page unloads 100ms later.
+       if (socketRef?.current?.connected && current?.sessionId && current?.participantId) {
+           console.log("[Menu] Sending Fresh Intent via Socket (with ACK)");
+           try {
+             await new Promise((resolve) => {
+               const done = () => resolve();
+               const fallback = setTimeout(done, 350);
+               try {
+                 socketRef.current.emit('fresh_intent', {
+                   session_id: current.sessionId,
+                   participant_id: current.participantId
+                 }, () => { clearTimeout(fallback); done(); });
+               } catch (e) { clearTimeout(fallback); done(); }
+             });
+           } catch (e) {
+             console.warn('[Menu] fresh_intent socket emit fallback (non-fatal):', e);
+           }
        }
     } else {
       // Single mode: session is permanently terminated
@@ -152,13 +209,17 @@ export default function SessionMenu({
       ids: { session_id: current?.sessionId, participant_id: current?.participantId }
     });
     
-    // Redirect to scanner with slight delay to ensure socket emit
+    // Redirect to scanner with: (a) socket.disconnect(false) flushes pending
+    // buffered writes BEFORE closing transport (Firefox drops them with default
+    // disconnect(true)), (b) window.location.replace so no stale back-button
+    // history with old dual-session state, (c) wrapped in setTimeout to let
+    // React setState (setLastResetAt) commit before unload.
     setTimeout(() => {
         if (socketRef?.current) {
-            socketRef.current.disconnect();
+            try { socketRef.current.disconnect(false); } catch (e) { console.warn(e); }
         }
-        window.location.href = SCANNER_ROUTE;
-    }, 100);
+        try { window.location.replace(SCANNER_ROUTE); } catch (e) { window.location.href = SCANNER_ROUTE; }
+    }, 30);
   };
 
   const handleUpgradeToDual = async () => {
@@ -201,6 +262,50 @@ export default function SessionMenu({
 
   const handleQuickSwitch = async (updates = {}) => {
     if (!tableToken) return;
+
+    const _newContext = updates.context || currentContext;
+    const _newMode = updates.mode || currentMode;
+
+    // Simplified flow rule #1: only allow Dual → Single switch when the partner has
+    // already opted Start Fresh (they are out of the session). Otherwise show a
+    // simple non-blocking inline feedback instead of proceeding into the broken path.
+    if (currentMode === 'dual-phone' && _newMode === 'single-phone' && !canSwitchToSingleMode) {
+      const stored = getStoredParticipant();
+      fireSession({
+        event_type: 'menu_mode_blocked',
+        event_data: {
+          reason: 'partner_not_start_fresh',
+          from_mode: currentMode,
+          to_mode: _newMode,
+          table_token: tableToken
+        },
+        ids: {
+          session_id: stored?.sessionId || null,
+          participant_id: stored?.participantId || null
+        }
+      });
+      showFeedback('Partner still connected. Press Start Fresh first, then switch to Single Mode.');
+      return;
+    }
+
+    // During the 20s Start Fresh countdown window, the modal Switch to Single
+    // button takes priority (passes onSwitchToSingle callback from SessionGame
+    // countdown) so it reuses handleQuickSwitch with the correct ordering already
+    // fixed earlier (notify / clear / disconnect old socket → create session).
+    if (onSwitchToSingle && currentMode === 'dual-phone' && _newMode === 'single-phone') {
+      try {
+        setLoading(true);
+        closeMenu();
+        await onSwitchToSingle(_newContext);
+        return;
+      } catch (err) {
+        console.error('Switch to single failed:', err);
+        setLoading(false);
+        showFeedback('Failed to switch to Single Mode. Please try again.');
+        return;
+      }
+    }
+
     
     const current = getStoredParticipant();
     const newContext = updates.context || currentContext;
@@ -286,8 +391,16 @@ export default function SessionMenu({
                ids: { session_id: current?.sessionId, participant_id: current?.participantId }
              });
              
-             // Emit intent
-             socketRef.current.emit('context_switch_intent', { context: newContext });
+             // Emit intent with ACK so Firefox never drops this packet mid-unload.
+             try {
+               await new Promise((resolve) => {
+                 const done = () => resolve();
+                 const fallback = setTimeout(done, 400);
+                 try {
+                   socketRef.current.emit('context_switch_intent', { context: newContext }, () => { clearTimeout(fallback); done(); });
+                 } catch (e) { clearTimeout(fallback); done(); }
+               });
+             } catch (e) { console.warn('[Menu] context_switch_intent emit fallback (non-fatal):', e); }
              
              if (onSessionChange) {
                  // Pass the intent up so SessionGame can set pendingSwitchContext
@@ -325,19 +438,53 @@ export default function SessionMenu({
          if (current.sessionId && current.participantToken) {
              storeDualSession(tableToken, current.sessionId, current.participantId, current.participantToken);
          }
-         if (socketRef?.current?.connected && newMode === 'single-phone') {
-             console.log('[Menu] Notifying partner of mode switch to single-phone');
-             socketRef.current.emit('partner_switched_mode', { newMode });
-             await new Promise(r => setTimeout(r, 100));
+         if (newMode === 'single-phone') {
+             // Gracefully leave the ongoing dual session BEFORE asking for a new single
+             // session. If we don't do this in this exact order:
+             //   1) createSession below POSTs to /api/sessions with the OLD participant token
+             //      still in storage → resolveSession sees an active (non-disconnected) role
+             //      row for this device in the dual session → returns action:'resume' →
+             //      destructuring `{ data }` receives no session object → catch fires the
+             //      "Failed to start new session" alert (exactly the bug in the screenshot).
+             //   2) Backend's active-slot count still includes this device as an "active"
+             //      participant in the dual session until socket disconnect + timeout.
+             // Sequence (all before createSession POST):
+             //   a) emit partner_switched_mode + 100ms settle (UI on partner shows Waiting)
+             //   b) clearStoredParticipant() — drop the OLD participant token so the next
+             //      /api/sessions POST creates a brand-new single-participant session.
+             //   c) socketRef.current.disconnect() — triggers backend socket.on('disconnect')
+             //      which does UPDATE session_participants SET disconnected_at = NOW() for
+             //      the OLD role row, so DB active-count correctly drops to 1 partner.
+             // We KEEP the storeDualSession() backup we just wrote so Menu→Dual later can
+             // resume this same ongoing dual session (per rules: switching to single does
+             // NOT destroy the ongoing dual session — not until mutual Start Fresh).
+             if (socketRef?.current?.connected) {
+                 console.log('[Menu] Notifying partner of mode switch to single-phone');
+                 try {
+                   await new Promise((resolve) => {
+                     const done = () => resolve();
+                     const fallback = setTimeout(done, 400);
+                     try {
+                       socketRef.current.emit('partner_switched_mode', { newMode }, () => { clearTimeout(fallback); done(); });
+                     } catch (e) { clearTimeout(fallback); done(); }
+                   });
+                 } catch (e) { console.warn('[Menu] partner_switched_mode emit fallback (non-fatal):', e); }
+             }
+             clearStoredParticipant();
+             if (socketRef?.current) {
+                 try { socketRef.current.disconnect(false); } catch (e) { console.warn(e); }
+             }
          }
       }
 
       // 4. Standard Session Creation (New Session)
       // For switching modes or starting fresh context in Single Mode
+      const restaurantSlug = getRestaurantSlug();
       const { data } = await createSession({
         table_token: tableToken,
         context: newContext,
-        mode: newMode
+        mode: newMode,
+        restaurant_slug: restaurantSlug || undefined
       });
 
       if (updates.context && updates.context !== currentContext) {
@@ -376,13 +523,18 @@ export default function SessionMenu({
       }
 
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
-      if (socketRef?.current) socketRef.current.disconnect();
+      if (socketRef?.current) {
+        try { socketRef.current.disconnect(false); } catch (e) { console.warn(e); }
+      }
       
-      window.location.href = `/session/${data.session_id}/game`;
+      setTimeout(() => {
+        try { window.location.replace(`/session/${data.session_id}/game`); }
+        catch (e) { window.location.href = `/session/${data.session_id}/game`; }
+      }, 10);
     } catch (err) {
       console.error("Failed to switch session:", err);
       setLoading(false);
-      alert("Failed to start new session. Please try again.");
+      showFeedback("Failed to start new session. Please try again.");
     }
   };
 
@@ -460,6 +612,20 @@ export default function SessionMenu({
                  ) : (
                    <div className="px-6 pb-6 space-y-7 relative z-10 text-left bg-[#F3EDE1]">
 
+                     {/* Transient non-blocking feedback banner (replaces native alert, which blocks
+                         Firefox's main thread → countdown timer freezes and redirect never fires
+                         until user dismisses alert). */}
+                     {localFeedback && (
+                       <div className="mb-2 px-4 py-3 rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] shadow-[inset_0_2px_6px_rgba(53,51,46,0.06)]">
+                         <p className="text-sm font-medium text-[#35332E] leading-snug">{localFeedback}</p>
+                       </div>
+                     )}
+                     {feedbackMessage && !localFeedback && (
+                       <div className="mb-2 px-4 py-3 rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] shadow-[inset_0_2px_6px_rgba(53,51,46,0.06)]">
+                         <p className="text-sm font-medium text-[#35332E] leading-snug">{feedbackMessage}</p>
+                       </div>
+                     )}
+
                      {/* Section A: QUESTION TYPE */}
                      <div>
                        <p className="text-xs font-semibold text-[#6E6A60] uppercase tracking-[0.18em] mb-3">Question Type</p>
@@ -492,10 +658,13 @@ export default function SessionMenu({
                            { id: 'dual-phone', label: 'Dual-Phone Mode' }
                          ].map((m) => {
                            const isActive = currentMode === m.id;
+                           const disabledSingle = m.id === 'single-phone' && !canSwitchToSingleMode;
+                           const disabled = m.id === 'single-phone' && disabledSingle;
                            return (
                              <button
                                key={m.id}
                                onClick={() => {
+                                 if (disabled) return;
                                  if (m.id === 'dual-phone' && currentMode === 'single-phone') {
                                    const dualData = getDualSession(tableToken);
                                    if (dualData && dualData.sessionId) {
@@ -509,10 +678,13 @@ export default function SessionMenu({
                                    handleQuickSwitch({ mode: m.id });
                                  }
                                }}
+                               disabled={disabled}
                                className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all ${
-                                 isActive
-                                   ? 'bg-[#35332E] text-[#F3EDE1] border-0'
-                                   : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
+                                 disabled
+                                   ? 'bg-[#F3EDE1] text-[#A8A297] border border-[#DCD3C2] opacity-70 cursor-not-allowed'
+                                   : isActive
+                                     ? 'bg-[#35332E] text-[#F3EDE1] border-0'
+                                     : 'bg-transparent text-[#35332E] border border-[#DCD3C2] hover:border-[#35332E]/40 hover:bg-[#FBF7EF]/60'
                                }`}
                              >
                                {m.label}

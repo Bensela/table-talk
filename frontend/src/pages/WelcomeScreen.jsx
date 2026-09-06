@@ -2,11 +2,64 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../components/ui/Button';
-import { resolveSession, joinDualSession, publicHandshake } from '../api';
+import { resolveSession, joinDualSession, publicHandshake, requestTempGeoAccess, clearTempGeoAccessToken, TEMP_GEO_EXPIRED_EVENT } from '../api';
 import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 import { requestCurrentPositionWithFallback, requestHighAccuracyPosition, readGeolocationPermissionState } from '../utils/geolocation';
 import useAnalytics from '../hooks/useAnalytics';
+
+/**
+ * Small inline banner that shows "Temporary access valid until X:XX AM"
+ * with a live countdown. Once the expire time is reached, it calls onExpire
+ * so the parent can reset state and bounce the user back to the geo gate.
+ */
+function TempAccessBanner({ banner, onExpire }) {
+  const [remaining, setRemaining] = useState(() => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    return Math.max(0, Number(banner.expires_at_unix || 0) - nowSec);
+  });
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const left = Math.max(0, Number(banner.expires_at_unix || 0) - nowSec);
+      if (!cancelled) setRemaining(left);
+      if (left <= 0 && typeof onExpire === 'function' && !cancelled) {
+        cancelled = true;
+        try { onExpire(); } catch (_) { /* ignore */ }
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [banner.expires_at_unix, onExpire]);
+
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  const expiresAtLocal = banner.expires_at_unix
+    ? new Date(Number(banner.expires_at_unix) * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null;
+
+  return (
+    <div className="w-full inline-flex items-center justify-between gap-3 rounded-2xl border border-[#926B1A]/30 bg-[#FBF7EF] px-4 py-3 text-left">
+      <div className="min-w-0">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-[#926B1A] font-semibold">
+          Temporary Access
+        </p>
+        <p className="text-[13px] text-[#35332E] truncate">
+          {expiresAtLocal ? `Valid until ${expiresAtLocal}` : 'Limited-time access window'}
+        </p>
+      </div>
+      <div className="shrink-0 text-[#926B1A] font-mono tabular-nums text-sm font-semibold">
+        {pad(minutes)}:{pad(seconds)}
+      </div>
+    </div>
+  );
+}
 
 export default function WelcomeScreen() {
   const { tableToken, restaurantSlug } = useParams();
@@ -25,6 +78,9 @@ export default function WelcomeScreen() {
   const [geofenceInfo, setGeofenceInfo] = useState(null);
   const [lastLocationAccuracyM, setLastLocationAccuracyM] = useState(null);
   const [initialValidationPending, setInitialValidationPending] = useState(true);
+  const [geoPermissionState, setGeoPermissionState] = useState(null); // 'granted' | 'prompt' | 'denied' | 'unsupported'
+  const [tempAccessLoading, setTempAccessLoading] = useState(false);
+  const [tempAccessBanner, setTempAccessBanner] = useState(null); // { expires_at_unix, expires_at_iso } | null
   const setupCompletedRef = useRef(false);
   const validatedRef = useRef(false);
   const validationStartedRef = useRef(false);
@@ -223,6 +279,40 @@ export default function WelcomeScreen() {
     setChecking(false);
     setSetupStatus('available');
     setStatus(null);
+    setTempAccessBanner(null);
+    // Reset geo permission state to unknown on QR change; the validation
+    // effect will re-read it via readGeolocationPermissionState on run.
+    setGeoPermissionState(null);
+  }, [restaurantSlug, tableToken]);
+
+  // ── Geo permission warm-read + temp-access expiry redirect ────────────────
+  useEffect(() => {
+    let cancelled = false;
+    readGeolocationPermissionState().then((s) => {
+      if (!cancelled) setGeoPermissionState(s || 'prompt');
+    }).catch(() => { if (!cancelled) setGeoPermissionState('unsupported'); });
+
+    function onTempGeoExpired() {
+      clearTempGeoAccessToken();
+      setTempAccessBanner(null);
+      // If user is still on WelcomeScreen, reset handshake so they see
+      // the geofence denied screen again instead of a stale "Continue".
+      if (validatedRef.current) {
+        validatedRef.current = false;
+        validationStartedRef.current = false;
+        setSubscriptionError('geofence_denied');
+        setInitialValidationPending(false);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
+    }
+    return () => {
+      cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
+      }
+    };
   }, [restaurantSlug, tableToken]);
 
   // Save the resolved restaurant slug to session state on mount / update
@@ -294,6 +384,15 @@ export default function WelcomeScreen() {
           location: locationPayload,
           geolocationStatus
         });
+        // If handshake carries temp-access metadata (user had a temp token already
+        // stored from a prior tab session and got scoped-access granted), surface
+        // the banner so the expiry is visible.
+        if (result.data?.geofence?.temp_access_granted === true) {
+          setTempAccessBanner({
+            expires_at_unix: result.data.geofence.temp_access_expires_at_unix || null,
+            expires_at_iso: result.data.geofence.temp_access_expires_at_iso || null
+          });
+        }
         // eslint-disable-next-line no-unused-vars
         const _h = result;
         // Valid — proceed normally
@@ -302,6 +401,21 @@ export default function WelcomeScreen() {
         setInitialValidationPending(false);
       } catch (err) {
         if (err.response?.status === 403) {
+          if (err.response.data && err.response.data.geofence_code === 'LOCATION_PERMISSION_DENIED') {
+            setGeoPermissionState('denied');
+            setGeofenceInfo({
+              restaurant_name: err.response.data.restaurant_name || '',
+              geolocation_status: 'denied',
+              action_required: err.response.data.action_required || 'enable_location_permission',
+              distance_m: err.response.data.distance_m,
+              configured_radius_m: err.response.data.configured_radius_m,
+              effective_radius_m: err.response.data.effective_radius_m,
+              temp_access_possible: false
+            });
+            setSubscriptionError('geofence_denied');
+            setInitialValidationPending(false);
+            return;
+          }
           if (err.response.data && err.response.data.geofence_code === 'OUTSIDE_RADIUS') {
             // Auto-recovery: when backend detects a wildly-off distance it
             // sets suggest_high_accuracy=true → do one GPS high-accuracy
@@ -337,7 +451,10 @@ export default function WelcomeScreen() {
                 suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
                 effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
                 radius_overridden: err.response.data.radius_overridden === true,
-                gps_upgrade_failed: true
+                gps_upgrade_failed: true,
+                geolocation_status: err.response.data.geolocation_status || null,
+                requires_geolocation: err.response.data.requires_geolocation === true,
+                temp_access_possible: err.response.data.temp_access_possible === true
               });
               setSubscriptionError('geofence_denied');
               firePublic({
@@ -360,7 +477,10 @@ export default function WelcomeScreen() {
               restaurant_name: err.response.data.restaurant_name || '',
               suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
               effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
-              radius_overridden: err.response.data.radius_overridden === true
+              radius_overridden: err.response.data.radius_overridden === true,
+              geolocation_status: err.response.data.geolocation_status || null,
+              requires_geolocation: err.response.data.requires_geolocation === true,
+              temp_access_possible: err.response.data.temp_access_possible === true
             });
             setSubscriptionError('geofence_denied');
             firePublic({
@@ -457,7 +577,25 @@ export default function WelcomeScreen() {
             restaurant_name: err.response.data.restaurant_name || '',
             suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
             effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
-            radius_overridden: err.response.data.radius_overridden === true
+            radius_overridden: err.response.data.radius_overridden === true,
+            geolocation_status: err.response.data.geolocation_status || null,
+            requires_geolocation: err.response.data.requires_geolocation === true,
+            temp_access_possible: err.response.data.temp_access_possible === true
+          });
+          setSubscriptionError('geofence_denied');
+          setInitialValidationPending(false);
+          return;
+        }
+        if (err.response.data && err.response.data.geofence_code === 'LOCATION_PERMISSION_DENIED') {
+          setGeoPermissionState('denied');
+          setGeofenceInfo({
+            restaurant_name: err.response.data.restaurant_name || '',
+            geolocation_status: 'denied',
+            action_required: err.response.data.action_required || 'enable_location_permission',
+            distance_m: err.response.data.distance_m,
+            configured_radius_m: err.response.data.configured_radius_m,
+            effective_radius_m: err.response.data.effective_radius_m,
+            temp_access_possible: false
           });
           setSubscriptionError('geofence_denied');
           setInitialValidationPending(false);
@@ -470,6 +608,169 @@ export default function WelcomeScreen() {
       setInitialValidationPending(false);
     }
   };
+
+  /**
+   * Request a 5-minute temporary geolocation access window. Only available
+   * when geolocation permission is NOT permanently denied (the backend
+   * enforces this too as a second gate). On success, retries the handshake
+   * so the user can proceed to the Welcome screen.
+   */
+  async function requestTemporaryGeoAccess() {
+    setTempAccessLoading(true);
+    setStatus('Requesting temporary access...');
+    firePublic({
+      event_type: 'welcome_temp_geo_access_request',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken
+      }
+    });
+
+    // Get a fresh permission/coords reading so the backend can decide eligibility.
+    let locationPayload = null;
+    let geolocationStatus = 'prompt';
+    try {
+      const [permission, positionResult] = await Promise.all([
+        readGeolocationPermissionState(),
+        requestCurrentPositionWithFallback({
+          acceptIfWithinMeters: 1000,
+          dedupeKey: `welcome-tempgeo:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}`
+        })
+      ]);
+      setGeoPermissionState(permission || (positionResult.status === 'denied' ? 'denied' : 'prompt'));
+      if (positionResult.ok && positionResult.coords) {
+        locationPayload = {
+          latitude: positionResult.coords.latitude,
+          longitude: positionResult.coords.longitude,
+          accuracy: positionResult.coords.accuracy ?? null
+        };
+        setLastLocationAccuracyM(positionResult.coords.accuracy ?? null);
+        geolocationStatus = 'granted';
+      } else {
+        geolocationStatus = permission || positionResult.status || 'prompt';
+      }
+    } catch (_) {
+      geolocationStatus = 'unsupported';
+    }
+
+    const result = await requestTempGeoAccess(activeRestaurantSlug, tableToken, {
+      location: locationPayload,
+      geolocationStatus
+    });
+
+    setTempAccessLoading(false);
+    setStatus(null);
+
+    if (result.temp_access_granted === true && result.temp_access_token) {
+      firePublic({
+        event_type: 'welcome_temp_geo_access_granted',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          ttl_seconds: result.ttl_seconds || 300,
+          expires_at_unix: result.expires_at_unix || null
+        }
+      });
+      setTempAccessBanner({
+        expires_at_unix: result.expires_at_unix || null,
+        expires_at_iso: result.expires_at_iso || null
+      });
+      // Retry handshake — now the temp token is in sessionStorage and the
+      // axios interceptor attaches it automatically.
+      try {
+        const handshakeRes = await publicHandshake(activeRestaurantSlug, tableToken, {
+          location: locationPayload,
+          geolocationStatus
+        });
+        if (handshakeRes.data?.geofence) {
+          const gf = handshakeRes.data.geofence;
+          if (gf.temp_access_granted) {
+            setTempAccessBanner({
+              expires_at_unix: gf.temp_access_expires_at_unix || result.expires_at_unix || null,
+              expires_at_iso: gf.temp_access_expires_at_iso || result.expires_at_iso || null
+            });
+          }
+        }
+        validatedRef.current = true;
+        setGeofenceInfo(null);
+        setSubscriptionError(null);
+        setInitialValidationPending(false);
+      } catch (err2) {
+        // If handshake STILL fails, surface the new error
+        if (err2.response?.data?.geofence_code === 'LOCATION_PERMISSION_DENIED') {
+          setGeoPermissionState('denied');
+        }
+        if (err2.response?.status === 403 && err2.response.data && err2.response.data.geofence_code === 'OUTSIDE_RADIUS') {
+          setGeofenceInfo({
+            distance_m: err2.response.data.distance_m,
+            configured_radius_m: err2.response.data.configured_radius_m,
+            restaurant_name: err2.response.data.restaurant_name || '',
+            suggest_high_accuracy: err2.response.data.suggest_high_accuracy === true,
+            effective_radius_m: err2.response.data.effective_radius_m || err2.response.data.configured_radius_m,
+            radius_overridden: err2.response.data.radius_overridden === true,
+            geolocation_status: err2.response.data.geolocation_status || null,
+            temp_access_possible: err2.response.data.temp_access_possible === true
+          });
+        }
+        setSubscriptionError('geofence_denied');
+      }
+      return;
+    }
+
+    // Denied path (geolocation_status === 'denied' from the endpoint)
+    if (result.geolocation_status === 'denied' || result.action_required === 'enable_location_permission') {
+      setGeoPermissionState('denied');
+      setGeofenceInfo({
+        restaurant_name: geofenceInfo?.restaurant_name || activeRestaurantSlug || '',
+        geolocation_status: 'denied',
+        action_required: result.action_required || 'enable_location_permission',
+        temp_access_possible: false,
+        error: result.error || null
+      });
+      setSubscriptionError('geofence_denied');
+      firePublic({
+        event_type: 'welcome_temp_geo_access_denied',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken,
+          reason: 'location_permission_denied'
+        }
+      });
+      return;
+    }
+
+    // Any other error: keep user on geofence_denied with the error message
+    // preserved in geofenceInfo so they can see why temp access was denied
+    // (defense-in-depth: the relaxed backend eligibility should make temp
+    // access succeed for the stuck-outside case, but if any other unexpected
+    // denial occurs we surface it visibly instead of silently no-op'ing).
+    if (result.error || result.geofence) {
+      setGeofenceInfo((prev) => ({
+        ...(prev || {
+          restaurant_name: geofenceInfo?.restaurant_name || activeRestaurantSlug || '',
+          distance_m: geofenceInfo?.distance_m ?? null,
+          configured_radius_m: geofenceInfo?.configured_radius_m ?? null,
+          effective_radius_m: geofenceInfo?.effective_radius_m ?? null,
+          radius_overridden: geofenceInfo?.radius_overridden === true,
+          temp_access_possible: true
+        }),
+        temp_access_last_error: result.error || null,
+        distance_m: result.geofence?.distance_m ?? geofenceInfo?.distance_m ?? null,
+        configured_radius_m: result.geofence?.configured_radius_m ?? geofenceInfo?.configured_radius_m ?? null,
+        effective_radius_m: result.geofence?.effective_radius_m ?? geofenceInfo?.effective_radius_m ?? null,
+        requires_geolocation: result.geofence?.requires_geolocation === true,
+        inside: result.geofence?.inside === true
+      }));
+    }
+    firePublic({
+      event_type: 'welcome_temp_geo_access_denied',
+      event_data: {
+        restaurant_slug: activeRestaurantSlug,
+        table_token: tableToken,
+        error: result.error || 'unknown'
+      }
+    });
+  }
 
   const contextPath = `/r/${activeRestaurantSlug}/t/${tableToken}/context`;
 
@@ -755,8 +1056,32 @@ export default function WelcomeScreen() {
     );
   }
 
-  // Geofence Denied: user is outside the restaurant's configured radius
+  // Geofence Denied: split into two UX paths —
+  //  A) geolocation permission permanently DENIED → "Enable Location" only (no bypass).
+  //  B) GPS unavailable / permission prompt / coarse coords → allow 5-minute temp access.
   if (subscriptionError === 'geofence_denied') {
+    const geoStatusDenied =
+      geofenceInfo?.geolocation_status === 'denied' ||
+      geoPermissionState === 'denied' ||
+      geofenceInfo?.action_required === 'enable_location_permission';
+    // Show the NEW temporary-access CTA when:
+    //   - permission is NOT permanently denied, AND
+    //   - either the restaurant has no registered coords / phone has no GPS fix
+    //     (requires_geolocation=true), OR permission still prompt/unsupported.
+    // The LEGACY "low accuracy device" bypass is preserved for the specific
+    // case where an actual GPS coarse fix exists and placed the device >2km
+    // away (real OUTSIDE_RADIUS reading, not a permission/no-fix issue).
+    const allowTempAccessButton =
+      !geoStatusDenied &&
+      (
+        geofenceInfo?.requires_geolocation === true ||
+        geofenceInfo?.temp_access_possible === true ||
+        (geoPermissionState && geoPermissionState !== 'granted') ||
+        geofenceInfo?.geolocation_status === 'prompt' ||
+        geofenceInfo?.geolocation_status === 'unsupported' ||
+        lastLocationAccuracyM == null
+      );
+
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
         <motion.div
@@ -769,16 +1094,38 @@ export default function WelcomeScreen() {
             📍
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-[#35332E] mb-4 leading-tight">
-            Please visit us in person
+            {geoStatusDenied ? 'Location permission is required' : 'Please visit us in person'}
           </h1>
           <p className="text-[#6E6A60] text-base leading-relaxed mb-4">
-            This table works only at{' '}
-            <span className="text-[#35332E] font-semibold">
-              {geofenceInfo?.restaurant_name || 'the restaurant'}
-            </span>
-            .
+            {geoStatusDenied ? (
+              <>
+                This table works only at{' '}
+                <span className="text-[#35332E] font-semibold">
+                  {geofenceInfo?.restaurant_name || 'the restaurant'}
+                </span>
+                . Please allow location access for this site in your browser settings.
+              </>
+            ) : (
+              <>
+                This table works only at{' '}
+                <span className="text-[#35332E] font-semibold">
+                  {geofenceInfo?.restaurant_name || 'the restaurant'}
+                </span>
+                .
+              </>
+            )}
           </p>
-          {geofenceInfo?.distance_m != null && (
+          {geoStatusDenied && (
+            <div className="rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] text-sm text-left text-[#35332E] p-4 mb-6">
+              <p className="text-[#6E6A60] text-xs uppercase tracking-[0.18em] mb-2">Enable Location</p>
+              <ol className="space-y-1 text-[13px] leading-relaxed list-decimal list-inside">
+                <li>Tap the lock or info icon in your browser address bar.</li>
+                <li>Find &ldquo;Location&rdquo; and choose &ldquo;Allow&rdquo;.</li>
+                <li>Tap &ldquo;Check again&rdquo; below once enabled.</li>
+              </ol>
+            </div>
+          )}
+          {!geoStatusDenied && geofenceInfo?.distance_m != null && (
             <div className="rounded-2xl bg-[#FBF7EF] border border-[#DCD3C2] text-sm text-[#35332E] p-4 mb-6">
               <div className="flex items-center justify-between">
                 <span className="text-[#6E6A60] text-xs uppercase tracking-[0.18em]">You are</span>
@@ -806,7 +1153,25 @@ export default function WelcomeScreen() {
             <Button onClick={() => navigate('/')} variant="outline" fullWidth className="border-[#35332E]/20 text-[#35332E] hover:bg-[#35332E]/5">
               Scan Again / Home
             </Button>
+            {allowTempAccessButton && (
+              <Button
+                onClick={requestTemporaryGeoAccess}
+                disabled={tempAccessLoading || checking}
+                variant="ghost"
+                fullWidth
+                className="border border-[#926B1A]/30 text-[#926B1A] hover:bg-[#926B1A]/10 hover:text-[#825e17]"
+              >
+                {tempAccessLoading ? 'Requesting temporary access...' : 'Temporarily Use (5 minutes)'}
+              </Button>
+            )}
             {(() => {
+              // Legacy low-accuracy bypass: only visible when an actual GPS
+              // coarse fix placed the user far away (not a permission/no-GPS
+              // issue). This keeps the pre-existing path for users with
+              // genuinely broken GPS chips while the temp-access path above
+              // becomes the canonical "no GPS/permission prompt" flow.
+              if (geoStatusDenied) return null;
+              if (allowTempAccessButton) return null;
               const suggestHigh = geofenceInfo?.suggest_high_accuracy === true;
               const gpsUpgradeFailed = geofenceInfo?.gps_upgrade_failed === true || gpsUpgradeAttemptedRef.current === true;
               const badAccuracy = lastLocationAccuracyM == null ? false : lastLocationAccuracyM > 200;
@@ -869,11 +1234,9 @@ export default function WelcomeScreen() {
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
         <div className="relative z-10">
-          <div className="mb-8 relative mx-auto w-24 h-24">
-            <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center animate-pulse border border-[#35332E]/10">
-               <span className="text-4xl">⏳</span>
-            </div>
-            <div className="absolute top-0 left-0 w-24 h-24 bg-[#35332E] rounded-full opacity-10 animate-ping"></div>
+          <div className="w-20 h-20 bg-[#FBF7EF] rounded-full flex items-center justify-center mb-6 shadow-[inset_0_2px_6px_rgba(53,51,46,0.08)] relative mx-auto">
+            <div className="absolute inset-0 border-4 border-[#35332E] rounded-full border-t-transparent animate-spin opacity-60"></div>
+            <img src="/catalyst-logo.png" alt="" className="w-10 h-10 object-contain relative z-10" draggable={false} />
           </div>
 
           <h2 className="text-2xl font-bold text-[#35332E] mb-4 tracking-tight">
@@ -910,8 +1273,11 @@ export default function WelcomeScreen() {
     const spinnerText = status || 'Checking restaurant & location…';
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6">
-        <div className="animate-pulse text-center">
-          <div className="w-16 h-16 border-4 border-[#35332E] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+        <div className="text-center">
+          <div className="w-20 h-20 bg-[#FBF7EF] rounded-full flex items-center justify-center mb-6 shadow-[inset_0_2px_6px_rgba(53,51,46,0.08)] relative mx-auto">
+            <div className="absolute inset-0 border-4 border-[#35332E] rounded-full border-t-transparent animate-spin opacity-60"></div>
+            <img src="/catalyst-logo.png" alt="" className="w-10 h-10 object-contain relative z-10" draggable={false} />
+          </div>
           <p className="text-[#6E6A60] font-medium">{spinnerText}</p>
         </div>
       </div>
@@ -986,6 +1352,25 @@ export default function WelcomeScreen() {
         transition={{ duration: 0.7, ease: "easeOut" }}
         className="max-w-md w-full text-center relative z-10"
       >
+        {/* Temporary Geolocation Access Banner */}
+        <AnimatePresence>
+          {tempAccessBanner?.expires_at_unix && (
+            <motion.div
+              initial={{ opacity: 0, y: -8, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: 'auto' }}
+              exit={{ opacity: 0, y: -8, height: 0 }}
+              transition={{ duration: 0.3 }}
+              className="mb-6 overflow-hidden"
+            >
+              <TempAccessBanner banner={tempAccessBanner} onExpire={() => {
+                clearTempGeoAccessToken();
+                setTempAccessBanner(null);
+                setSubscriptionError('geofence_denied');
+              }} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Droplet Logo */}
         <div className="mb-12">
           <motion.div

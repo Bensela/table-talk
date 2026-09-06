@@ -19,6 +19,62 @@ export function buildApiUrl(path = '') {
 }
 
 // -----------------------------------------------------------------------------
+// Temporary geolocation access token — stored per-tab, never persisted
+// -----------------------------------------------------------------------------
+const TEMP_GEO_TOKEN_KEY = 'temp_access_token';
+
+export function getTempGeoAccessToken() {
+  try {
+    return sessionStorage.getItem(TEMP_GEO_TOKEN_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setTempGeoAccessToken(token) {
+  try {
+    if (token && typeof token === 'string') {
+      sessionStorage.setItem(TEMP_GEO_TOKEN_KEY, token);
+    } else {
+      sessionStorage.removeItem(TEMP_GEO_TOKEN_KEY);
+    }
+  } catch { /* ignore */ }
+}
+
+export function clearTempGeoAccessToken() {
+  try {
+    sessionStorage.removeItem(TEMP_GEO_TOKEN_KEY);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Event fired when the temporary geolocation access window expires.
+ * Any page can listen for this to show a banner or redirect.
+ */
+export const TEMP_GEO_EXPIRED_EVENT = 'temp-geo:expired';
+
+function emitTempGeoExpired(detail = {}) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(TEMP_GEO_EXPIRED_EVENT, { detail }));
+  } catch { /* ignore */ }
+}
+
+// -----------------------------------------------------------------------------
+// Classify TEMP_GEO_EXPIRED (HTTP 410 / geofence_code) distinctly from admin auth
+// -----------------------------------------------------------------------------
+function classifyTempGeoError({ status, data }) {
+  const body = data && typeof data === 'object' ? data : null;
+  if (status === 410 && body && body.geofence_code === 'TEMP_ACCESS_EXPIRED') {
+    return 'TEMP_ACCESS_EXPIRED';
+  }
+  if (body && body.geofence_code === 'TEMP_ACCESS_INVALID') {
+    return 'TEMP_ACCESS_INVALID';
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------------------
 // Auth error codes (must match TOKEN_ERRORS in backend authMiddleware.js)
 // -----------------------------------------------------------------------------
 export const TOKEN_ERROR_CODES = new Set([
@@ -96,13 +152,39 @@ export function getAdminTokenInfo(tokenOrFallback) {
 }
 
 // -----------------------------------------------------------------------------
-// Attach admin bearer token if present — used for fetch + axios both
+// Attach admin bearer token + temp-geo token if present — used for fetch + axios both
+//
+// requestPathOrUrl: optional. If the target path starts with /admin (after
+// stripping the apiBaseUrl prefix), temp-geo tokens are NEVER attached because
+// temp access only makes sense for QR landing / welcome screen public routes.
+// This eliminates a latent 401 redirect loop when a user scans a QR (storing
+// temp_access_token in sessionStorage) then navigates to /admin without an
+// explicit admin Bearer token yet (e.g. login form initial load).
 // -----------------------------------------------------------------------------
-function attachAdminAuthHeaders(existingHeaders = {}) {
+function isAdminPath(requestPathOrUrl) {
+  if (!requestPathOrUrl || typeof requestPathOrUrl !== 'string') return false;
+  const stripped = requestPathOrUrl.startsWith(apiBaseUrl)
+    ? requestPathOrUrl.slice(apiBaseUrl.length)
+    : requestPathOrUrl;
+  return /^\/admin(?:\/|$)/i.test(stripped);
+}
+
+function attachAdminAuthHeaders(existingHeaders = {}, requestPathOrUrl) {
   const token = getAdminToken();
   const next = { ...existingHeaders };
   if (!next.Authorization && !next.authorization && token) {
     next.Authorization = `Bearer ${token}`;
+    if (!next['Content-Type'] && !next['content-type']) {
+      next['Content-Type'] = 'application/json';
+    }
+    return next;
+  }
+  const adminRoute = isAdminPath(requestPathOrUrl);
+  if (!adminRoute) {
+    const tempTok = getTempGeoAccessToken();
+    if (tempTok && !next.Authorization && !next.authorization) {
+      next.Authorization = `Temp ${tempTok}`;
+    }
   }
   if (!next['Content-Type'] && !next['content-type']) {
     next['Content-Type'] = 'application/json';
@@ -128,11 +210,19 @@ function classifyAuthError({ status, errorCode, data }) {
 
 // -----------------------------------------------------------------------------
 // Plain fetch wrapper `apiFetch` — auto auth-header + auto-redirect on expired
+//
+// Admin-path isolation rules:
+//   • Targets under /admin/* NEVER attach temp-geo tokens via attachAdminAuthHeaders
+//   • On /admin/* targets, classifyTempGeoError clears the stale token but never
+//     triggers a window.location redirect (temp access is irrelevant for admin)
+//   • On /admin/* targets where tempGeo already handled, don't also run
+//     classifyAuthError/clearAdminAuth (prevents double-classify logout loop)
 // -----------------------------------------------------------------------------
 export async function apiFetch(path, options = {}) {
   const url = buildApiUrl(path);
-  const headers = attachAdminAuthHeaders(options.headers || {});
+  const headers = attachAdminAuthHeaders(options.headers || {}, path);
   const nextOptions = { ...options, headers };
+  const adminRoute = isAdminPath(path);
 
   let response;
   try {
@@ -154,9 +244,29 @@ export async function apiFetch(path, options = {}) {
     }
   }
 
-  const errorCode = classifyAuthError({ status: response.status, data: parsedBody });
-  if (errorCode) {
-    clearAdminAuth(errorCode);
+  const tempGeo = classifyTempGeoError({ status: response.status, data: parsedBody });
+  if (tempGeo) {
+    clearTempGeoAccessToken();
+    emitTempGeoExpired({ code: tempGeo, data: parsedBody });
+    if (!adminRoute) {
+      if (typeof window !== 'undefined') {
+        try {
+          const current = window.location.pathname;
+          if (current && current.length > 1) {
+            window.location.assign(current);
+          } else {
+            window.location.assign('/');
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  if (!adminRoute || !tempGeo) {
+    const errorCode = classifyAuthError({ status: response.status, data: parsedBody });
+    if (errorCode) {
+      clearAdminAuth(errorCode);
+    }
   }
 
   return response;
@@ -170,7 +280,8 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  config.headers = attachAdminAuthHeaders(config.headers);
+  const target = config.url || '';
+  config.headers = attachAdminAuthHeaders(config.headers, target);
   return config;
 });
 
@@ -179,9 +290,32 @@ api.interceptors.response.use(
   (error) => {
     const status = error?.response?.status;
     const data = error?.response?.data;
-    const errorCode = classifyAuthError({ status, data });
-    if (errorCode) {
-      clearAdminAuth(errorCode);
+    const targetUrl = error?.config?.url || '';
+    const adminRoute = isAdminPath(targetUrl);
+
+    const tempGeo = classifyTempGeoError({ status, data });
+    if (tempGeo) {
+      clearTempGeoAccessToken();
+      emitTempGeoExpired({ code: tempGeo, data });
+      if (!adminRoute) {
+        if (typeof window !== 'undefined') {
+          try {
+            const path = window.location.pathname;
+            if (path && path.length > 1) {
+              window.location.assign(path);
+            } else {
+              window.location.assign('/');
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
+    if (!adminRoute || !tempGeo) {
+      const errorCode = classifyAuthError({ status, data });
+      if (errorCode) {
+        clearAdminAuth(errorCode);
+      }
     }
     return Promise.reject(error);
   }
@@ -379,6 +513,48 @@ export const preflightGeofence = (slug, opts = {}) => {
   }
   return api.get(`/public/geofence?${params.toString()}`);
 };
+
+/**
+ * Request a short-lived temporary geolocation access bypass token.
+ * Only issues tokens when geolocation permission is NOT permanently denied.
+ *
+ * @param {string} slug - restaurant slug
+ * @param {string|number} table - table identifier
+ * @param {Object} [opts]
+ * @param {{latitude:number|null, longitude:number|null}|null} [opts.location]
+ * @param {'granted'|'prompt'|'denied'|'unsupported'} [opts.geolocationStatus]
+ * @returns {Promise<{temp_access_granted:boolean, temp_access_token?:string, expires_at_iso?:string, expires_at_unix?:number, ttl_seconds?:number, geolocation_status:string, action_required?:string}>}
+ */
+export async function requestTempGeoAccess(slug, table, opts = {}) {
+  const body = {
+    slug,
+    table
+  };
+  if (opts.location?.latitude != null && Number.isFinite(Number(opts.location.latitude))) {
+    body.client_lat = Number(opts.location.latitude);
+  }
+  if (opts.location?.longitude != null && Number.isFinite(Number(opts.location.longitude))) {
+    body.client_lng = Number(opts.location.longitude);
+  }
+  if (opts.geolocationStatus) {
+    body.geolocation_status = opts.geolocationStatus;
+  }
+  try {
+    const res = await api.post('/public/temp-access', body);
+    const d = res.data || {};
+    if (d.temp_access_granted === true && d.temp_access_token) {
+      setTempGeoAccessToken(d.temp_access_token);
+    }
+    return d;
+  } catch (err) {
+    const d = err?.response?.data || {};
+    clearTempGeoAccessToken();
+    return Object.assign({
+      temp_access_granted: false,
+      error: d.error || err.message || 'Request failed'
+    }, d);
+  }
+}
 
 // Kept for backward compatibility or joining existing sessions if needed, 
 // though the new flow emphasizes creating/joining via the main flow.

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { publicHandshake } from '../api';
+import { publicHandshake, requestTempGeoAccess, clearTempGeoAccessToken, TEMP_GEO_EXPIRED_EVENT } from '../api';
 import Button from '../components/ui/Button';
 import { requestCurrentPositionWithFallback, requestHighAccuracyPosition, readGeolocationPermissionState } from '../utils/geolocation';
 import useAnalytics from '../hooks/useAnalytics';
@@ -21,6 +21,8 @@ export default function QrLanding() {
   const [geofenceInfo, setGeofenceInfo] = useState(null);
   const [restaurantName, setRestaurantName] = useState('');
   const [lastLocationAccuracyM, setLastLocationAccuracyM] = useState(null);
+  const [geoPermissionState, setGeoPermissionState] = useState(null);
+  const [tempAccessLoading, setTempAccessLoading] = useState(false);
   const startedRef = useRef(false);
   const gpsUpgradeAttemptedRef = useRef(false);
 
@@ -95,6 +97,20 @@ export default function QrLanding() {
     } catch (err) {
       setLoading(false);
       const code = err?.response?.data?.geofence_code;
+      if (err?.response?.status === 403 && code === 'LOCATION_PERMISSION_DENIED') {
+        setGeoPermissionState('denied');
+        setGeofenceInfo({
+          restaurant_name: err.response.data.restaurant_name || '',
+          geolocation_status: 'denied',
+          action_required: err.response.data.action_required || 'enable_location_permission',
+          distance_m: err.response.data.distance_m,
+          configured_radius_m: err.response.data.configured_radius_m,
+          effective_radius_m: err.response.data.effective_radius_m,
+          temp_access_possible: false
+        });
+        setErrorState('geofence_denied');
+        return;
+      }
       if (err?.response?.status === 403 && code === 'OUTSIDE_RADIUS') {
         // Bypass denied (probably distance is legitimately close rather
         // than the 20km+ false-positive scenario, so the backend refused
@@ -104,7 +120,10 @@ export default function QrLanding() {
           configured_radius_m: err.response.data.configured_radius_m,
           restaurant_name: err.response.data.restaurant_name || '',
           suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
-          bypass_denied: true
+          bypass_denied: true,
+          geolocation_status: err.response.data.geolocation_status || null,
+          requires_geolocation: err.response.data.requires_geolocation === true,
+          temp_access_possible: err.response.data.temp_access_possible === true
         });
         firePublic({
           event_type: 'qr_landing_low_accuracy_bypass_denied',
@@ -124,6 +143,103 @@ export default function QrLanding() {
         setErrorState('invalid');
       }
     }
+  }
+
+  /**
+   * Request a 5-minute temporary geolocation access window. Mirrors
+   * WelcomeScreen behavior — denies permanent-denied users, otherwise
+   * issues a scoped token and navigates to the Welcome route.
+   */
+  async function requestTemporaryGeoAccess() {
+    setTempAccessLoading(true);
+    setLoading(true);
+    setLoadingText('Requesting temporary access...');
+    firePublic({
+      event_type: 'qr_landing_temp_geo_access_request',
+      event_data: {
+        restaurant_slug: restaurantSlug,
+        table_token: tableParam
+      }
+    });
+    let locationPayload = null;
+    let geolocationStatus = 'prompt';
+    try {
+      const [permission, positionResult] = await Promise.all([
+        readGeolocationPermissionState(),
+        requestCurrentPositionWithFallback({
+          acceptIfWithinMeters: 1000,
+          dedupeKey: `qrlanding-tempgeo:${restaurantSlug || 'any'}:${tableParam || 'any'}`
+        })
+      ]);
+      setGeoPermissionState(permission || (positionResult.status === 'denied' ? 'denied' : 'prompt'));
+      if (positionResult.ok && positionResult.coords) {
+        locationPayload = {
+          latitude: positionResult.coords.latitude,
+          longitude: positionResult.coords.longitude,
+          accuracy: positionResult.coords.accuracy ?? null
+        };
+        setLastLocationAccuracyM(positionResult.coords.accuracy ?? null);
+        geolocationStatus = 'granted';
+      } else {
+        geolocationStatus = permission || positionResult.status || 'prompt';
+      }
+    } catch (_) {
+      geolocationStatus = 'unsupported';
+    }
+
+    const result = await requestTempGeoAccess(restaurantSlug, tableParam, {
+      location: locationPayload,
+      geolocationStatus
+    });
+
+    setTempAccessLoading(false);
+
+    if (result.temp_access_granted === true && result.temp_access_token) {
+      firePublic({
+        event_type: 'qr_landing_temp_geo_access_granted',
+        event_data: {
+          restaurant_slug: restaurantSlug,
+          table_token: tableParam,
+          ttl_seconds: result.ttl_seconds || 300
+        }
+      });
+      // Navigate to Welcome screen; handshake there will inherit the
+      // temp token from sessionStorage via the axios interceptor.
+      setLoading(false);
+      navigate(`/r/${restaurantSlug}/t/${tableParam}`);
+      return;
+    }
+
+    setLoading(false);
+    if (result.geolocation_status === 'denied' || result.action_required === 'enable_location_permission') {
+      setGeoPermissionState('denied');
+      setGeofenceInfo({
+        restaurant_name: geofenceInfo?.restaurant_name || restaurantSlug || '',
+        geolocation_status: 'denied',
+        action_required: result.action_required || 'enable_location_permission',
+        temp_access_possible: false,
+        error: result.error || null
+      });
+      setErrorState('geofence_denied');
+      firePublic({
+        event_type: 'qr_landing_temp_geo_access_denied',
+        event_data: {
+          restaurant_slug: restaurantSlug,
+          table_token: tableParam,
+          reason: 'location_permission_denied'
+        }
+      });
+      return;
+    }
+
+    firePublic({
+      event_type: 'qr_landing_temp_geo_access_denied',
+      event_data: {
+        restaurant_slug: restaurantSlug,
+        table_token: tableParam,
+        error: result.error || 'unknown'
+      }
+    });
   }
 
   /**
@@ -212,12 +328,32 @@ export default function QrLanding() {
           suggest_high_accuracy: err2.response.data.suggest_high_accuracy === true,
           effective_radius_m: err2.response.data.effective_radius_m || err2.response.data.configured_radius_m,
           radius_overridden: err2.response.data.radius_overridden === true,
-          gps_upgrade_failed: true
+          gps_upgrade_failed: true,
+          geolocation_status: err2.response.data.geolocation_status || null,
+          requires_geolocation: err2.response.data.requires_geolocation === true,
+          temp_access_possible: err2.response.data.temp_access_possible === true
         });
       }
       return false;
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    readGeolocationPermissionState()
+      .then((s) => { if (!cancelled) setGeoPermissionState(s || 'prompt'); })
+      .catch(() => { if (!cancelled) setGeoPermissionState('unsupported'); });
+    function onTempGeoExpired() { clearTempGeoAccessToken(); }
+    if (typeof window !== 'undefined') {
+      window.addEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
+    }
+    return () => {
+      cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
+      }
+    };
+  }, [restaurantSlug, tableParam]);
 
   useEffect(() => {
     if (startedRef.current || !restaurantSlug || !tableParam) {
@@ -332,8 +468,21 @@ export default function QrLanding() {
 
         setTimeout(() => {
           if (err.response?.status === 403) {
-            // Distinguish geofence denied from generic billing suspended
-            // using the structured envelope the backend emits.
+            if (err.response.data && err.response.data.geofence_code === 'LOCATION_PERMISSION_DENIED') {
+              setGeoPermissionState('denied');
+              setErrorState('geofence_denied');
+              setGeofenceInfo({
+                restaurant_name: err.response.data.restaurant_name || '',
+                geolocation_status: 'denied',
+                action_required: err.response.data.action_required || 'enable_location_permission',
+                distance_m: err.response.data.distance_m,
+                configured_radius_m: err.response.data.configured_radius_m,
+                effective_radius_m: err.response.data.effective_radius_m,
+                temp_access_possible: false
+              });
+              setLoading(false);
+              return;
+            }
             if (err.response.data && err.response.data.geofence_code === 'OUTSIDE_RADIUS') {
               setErrorState('geofence_denied');
               setGeofenceInfo({
@@ -342,7 +491,10 @@ export default function QrLanding() {
                 restaurant_name: err.response.data.restaurant_name || '',
                 suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
                 effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
-                radius_overridden: err.response.data.radius_overridden === true
+                radius_overridden: err.response.data.radius_overridden === true,
+                geolocation_status: err.response.data.geolocation_status || null,
+                requires_geolocation: err.response.data.requires_geolocation === true,
+                temp_access_possible: err.response.data.temp_access_possible === true
               });
               firePublic({
                 event_type: 'qr_landing_geofence_denied',
@@ -350,7 +502,9 @@ export default function QrLanding() {
                   restaurant_slug: restaurantSlug,
                   table_token: tableParam,
                   distance_m: err.response.data.distance_m,
-                  configured_radius_m: err.response.data.configured_radius_m
+                  configured_radius_m: err.response.data.configured_radius_m,
+                  geolocation_status: err.response.data.geolocation_status || null,
+                  requires_geolocation: err.response.data.requires_geolocation === true
                 }
               });
               setLoading(false);
@@ -410,6 +564,20 @@ export default function QrLanding() {
       navigate(`/r/${restaurantSlug}/t/${tableParam}`);
     } catch (err) {
       setLoading(false);
+      if (err.response?.status === 403 && err.response.data?.geofence_code === 'LOCATION_PERMISSION_DENIED') {
+        setGeoPermissionState('denied');
+        setErrorState('geofence_denied');
+        setGeofenceInfo({
+          restaurant_name: err.response.data.restaurant_name || '',
+          geolocation_status: 'denied',
+          action_required: err.response.data.action_required || 'enable_location_permission',
+          distance_m: err.response.data.distance_m,
+          configured_radius_m: err.response.data.configured_radius_m,
+          effective_radius_m: err.response.data.effective_radius_m,
+          temp_access_possible: false
+        });
+        return;
+      }
       if (err.response?.status === 403 && err.response.data?.geofence_code === 'OUTSIDE_RADIUS') {
         // Even on explicit retry: if we haven't yet tried a true-GPS upgrade
         // and the distance is wildly off, give it one shot before failing.
@@ -427,7 +595,10 @@ export default function QrLanding() {
           restaurant_name: err.response.data.restaurant_name || '',
           suggest_high_accuracy: err.response.data.suggest_high_accuracy === true,
           effective_radius_m: err.response.data.effective_radius_m || err.response.data.configured_radius_m,
-          radius_overridden: err.response.data.radius_overridden === true
+          radius_overridden: err.response.data.radius_overridden === true,
+          geolocation_status: err.response.data.geolocation_status || null,
+          requires_geolocation: err.response.data.requires_geolocation === true,
+          temp_access_possible: err.response.data.temp_access_possible === true
         });
         return;
       }
@@ -475,8 +646,39 @@ export default function QrLanding() {
     );
   }
 
-  // GEOFENCE_DENIED: user is outside the restaurant radius
+  // GEOFENCE_DENIED: user is outside the restaurant radius or geo permission denied
   if (errorState === 'geofence_denied') {
+    const geoStatusDenied =
+      geofenceInfo?.geolocation_status === 'denied' ||
+      geoPermissionState === 'denied' ||
+      geofenceInfo?.action_required === 'enable_location_permission';
+
+    const infoRequiresGeo = geofenceInfo?.requires_geolocation === true;
+    const infoTempPossible = geofenceInfo?.temp_access_possible === true;
+    const geoPermPrompt = geoPermissionState === 'prompt' || geoPermissionState === 'unsupported' || geoPermissionState == null;
+    const infoGeoPrompt = geofenceInfo?.geolocation_status === 'prompt' || geofenceInfo?.geolocation_status === 'unsupported' || geofenceInfo?.geolocation_status == null;
+    const noAccuracyReading = lastLocationAccuracyM == null;
+
+    const allowTempAccessButton =
+      !geoStatusDenied &&
+      (infoRequiresGeo || infoTempPossible || geoPermPrompt || infoGeoPrompt || noAccuracyReading);
+
+    const suggestHigh = geofenceInfo?.suggest_high_accuracy === true;
+    const gpsUpgradeFailed = geofenceInfo?.gps_upgrade_failed === true || gpsUpgradeAttemptedRef.current === true;
+    const badAccuracy = lastLocationAccuracyM == null ? false : lastLocationAccuracyM > 200;
+    const distKmLarge = typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
+    const devGraceStillOutside =
+      geofenceInfo?.radius_overridden === true &&
+      typeof geofenceInfo?.distance_m === 'number' &&
+      typeof geofenceInfo?.effective_radius_m === 'number' &&
+      geofenceInfo.distance_m > geofenceInfo.effective_radius_m;
+    const devGraceMassiveDist =
+      devGraceStillOutside && typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
+    const shouldShowLowAcc =
+      !geoStatusDenied &&
+      !allowTempAccessButton &&
+      ((suggestHigh && (gpsUpgradeFailed || badAccuracy || distKmLarge)) || devGraceMassiveDist);
+
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden font-sans">
         <div className="absolute top-[-20%] left-[-20%] w-[500px] h-[500px] bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
@@ -491,38 +693,61 @@ export default function QrLanding() {
             📍
           </div>
 
-          <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
-            Please visit us in person
-          </h1>
-
-          <p className="text-slate-400 text-base leading-relaxed mb-4">
-            This table works only at{' '}
-            <span className="text-slate-200 font-medium">
-              {geofenceInfo?.restaurant_name || 'the restaurant'}
-            </span>
-            .
-          </p>
-
-          {geofenceInfo?.distance_m != null && (
-            <div className="rounded-2xl bg-slate-950/60 border border-slate-800 text-sm text-slate-300 p-3 mb-6">
-              <div className="flex items-center justify-between px-2">
-                <span className="text-slate-500 text-xs uppercase tracking-[0.18em]">You are</span>
-                <span className="text-slate-200 font-semibold">
-                  ~{Math.round(geofenceInfo.distance_m)} m away
+          {geoStatusDenied ? (
+            <>
+              <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+                Location permission required
+              </h1>
+              <p className="text-slate-400 text-base leading-relaxed mb-6">
+                This table works only at{' '}
+                <span className="text-slate-200 font-medium">
+                  {geofenceInfo?.restaurant_name || 'the restaurant'}
                 </span>
+                . Location services must be enabled to verify you are at the table.
+              </p>
+              <div className="rounded-2xl bg-amber-500/5 border border-amber-500/20 text-left p-4 mb-6">
+                <p className="text-amber-300 text-sm font-semibold mb-3 tracking-wide uppercase">Enable Location</p>
+                <ol className="text-slate-400 text-sm space-y-2 pl-5 list-decimal marker:text-amber-400">
+                  <li className="pl-1">Tap the lock icon in your browser address bar</li>
+                  <li className="pl-1">Find the Location permission setting</li>
+                  <li className="pl-1">Choose <span className="text-slate-200 font-medium">Allow</span>, then tap Check again below</li>
+                </ol>
               </div>
-              <div className="flex items-center justify-between px-2 pt-1">
-                <span className="text-slate-500 text-xs uppercase tracking-[0.18em]">Table area</span>
-                <span className="text-slate-300">
-                  {geofenceInfo.configured_radius_m} m radius
+            </>
+          ) : (
+            <>
+              <h1 className="text-3xl font-extrabold text-slate-100 mb-4 tracking-tight leading-tight">
+                Please visit us in person
+              </h1>
+              <p className="text-slate-400 text-base leading-relaxed mb-4">
+                This table works only at{' '}
+                <span className="text-slate-200 font-medium">
+                  {geofenceInfo?.restaurant_name || 'the restaurant'}
                 </span>
-              </div>
-              {geofenceInfo.radius_overridden && (
-                <div className="mt-2 px-2 text-[11px] text-amber-300/80">
-                  Dev mode detected — effective radius {geofenceInfo.effective_radius_m}m
+                .
+              </p>
+              {geofenceInfo?.distance_m != null && (
+                <div className="rounded-2xl bg-slate-950/60 border border-slate-800 text-sm text-slate-300 p-3 mb-6">
+                  <div className="flex items-center justify-between px-2">
+                    <span className="text-slate-500 text-xs uppercase tracking-[0.18em]">You are</span>
+                    <span className="text-slate-200 font-semibold">
+                      ~{Math.round(geofenceInfo.distance_m)} m away
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between px-2 pt-1">
+                    <span className="text-slate-500 text-xs uppercase tracking-[0.18em]">Table area</span>
+                    <span className="text-slate-300">
+                      {geofenceInfo.configured_radius_m} m radius
+                    </span>
+                  </div>
+                  {geofenceInfo.radius_overridden && (
+                    <div className="mt-2 px-2 text-[11px] text-amber-300/80">
+                      Dev mode detected — effective radius {geofenceInfo.effective_radius_m}m
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
+            </>
           )}
 
           <div className="space-y-3">
@@ -530,7 +755,8 @@ export default function QrLanding() {
               onClick={retryWithGeolocation}
               variant="primary"
               fullWidth
-              className="bg-cyan-500 hover:bg-cyan-600 text-white shadow-lg shadow-cyan-500/20"
+              disabled={tempAccessLoading}
+              className="bg-cyan-500 hover:bg-cyan-600 text-white shadow-lg shadow-cyan-500/20 disabled:opacity-50"
             >
               Check again / Allow Location
             </Button>
@@ -538,37 +764,34 @@ export default function QrLanding() {
               onClick={() => navigate('/')}
               variant="outline"
               fullWidth
-              className="border-slate-800 text-slate-300 hover:bg-slate-800"
+              disabled={tempAccessLoading}
+              className="border-slate-800 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
             >
               Go Back Home
             </Button>
-            {(() => {
-              const suggestHigh = geofenceInfo?.suggest_high_accuracy === true;
-              const gpsUpgradeFailed = geofenceInfo?.gps_upgrade_failed === true || gpsUpgradeAttemptedRef.current === true;
-              const badAccuracy = lastLocationAccuracyM == null ? false : lastLocationAccuracyM > 200;
-              const distKmLarge = typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
-              const devGraceStillOutside =
-                geofenceInfo?.radius_overridden === true &&
-                typeof geofenceInfo?.distance_m === 'number' &&
-                typeof geofenceInfo?.effective_radius_m === 'number' &&
-                geofenceInfo.distance_m > geofenceInfo.effective_radius_m;
-              const devGraceMassiveDist =
-                devGraceStillOutside && typeof geofenceInfo?.distance_m === 'number' && geofenceInfo.distance_m > 2000;
-              const shouldShow =
-                (suggestHigh && (gpsUpgradeFailed || badAccuracy || distKmLarge)) ||
-                devGraceMassiveDist;
-              if (!shouldShow) return null;
-              return (
-                <Button
-                  onClick={attemptLowAccuracyBypass}
-                  variant="ghost"
-                  fullWidth
-                  className="border border-amber-500/20 text-amber-300 hover:bg-amber-500/10 hover:text-amber-200"
-                >
-                  Temporarily use anyway (low accuracy device)
-                </Button>
-              );
-            })()}
+            {allowTempAccessButton && !geoStatusDenied && (
+              <Button
+                onClick={requestTemporaryGeoAccess}
+                variant="ghost"
+                fullWidth
+                loading={tempAccessLoading}
+                disabled={tempAccessLoading}
+                className="border border-amber-500/20 text-amber-300 hover:bg-amber-500/10 hover:text-amber-200 disabled:opacity-50"
+              >
+                {tempAccessLoading ? 'Requesting access…' : 'Temporarily Use (5 minutes)'}
+              </Button>
+            )}
+            {shouldShowLowAcc && (
+              <Button
+                onClick={attemptLowAccuracyBypass}
+                variant="ghost"
+                fullWidth
+                disabled={tempAccessLoading}
+                className="border border-amber-500/20 text-amber-300 hover:bg-amber-500/10 hover:text-amber-200 disabled:opacity-50"
+              >
+                Temporarily use anyway (low accuracy device)
+              </Button>
+            )}
           </div>
         </motion.div>
       </div>

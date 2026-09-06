@@ -34,10 +34,18 @@ export default function SuperAdminDashboard() {
   const [tenants, setTenants] = useState([]);
   const [globalQuestions, setGlobalQuestions] = useState([]);
   const [pageLoading, setPageLoading] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
   const [inviteLoading, setInviteLoading] = useState(false);
   const [questionLoading, setQuestionLoading] = useState(false);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsRange, setMetricsRange] = useState('24h');
+  const [customRangeVisible, setCustomRangeVisible] = useState(false);
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [rangeError, setRangeError] = useState('');
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const [exportSuccess, setExportSuccess] = useState('');
   const [inviteForm, setInviteForm] = useState({ name: '', email: '' });
   const [inviteError, setInviteError] = useState('');
   const [inviteSuccess, setInviteSuccess] = useState('');
@@ -139,7 +147,7 @@ export default function SuperAdminDashboard() {
     if (!checking) {
       fetchMetrics();
     }
-  }, [checking, metricsRange]);
+  }, [checking, metricsRange, customStart, customEnd]);
 
   useEffect(() => {
     if (checking) {
@@ -151,7 +159,7 @@ export default function SuperAdminDashboard() {
     }, 15000);
 
     return () => window.clearInterval(intervalId);
-  }, [checking, metricsRange]);
+  }, [checking, metricsRange, customStart, customEnd, customRangeVisible]);
 
   useEffect(() => {
     if (!editingTenant) {
@@ -232,57 +240,144 @@ export default function SuperAdminDashboard() {
   }, [editingTenant, editForm.address, editForm.latitude, editForm.longitude, tenantAddressLookup.resolvedAddress]);
 
   const fetchData = async () => {
+    setPageLoading(true);
+    setFetchError(null);
+    const failures = [];
     try {
-      setPageLoading(true);
-      const [tenantsRes, questionsRes, metricsRes, billingRes, pgRes, pricingRes] = await Promise.all([
-        apiFetch('/admin/tenants', { headers: getAdminHeaders() }),
-        apiFetch('/admin/questions', { headers: getAdminHeaders() }),
-        apiFetch(`/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, { headers: getAdminHeaders() }),
-        apiFetch('/admin/billing/tenants', { headers: getAdminHeaders() }),
-        (async () => {
-          try { setPaymentGatewayLoading(true); return await apiFetch('/admin/platform/payment-gateway', { headers: getAdminHeaders() }); } finally { setPaymentGatewayLoading(false); }
-        })(),
-        (async () => {
-          try { setPricingEditorLoading(true); return await apiFetch('/admin/platform/plan-catalog', { headers: getAdminHeaders() }); } finally { setPricingEditorLoading(false); }
-        })()
-      ]);
+      const requests = [
+        { key: 'tenants', label: 'Tenants', run: () => apiFetch('/admin/tenants', { headers: getAdminHeaders() }) },
+        { key: 'questions', label: 'Question Library', run: () => apiFetch('/admin/questions', { headers: getAdminHeaders() }) },
+        {
+          key: 'metrics',
+          label: 'Metrics Overview',
+          run: () => {
+            const qs = buildMetricsRangeParams();
+            return apiFetch(`/admin/metrics/overview?${qs}`, { headers: getAdminHeaders() });
+          }
+        },
+        { key: 'billing', label: 'Billing Overview', run: () => apiFetch('/admin/billing/tenants', { headers: getAdminHeaders() }) },
+        {
+          key: 'pg',
+          label: 'Payment Gateway',
+          run: async () => {
+            try { setPaymentGatewayLoading(true); return await apiFetch('/admin/platform/payment-gateway', { headers: getAdminHeaders() }); } finally { setPaymentGatewayLoading(false); }
+          }
+        },
+        {
+          key: 'pricing',
+          label: 'Plan Catalog',
+          run: async () => {
+            try { setPricingEditorLoading(true); return await apiFetch('/admin/platform/plan-catalog', { headers: getAdminHeaders() }); } finally { setPricingEditorLoading(false); }
+          }
+        }
+      ];
 
-      const tenantsData = await tenantsRes.json();
-      const questionsData = await questionsRes.json();
-      const metricsData = await metricsRes.json();
-      if (billingRes.ok) {
-        const billingData = await billingRes.json();
-        setBillingOverview(billingData);
+      const settled = await Promise.allSettled(requests.map((r) => r.run()));
+
+      const results = {};
+      settled.forEach((outcome, idx) => {
+        const meta = requests[idx];
+        if (outcome.status === 'fulfilled') {
+          results[meta.key] = { ok: true, res: outcome.value };
+        } else {
+          failures.push(`${meta.label}: network error (${outcome.reason?.message || 'unknown'})`);
+          results[meta.key] = { ok: false, res: null };
+        }
+      });
+
+      // Tenants
+      if (results.tenants.ok) {
+        try {
+          const tenantsData = await results.tenants.res.json();
+          setTenants(Array.isArray(tenantsData) ? tenantsData : []);
+        } catch (_e) {
+          failures.push('Tenants: unable to parse response');
+          setTenants([]);
+        }
       } else {
-        const billingErr = await billingRes.json().catch(() => ({}));
-        setBillingOverview({
-          tenants: [],
-          summary: {},
-          plan_catalog: [],
-          billing_provider: 'manual',
-          _error: billingErr?.error || 'Billing overview unavailable'
-        });
-        setBillingError(billingErr?.error || 'Unable to load billing overview.');
+        setTenants([]);
       }
 
-      if (pgRes.ok) {
-        const pg = await pgRes.json();
-        setPaymentGateway(pg);
-        const s = pg?.settings || {};
-        setPgForm({
-          provider: s.provider || 'stripe',
-          mode: s.mode || 'test',
-          stripe_publishable_key: s.stripe_publishable_key_masked || '',
-          stripe_secret_key: s.stripe_secret_key_masked || '',
-          stripe_webhook_secret: s.stripe_webhook_secret_masked || '',
-          frontend_url: s.frontend_url || ''
-        });
+      // Questions
+      if (results.questions.ok) {
+        try {
+          const questionsData = await results.questions.res.json();
+          setGlobalQuestions(Array.isArray(questionsData) ? questionsData : []);
+        } catch (_e) {
+          failures.push('Question Library: unable to parse response');
+          setGlobalQuestions([]);
+        }
       } else {
-        const pgErr = await pgRes.json().catch(() => ({}));
-        setPgBanner({ kind: 'error', message: pgErr?.error || 'Unable to load payment gateway settings.' });
+        setGlobalQuestions([]);
       }
 
-      if (pricingRes?.ok) {
+      // Metrics
+      if (results.metrics.ok) {
+        try {
+          const metricsData = await results.metrics.res.json();
+          setMetrics(normalizeMetricsPayload(metricsData));
+        } catch (_e) {
+          failures.push('Metrics Overview: unable to parse response');
+          setMetrics(createEmptyMetrics());
+        }
+      } else {
+        setMetrics(createEmptyMetrics());
+      }
+
+      // Billing
+      const billingRes = results.billing.res;
+      if (billingRes && billingRes.ok) {
+        try {
+          const billingData = await billingRes.json();
+          setBillingOverview(billingData);
+        } catch (_e) {
+          failures.push('Billing Overview: unable to parse response');
+          setBillingOverview({ tenants: [], summary: {}, plan_catalog: [], billing_provider: 'manual', _error: 'Billing overview unavailable' });
+          setBillingError('Unable to load billing overview.');
+        }
+      } else if (billingRes) {
+        try {
+          const billingErr = await billingRes.json().catch(() => ({}));
+          failures.push(`Billing Overview: ${billingErr?.error || 'server returned error'}`);
+        } catch {
+          failures.push('Billing Overview: server returned error');
+        }
+        setBillingOverview({ tenants: [], summary: {}, plan_catalog: [], billing_provider: 'manual', _error: 'Billing overview unavailable' });
+        setBillingError('Unable to load billing overview.');
+      }
+
+      // Payment Gateway
+      const pgRes = results.pg.res;
+      if (pgRes && pgRes.ok) {
+        try {
+          const pg = await pgRes.json();
+          setPaymentGateway(pg);
+          const s = pg?.settings || {};
+          setPgForm({
+            provider: s.provider || 'stripe',
+            mode: s.mode || 'test',
+            stripe_publishable_key: s.stripe_publishable_key_masked || '',
+            stripe_secret_key: s.stripe_secret_key_masked || '',
+            stripe_webhook_secret: s.stripe_webhook_secret_masked || '',
+            frontend_url: s.frontend_url || ''
+          });
+        } catch (_e) {
+          failures.push('Payment Gateway: unable to parse response');
+          setPgBanner({ kind: 'error', message: 'Unable to load payment gateway settings.' });
+        }
+      } else if (pgRes) {
+        try {
+          const pgErr = await pgRes.json().catch(() => ({}));
+          failures.push(`Payment Gateway: ${pgErr?.error || 'server returned error'}`);
+        } catch {
+          failures.push('Payment Gateway: server returned error');
+        }
+        setPgBanner({ kind: 'error', message: 'Unable to load payment gateway settings.' });
+      }
+
+      // Plan Catalog
+      const pricingRes = results.pricing.res;
+      if (pricingRes && pricingRes.ok) {
         try {
           const pricingData = await pricingRes.json();
           const plans = (pricingData?.plans || []).map((raw) => {
@@ -317,27 +412,25 @@ export default function SuperAdminDashboard() {
           });
         } catch (pricingErr) {
           console.error('[pricing editor] parse failed:', pricingErr);
+          failures.push('Plan Catalog: unable to parse response');
           setPricingEditorBanner({ kind: 'error', message: 'Unable to parse plan catalog.' });
         }
       } else if (pricingRes) {
-        const pricingErr = await pricingRes.json().catch(() => ({}));
-        setPricingEditorBanner({ kind: 'error', message: pricingErr?.error || 'Unable to load plan catalog.' });
+        try {
+          const pricingErr = await pricingRes.json().catch(() => ({}));
+          failures.push(`Plan Catalog: ${pricingErr?.error || 'server returned error'}`);
+        } catch {
+          failures.push('Plan Catalog: server returned error');
+        }
+        setPricingEditorBanner({ kind: 'error', message: 'Unable to load plan catalog.' });
       }
-
-      setTenants(Array.isArray(tenantsData) ? tenantsData : []);
-      setGlobalQuestions(Array.isArray(questionsData) ? questionsData : []);
-      setMetrics(normalizeMetricsPayload(metricsData));
     } catch (err) {
       console.error(err);
-      setBillingOverview({
-        tenants: [],
-        summary: {},
-        plan_catalog: [],
-        billing_provider: 'manual',
-        _error: 'Billing overview unavailable'
-      });
-      setBillingError('Unable to load billing overview. Try refreshing.');
+      failures.push(`Dashboard: unexpected error (${err?.message || 'unknown'})`);
     } finally {
+      if (failures.length > 0) {
+        setFetchError(failures);
+      }
       setPageLoading(false);
     }
   };
@@ -581,13 +674,34 @@ export default function SuperAdminDashboard() {
     return `${clean}/billing/stripe/webhook`;
   })();
 
+  // Build query string params for the current range selection (preset or custom).
+  // Used by overview fetch, the background refresh interval fetch, and export download.
+  const buildMetricsRangeParams = () => {
+    const p = new URLSearchParams();
+    p.set('range', metricsRange);
+    if (metricsRange === 'custom') {
+      if (customStart) p.set('start_at', toLocalInputToUtcIso(customStart));
+      if (customEnd) p.set('end_at', toLocalInputToUtcIso(customEnd));
+    }
+    return p.toString();
+  };
+
+  const toLocalInputToUtcIso = (localInputValue) => {
+    if (!localInputValue) return '';
+    // `type="datetime-local"` input returns yyyy-mm-ddThh:mm in device local TZ.
+    // Treat as wall-clock then convert to UTC ISO for server request.
+    const d = new Date(localInputValue);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toISOString();
+  };
+
   const fetchMetrics = async ({ silent = false } = {}) => {
     try {
       if (!silent) {
         setMetricsLoading(true);
       }
 
-      const response = await apiFetch(`/admin/metrics/overview?range=${encodeURIComponent(metricsRange)}`, {
+      const response = await apiFetch(`/admin/metrics/overview?${buildMetricsRangeParams()}`, {
         headers: getAdminHeaders()
       });
       const data = await response.json();
@@ -605,50 +719,62 @@ export default function SuperAdminDashboard() {
     }
   };
 
-  const exportMetrics = (format) => {
-    const payload = {
-      exported_at: new Date().toISOString(),
-      range: metricsRange,
-      ...metrics
-    };
+  const exportMetrics = async (format) => {
+    try {
+      setExportLoading(true);
+      setExportError('');
+      setExportSuccess('');
 
-    let content = '';
-    let mimeType = 'application/json';
-    let extension = 'json';
+      // Build URL with the current range (preset or custom).
+      const params = new URLSearchParams(buildMetricsRangeParams());
+      params.set('format', format === 'json' ? 'json' : 'csv');
+      params.set('dataset', 'all');
 
-    if (format === 'csv') {
-      const lines = [
-        ['section', 'label', 'value'],
-        ['overview', 'live_sessions_now', metrics.overview.active_sessions_now],
-        ['overview', 'live_restaurants_now', metrics.overview.live_restaurants_now],
-        ['overview', 'active_tables_now', metrics.overview.active_tables_now],
-        ['overview', 'dual_sessions_now', metrics.overview.dual_sessions_now],
-        ['overview', `sessions_${metricsRange}`, metrics.overview.sessions_window],
-        ['overview', `qr_scans_${metricsRange}`, metrics.overview.qr_scans_window],
-        ['overview', `question_views_${metricsRange}`, metrics.overview.question_views_window],
-        ...metrics.live_restaurants.map((restaurant) => ['live_restaurant', restaurant.name, `${restaurant.active_sessions} sessions / ${restaurant.active_tables} tables`]),
-        ...metrics.context_mix.map((entry) => ['context_mix', entry.label, entry.count]),
-        ...metrics.recent_activity.map((event) => ['recent_activity', formatMetricEventLabel(event.event_type), `${event.restaurant_name || ''} ${event.table_token || ''}`.trim()])
-      ];
+      const url = `/admin/metrics/export?${params.toString()}`;
+      const response = await apiFetch(url, { headers: getAdminHeaders() });
 
-      content = lines
-        .map((line) => line.map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`).join(','))
-        .join('\n');
-      mimeType = 'text/csv;charset=utf-8;';
-      extension = 'csv';
-    } else {
-      content = JSON.stringify(payload, null, 2);
+      if (!response.ok) {
+        let errMsg = `Export failed (HTTP ${response.status})`;
+        try {
+          const err = await response.json();
+          if (err?.error) errMsg = err.error;
+        } catch (_) { /* ignore non-json error payload */ }
+        throw new Error(errMsg);
+      }
+
+      // Use response.arrayBuffer() + Blob so binary-safe for UTF-8 BOM (CSV)
+      const buf = await response.arrayBuffer();
+      const type = format === 'json'
+        ? (response.headers.get('content-type') || 'application/json; charset=utf-8')
+        : (response.headers.get('content-type') || 'text/csv; charset=utf-8');
+      const blob = new Blob([buf], { type });
+      const objectUrl = URL.createObjectURL(blob);
+
+      // Suggested filename from backend headers (fallback if not present)
+      let filename = `catalyst-sa-metrics-${metricsRange}-${Date.now()}.${format === 'json' ? 'json' : 'csv'}`;
+      try {
+        const disp = response.headers.get('content-disposition');
+        const m = disp && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disp);
+        if (m && m[1]) filename = decodeURIComponent(m[1]);
+      } catch (_) { /* ignore parse error */ }
+
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+
+      setExportSuccess(`${format === 'json' ? 'JSON' : 'CSV'} export complete. Saved as "${filename}"`);
+      window.setTimeout(() => setExportSuccess(''), 5000);
+    } catch (err) {
+      console.error('[SA metrics export] failed:', err);
+      setExportError(err.message || 'Export failed. Try with a smaller time window.');
+      window.setTimeout(() => setExportError(''), 8000);
+    } finally {
+      setExportLoading(false);
     }
-
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `catalyst-metrics-${metricsRange}.${extension}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   const exportQuestionsCsv = () => {
@@ -1729,6 +1855,41 @@ export default function SuperAdminDashboard() {
       {activeTab === TAB_DASHBOARD && (
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
           <div className="xl:col-span-3 space-y-8">
+          {fetchError && Array.isArray(fetchError) && fetchError.length > 0 && (
+            <div role="alert" className="rounded-2xl border border-amber-500/40 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10 p-4 sm:p-5 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="flex-shrink-0 mt-0.5">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold tracking-wide text-amber-900 dark:text-amber-200 uppercase">
+                      Dashboard partially loaded
+                    </h3>
+                    <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1 mb-2">
+                      The following modules failed to load. The rest of the dashboard is working.
+                    </p>
+                    <ul className="space-y-1 list-disc list-inside text-xs text-amber-900/90 dark:text-amber-200/90 break-words">
+                      {fetchError.slice(0, 6).map((line, idx) => (
+                        <li key={idx}>{line}</li>
+                      ))}
+                      {fetchError.length > 6 && (
+                        <li className="italic opacity-80">…and {fetchError.length - 6} more</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => { setFetchError(null); await fetchData(); }}
+                  className="inline-flex flex-shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-500 active:bg-amber-700 px-4 py-2.5 text-xs font-bold uppercase tracking-[0.2em] text-white shadow-[0_2px_10px_rgba(217,119,6,0.25)] transition-colors duration-200 min-h-[44px] min-w-[44px]"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Refresh Dashboard
+                </button>
+              </div>
+            </div>
+          )}
           <section className="relative overflow-hidden rounded-[32px] border border-border/80 bg-card shadow-[0_4px_28px_rgba(15,23,42,0.04)] dark:border-cyan-500/20 dark:bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(168,85,247,0.18),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(2,6,23,0.98))] dark:shadow-2xl p-6 transition-colors duration-300">
             <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30 dark:opacity-30" />
             <div className="absolute inset-0 pointer-events-none opacity-60 dark:hidden">
@@ -1751,37 +1912,171 @@ export default function SuperAdminDashboard() {
                   </p>
                 </div>
                 <div className="flex flex-col items-start lg:items-end gap-3">
+                  {/* Preset range chips: 24h / 7d / 30d / MTD (This Month) / Custom */}
                   <div className="flex flex-wrap gap-2">
-                    {['24h', '7d', '30d'].map((option) => (
+                    {[
+                      { key: '24h', label: '24H' },
+                      { key: '7d', label: '7D' },
+                      { key: '30d', label: '30D' },
+                      { key: 'this_month', label: 'MTD' }
+                    ].map((opt) => (
                       <button
-                        key={option}
+                        key={opt.key}
                         type="button"
-                        onClick={() => setMetricsRange(option)}
+                        onClick={() => {
+                          setMetricsRange(opt.key);
+                          setCustomRangeVisible(false);
+                          setRangeError('');
+                        }}
                         className={`rounded-full px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] transition-colors duration-200 ${
-                          metricsRange === option
+                          metricsRange === opt.key
                             ? 'bg-indigo-600 text-white shadow-[0_4px_14px_rgba(79,70,229,0.25)] dark:bg-cyan-500 dark:text-slate-950 dark:shadow-lg dark:shadow-cyan-500/20'
                             : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:border-slate-500'
                         }`}
                       >
-                        {option}
+                        {opt.label}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomRangeVisible((v) => !v);
+                        if (!customRangeVisible) {
+                          // Default to a small 24h window starting yesterday as placeholder.
+                          const now = new Date();
+                          const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                          const toLocalInput = (d) => {
+                            const pad = (n) => String(n).padStart(2, '0');
+                            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                          };
+                          setCustomStart(toLocalInput(yesterday));
+                          setCustomEnd(toLocalInput(now));
+                          setMetricsRange('custom');
+                        }
+                        setRangeError('');
+                      }}
+                      className={`rounded-full px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] transition-colors duration-200 ${
+                        metricsRange === 'custom'
+                          ? 'bg-indigo-600 text-white shadow-[0_4px_14px_rgba(79,70,229,0.25)] dark:bg-cyan-500 dark:text-slate-950 dark:shadow-lg dark:shadow-cyan-500/20'
+                          : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:border-slate-500'
+                      }`}
+                    >
+                      Custom
+                    </button>
                   </div>
+
+                  {/* Custom date-time range picker (visible only when user clicks "Custom") */}
+                  {customRangeVisible && (
+                    <div className="w-full lg:min-w-[640px] rounded-2xl border border-slate-200 bg-white/90 dark:border-slate-700 dark:bg-slate-900/80 p-3 flex flex-col md:flex-row md:items-end gap-2">
+                      <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 min-w-0 flex-1">
+                        Start (local time)
+                        <input
+                          type="datetime-local"
+                          value={customStart}
+                          onChange={(e) => setCustomStart(e.target.value)}
+                          className="w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 min-w-0 flex-1">
+                        End (local time)
+                        <input
+                          type="datetime-local"
+                          value={customEnd}
+                          onChange={(e) => setCustomEnd(e.target.value)}
+                          className="w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                        />
+                      </label>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRangeError('');
+                            setExportError('');
+                            setExportSuccess('');
+                            const start = customStart ? new Date(customStart) : null;
+                            const end = customEnd ? new Date(customEnd) : null;
+                            if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+                              setRangeError('Pick a valid start and end date/time.');
+                              return;
+                            }
+                            if (end.getTime() <= start.getTime()) {
+                              setRangeError('End must be after start.');
+                              return;
+                            }
+                            const MAX_DAYS = 93;
+                            if ((end.getTime() - start.getTime()) > MAX_DAYS * 24 * 60 * 60 * 1000) {
+                              setRangeError(`Window must be ${MAX_DAYS} days or less.`);
+                              return;
+                            }
+                            setMetricsRange('custom');
+                            fetchMetrics({ silent: false });
+                          }}
+                          className="rounded-full bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold uppercase tracking-[0.2em] px-3 py-1.5 transition-colors duration-200"
+                        >
+                          Apply
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomRangeVisible(false);
+                            setMetricsRange('24h');
+                            setRangeError('');
+                            setExportError('');
+                            setExportSuccess('');
+                          }}
+                          className="rounded-full border border-slate-300 bg-white hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold uppercase tracking-[0.2em] px-3 py-1.5 transition-colors duration-200"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {rangeError && (
+                    <div className="text-xs font-medium text-rose-600 dark:text-rose-300 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      {rangeError}
+                    </div>
+                  )}
+                  {exportError && (
+                    <div className="text-xs font-medium text-rose-600 dark:text-rose-300 flex items-center gap-1.5 max-w-md">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      {exportError}
+                    </div>
+                  )}
+                  {exportSuccess && (
+                    <div className="text-xs font-medium text-emerald-700 dark:text-emerald-200 flex items-center gap-1.5 max-w-md">
+                      <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                      {exportSuccess}
+                    </div>
+                  )}
+
+                  {/* Export CSV / JSON buttons — SA-only access already enforced on backend route */}
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
+                      disabled={exportLoading || Boolean(rangeError)}
                       onClick={() => exportMetrics('csv')}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-emerald-700 hover:bg-emerald-100 transition-colors duration-200 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200 dark:hover:bg-emerald-500/20"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-emerald-700 hover:bg-emerald-100 transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200 dark:hover:bg-emerald-500/20"
                     >
-                      <FileText className="w-3.5 h-3.5" />
+                      {exportLoading ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <FileText className="w-3.5 h-3.5" />
+                      )}
                       Export CSV
                     </button>
                     <button
                       type="button"
+                      disabled={exportLoading || Boolean(rangeError)}
                       onClick={() => exportMetrics('json')}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/20 bg-violet-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-violet-700 hover:bg-violet-100 transition-colors duration-200 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/20 bg-violet-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-violet-700 hover:bg-violet-100 transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
                     >
-                      <FileText className="w-3.5 h-3.5" />
+                      {exportLoading ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <FileText className="w-3.5 h-3.5" />
+                      )}
                       Export JSON
                     </button>
                   </div>

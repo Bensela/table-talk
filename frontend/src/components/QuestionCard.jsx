@@ -18,7 +18,8 @@ export default function QuestionCard({
   conversationStarted = false,
   onAdvanceTurn,
   nextIntentCount = 0,
-  advanceIntentCount = 0
+  advanceIntentCount = 0,
+  hasClickedNext = false
 }) {
   if (!question) {
     return (
@@ -153,13 +154,26 @@ export default function QuestionCard({
   };
 
   // ---------------- STATE BOOLEANS ----------------
+  // CRITICAL FIX (match old working QuestionCard.jsx behavior that the user
+  // attached Picture 2 for): use hasClickedNext as the SOURCE OF TRUTH for
+  // whether the LOCAL USER has clicked — no more inferring "iClicked" from
+  // nextIntentCount>=1 && !partnerIsReady circular logic, which broke when
+  // partnerIsReady setter had a stale closure and set it for both phones.
   const state = conversationStarted ? 2 : 1;
-  const iClickedReadyFirst = isDualMode && state === 1 && (nextIntentCount >= 1) && !partnerIsReady;
-  const partnerClickedReadyFirst = isDualMode && state === 1 && partnerIsReady;
-  const partnerAdvancedFirst = isDualMode && state === 2 &&
+  const partnerClickedReadyFirst = Boolean(
+    isDualMode && state === 1 && partnerIsReady && !hasClickedNext
+  );
+  const iClickedReadyFirst = Boolean(
+    isDualMode && state === 1 && hasClickedNext && nextIntentCount < 2
+  );
+  const partnerAdvancedFirst = Boolean(
+    isDualMode && state === 2 &&
     (feedbackMessage === "Partner is waiting for you to click Next!" ||
-     ((advanceIntentCount >= 1) && partnerIsReady));
-  const iAdvancedFirst = isDualMode && state === 2 && (advanceIntentCount >= 1) && !partnerAdvancedFirst;
+     (advanceIntentCount >= 1 && !hasClickedNext))
+  );
+  const iAdvancedFirst = Boolean(
+    isDualMode && state === 2 && hasClickedNext && advanceIntentCount < 2
+  );
   const mcqAnswerLocked = isMultipleChoice && submitted && !localRevealed;
 
   // For MCQ Dual State 1 reveal: get partner selection ID
@@ -280,7 +294,7 @@ export default function QuestionCard({
             localRevealed={localRevealed}
             showReadyButton={showReadyButton}
             selectedOption={selectedOption}
-            iClickedReadyFirst={iClickedReadyFirst && !partnerClickedReadyFirst && nextIntentCount >= 1}
+            iClickedReadyFirst={iClickedReadyFirst}
             partnerClickedReadyFirst={partnerClickedReadyFirst}
             iAdvancedFirst={iAdvancedFirst}
             partnerAdvancedFirst={partnerAdvancedFirst || feedbackMessage === 'Partner is waiting for you to click Next!'}
@@ -467,6 +481,7 @@ function DualModeActions(props) {
           </Button>
         )}
         {buttonDisabled && (
+          // Exact match: Picture1 first screenshot LEFT TAB — plain text, NO pill, NO spinner.
           <div className="text-center py-2 text-[#6E6A60] font-medium">
             {buttonLabel}
           </div>
@@ -539,6 +554,7 @@ function DualModeActions(props) {
         </Button>
       )}
       {state2BtnDisabled && (
+        // Exact match: Picture1 first screenshot — plain text, NO pill, NO spinner.
         <div className="text-center py-2 text-[#6E6A60] font-medium">
           {state2BtnLabel}
         </div>
