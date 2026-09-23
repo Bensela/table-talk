@@ -133,11 +133,6 @@ function isSetupLockExpired(lock) {
   return Date.now() - lock.claimedAt > SETUP_LOCK_TTL_MS;
 }
 
-function clearSetupLockForTable(tableToken) {
-  if (!tableToken) return;
-  setupLocks.delete(tableToken);
-  io.to(`setup_${tableToken}`).emit('setup_released');
-}
 
 function clearPendingContexts(sessionId) {
   if (!sessionId) return;
@@ -182,9 +177,6 @@ function armSingleFreshTimeout(sessionId) {
       if (row.dual_group_id) {
         try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
         try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
-      }
-      if (row.table_token) {
-        try { clearSetupLockForTable(row.table_token); } catch (_) {}
       }
       clearSessionState(sessionId);
       clearPendingContexts(sessionId);
@@ -530,7 +522,6 @@ io.on('connection', (socket) => {
               try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [tf.dual_group_id]); } catch (_) {}
               try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [tf.dual_group_id]); } catch (_) {}
             }
-            if (tf.table_token) { try { clearSetupLockForTable(tf.table_token); } catch (_) {} }
             clearSessionState(session_id);
             clearPendingContexts(session_id);
             try {
@@ -628,7 +619,7 @@ io.on('connection', (socket) => {
         const sizeAfter = room ? room.size : 0;
         if (pData.dual_status === 'waiting' && sizeAfter >= 2) {
           const upd = await db.query(
-            `UPDATE sessions SET dual_status = 'paired' WHERE session_id = $1 AND dual_status = 'waiting' RETURNING dual_status`,
+            `UPDATE sessions SET dual_status = 'paired' WHERE session_id = $1 AND dual_status = 'waiting' AND COALESCE(fresh_intent_a, FALSE) = COALESCE(fresh_intent_b, FALSE) RETURNING dual_status`,
             [session_id]
           );
           if (upd.rowCount > 0) {
@@ -725,7 +716,7 @@ io.on('connection', (socket) => {
   });
 
   // Dual-Phone: Reveal Logic
-  socket.on('answer_submitted', async ({ selectionId }) => {
+  socket.on('answer_submitted', async ({ selectionId, question_id }) => {
     if (!socket.sessionId || !socket.participantId) return;
     const role = await resolveSocketRole(socket);
     const state = getSessionState(socket.sessionId);
@@ -736,6 +727,16 @@ io.on('connection', (socket) => {
     });
 
     await logSocketEvent(socket, 'answer_submitted', { has_selection: Boolean(selectionId) });
+    // History-log export needs the actual question/option chosen (not just
+    // that a selection happened) to compute per-option pick rates. Logged
+    // as its own event, additive to the line above, so existing counts of
+    // 'answer_submitted' are unaffected.
+    if (selectionId && question_id != null) {
+      await logSocketEvent(socket, 'mcq_answer_submitted', {
+        question_id,
+        option_id: selectionId
+      });
+    }
 
     // Use deduped unique participantId UUIDs as the count source of truth, not Map.size,
     // because Map never shrinks during question (only cleared on advance). Also count
@@ -1007,7 +1008,6 @@ io.on('connection', (socket) => {
         await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
         await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]);
       }
-      if (row.table_token) clearSetupLockForTable(row.table_token);
       clearSessionState(sessionId);
       clearPendingContexts(sessionId);
       io.to(sessionId).emit('dual_group_terminated');
@@ -1059,13 +1059,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('join_table_setup', ({ tableToken, lockToken } = {}) => {
-    if (!tableToken) return;
-    socket.join(`setup_${tableToken}`);
+  socket.on('join_table_setup', ({ restaurantSlug, tableToken, lockToken } = {}) => {
+    if (!restaurantSlug || !tableToken) return;
 
-    const current = setupLocks.get(tableToken);
+    const setupKey = restaurantSlug.trim().toLowerCase() + '::' + tableToken;
+    const setupRoom = 'setup_' + setupKey;
+
+    socket.join(setupRoom);
+
+    const current = setupLocks.get(setupKey);
+
     if (!current || isSetupLockExpired(current)) {
-      setupLocks.delete(tableToken);
+      setupLocks.delete(setupKey);
       socket.emit('setup_status', { status: 'available' });
       return;
     }
@@ -1078,46 +1083,107 @@ io.on('connection', (socket) => {
     socket.emit('setup_status', { status: 'busy' });
   });
 
-  socket.on('claim_setup', ({ tableToken, lockToken } = {}, callback) => {
-    if (!tableToken) return;
+  socket.on('claim_setup', ({ restaurantSlug, tableToken, lockToken } = {}, callback) => {
     const cb = typeof callback === 'function' ? callback : () => {};
 
-    const current = setupLocks.get(tableToken);
+    if (!restaurantSlug || !tableToken) {
+      cb({ status: 'invalid' });
+      return;
+    }
+
+    const setupKey = restaurantSlug.trim().toLowerCase() + '::' + tableToken;
+    const setupRoom = 'setup_' + setupKey;
+
+    const current = setupLocks.get(setupKey);
+
     if (!current || isSetupLockExpired(current)) {
       const newToken = crypto.randomBytes(16).toString('hex');
-      setupLocks.set(tableToken, { lockToken: newToken, claimedAt: Date.now() });
-      io.to(`setup_${tableToken}`).emit('setup_claimed', { tableToken, lockToken: newToken });
-      cb({ status: 'granted', lockToken: newToken });
+
+      setupLocks.set(setupKey, {
+        lockToken: newToken,
+        claimedAt: Date.now()
+      });
+
+      io.to(setupRoom).emit('setup_claimed', {
+        restaurantSlug,
+        tableToken
+      });
+
+      cb({
+        status: 'granted',
+        lockToken: newToken
+      });
+
       return;
     }
 
     if (lockToken && current.lockToken === lockToken) {
-      cb({ status: 'granted', lockToken: current.lockToken });
+      cb({
+        status: 'granted',
+        lockToken: current.lockToken
+      });
       return;
     }
 
     cb({ status: 'busy' });
   });
 
-  socket.on('release_setup', ({ tableToken, lockToken } = {}, callback) => {
-    if (!tableToken) return;
+  socket.on('release_setup', ({ restaurantSlug, tableToken, lockToken } = {}, callback) => {
     const cb = typeof callback === 'function' ? callback : () => {};
-    const current = setupLocks.get(tableToken);
+
+    if (!restaurantSlug || !tableToken) {
+      cb({ status: 'invalid' });
+      return;
+    }
+
+    const setupKey = restaurantSlug.trim().toLowerCase() + '::' + tableToken;
+    const setupRoom = 'setup_' + setupKey;
+
+    const current = setupLocks.get(setupKey);
+
     if (current && lockToken && current.lockToken === lockToken) {
-      setupLocks.delete(tableToken);
-      io.to(`setup_${tableToken}`).emit('setup_released');
+      setupLocks.delete(setupKey);
+
+      io.to(setupRoom).emit('setup_released', {
+        restaurantSlug,
+        tableToken
+      });
+
       cb({ status: 'released' });
       return;
     }
+
     cb({ status: 'ignored' });
   });
 
-  socket.on('setup_completed', ({ tableToken, mode, sessionId } = {}) => {
-    if (!tableToken) return;
-    clearSetupLockForTable(tableToken);
-    io.to(`setup_${tableToken}`).emit('setup_completed', { tableToken, mode, sessionId });
-  });
+  socket.on('setup_completed', ({ restaurantSlug, tableToken, lockToken, mode } = {}, callback) => {
+    const cb = typeof callback === 'function' ? callback : () => {};
 
+    if (!restaurantSlug || !tableToken) {
+      cb({ status: 'invalid' });
+      return;
+    }
+
+    const setupKey = restaurantSlug.trim().toLowerCase() + '::' + tableToken;
+    const setupRoom = 'setup_' + setupKey;
+
+    const current = setupLocks.get(setupKey);
+
+    if (!current || !lockToken || current.lockToken !== lockToken) {
+      cb({ status: 'ignored' });
+      return;
+    }
+
+    setupLocks.delete(setupKey);
+
+    io.to(setupRoom).emit('setup_completed', {
+      restaurantSlug,
+      tableToken,
+      mode
+    });
+
+    cb({ status: 'completed' });
+  });
   socket.on('context_switch_intent', async ({ context } = {}) => {
     const sessionId = socket.sessionId;
     if (!sessionId || !context) return;
@@ -1286,4 +1352,3 @@ if (process.env.NODE_ENV !== 'test') {
 module.exports = app;
 app.io = io;
 app.server = server;
-app.clearSetupLockForTable = clearSetupLockForTable;

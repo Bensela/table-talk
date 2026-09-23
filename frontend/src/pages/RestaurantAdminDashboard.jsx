@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CreditCard } from 'lucide-react';
+import { CreditCard, Download, FileText, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { apiFetch } from '../api';
 import { useAdminAuth, getAdminHeaders } from '../hooks/useAdminAuth';
 import MapDisplay from '../components/MapDisplay';
@@ -27,6 +27,17 @@ export default function RestaurantAdminDashboard() {
   const [invoices, setInvoices] = useState([]);
   const [paymentGateway, setPaymentGateway] = useState(null);
   const [paymentGatewayLoading, setPaymentGatewayLoading] = useState(false);
+
+  // History Log Exports (sessions/questions/choices CSVs)
+  const [historyExportRange, setHistoryExportRange] = useState(() => {
+    const end = new Date();
+    const start = new Date(end.getTime() - 29 * 24 * 60 * 60 * 1000);
+    const toDateInput = (d) => d.toISOString().slice(0, 10);
+    return { start_date: toDateInput(start), end_date: toDateInput(end) };
+  });
+  const [historyExportLoadingFile, setHistoryExportLoadingFile] = useState(null);
+  const [historyExportError, setHistoryExportError] = useState('');
+  const [historyExportSuccess, setHistoryExportSuccess] = useState('');
 
   useEffect(() => {
     if (!checking) {
@@ -227,6 +238,81 @@ export default function RestaurantAdminDashboard() {
   const isTrial = currentPlan === 'trial';
   const canGenerateQr = profile && typeof profile.can_generate_qr === 'boolean' ? profile.can_generate_qr : !isTrial;
   const computedBillingStatus = profile?.computed_status || profile?.billing_status || 'pending';
+
+  const HISTORY_EXPORT_PRESETS = [
+    { key: '7d', label: 'Last 7 days', days: 7 },
+    { key: '30d', label: 'Last 30 days', days: 30 },
+    { key: '90d', label: 'Last 90 days', days: 90 }
+  ];
+
+  const applyHistoryExportPreset = (days) => {
+    const end = new Date();
+    const start = new Date(end.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+    const toDateInput = (d) => d.toISOString().slice(0, 10);
+    setHistoryExportRange({ start_date: toDateInput(start), end_date: toDateInput(end) });
+    setHistoryExportError('');
+  };
+
+  const downloadHistoryExport = async (fileKind) => {
+    const restaurantId = profile?.id;
+    if (!restaurantId) return;
+    const { start_date, end_date } = historyExportRange;
+    if (!start_date || !end_date) {
+      setHistoryExportError('Pick a start and end date.');
+      return;
+    }
+    if (end_date < start_date) {
+      setHistoryExportError('End date must be on or after start date.');
+      return;
+    }
+
+    try {
+      setHistoryExportLoadingFile(fileKind);
+      setHistoryExportError('');
+      setHistoryExportSuccess('');
+
+      const params = new URLSearchParams({ restaurant_id: restaurantId, start_date, end_date, file: fileKind });
+      const response = await apiFetch(`/admin/history-export?${params.toString()}`, { headers: getAdminHeaders() });
+
+      if (!response.ok) {
+        let errMsg = `Export failed (HTTP ${response.status})`;
+        try {
+          const err = await response.json();
+          if (err?.error) errMsg = err.error;
+        } catch (_) { /* ignore non-json error payload */ }
+        throw new Error(errMsg);
+      }
+
+      const buf = await response.arrayBuffer();
+      const type = response.headers.get('content-type') || 'text/csv; charset=utf-8';
+      const blob = new Blob([buf], { type });
+      const objectUrl = URL.createObjectURL(blob);
+
+      let filename = `catalyst_${fileKind}_${restaurantId}_${start_date}_${end_date}.csv`;
+      try {
+        const disp = response.headers.get('content-disposition');
+        const m = disp && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disp);
+        if (m && m[1]) filename = decodeURIComponent(m[1]);
+      } catch (_) { /* ignore parse error */ }
+
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+
+      setHistoryExportSuccess(`Saved "${filename}"`);
+      window.setTimeout(() => setHistoryExportSuccess(''), 5000);
+    } catch (err) {
+      console.error('[history export] failed:', err);
+      setHistoryExportError(err.message || 'Export failed.');
+      window.setTimeout(() => setHistoryExportError(''), 8000);
+    } finally {
+      setHistoryExportLoadingFile(null);
+    }
+  };
 
   const handleCheckout = async (planKey) => {
     setBillingError('');
@@ -821,6 +907,110 @@ export default function RestaurantAdminDashboard() {
           </div>
         </section>
       )}
+
+      {/* History Log Exports Card */}
+      <section className="mb-8 bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-300">
+            <Download size={18} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-white">History Log Exports</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Sessions, questions, and choice CSVs for your restaurant</p>
+          </div>
+        </div>
+
+        {!profile?.can_export_analytics ? (
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+            <span>
+              Export Analytics isn&apos;t enabled on your current plan. Upgrade your plan or contact your onboarding
+              contact to turn it on.
+            </span>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            <p className="text-xs text-slate-500 leading-relaxed max-w-2xl">
+              Three flat files: one row per session, one row per question aggregated across the period, and one
+              row per multiple-choice option aggregated across the period. No names, no typed input, no IP
+              addresses, no location, no device identifiers beyond device type.
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              {HISTORY_EXPORT_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => applyHistoryExportPreset(preset.days)}
+                  className="rounded-full border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-slate-300 text-[11px] font-bold uppercase tracking-[0.15em] px-3 py-1.5 transition-colors duration-200"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-end gap-2 max-w-xl">
+              <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 min-w-0 flex-1">
+                Start date (restaurant local)
+                <input
+                  type="date"
+                  value={historyExportRange.start_date}
+                  max={historyExportRange.end_date || undefined}
+                  onChange={(e) => setHistoryExportRange((r) => ({ ...r, start_date: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500/60 focus:ring-2 focus:ring-sky-500/20 transition-all"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 min-w-0 flex-1">
+                End date (restaurant local)
+                <input
+                  type="date"
+                  value={historyExportRange.end_date}
+                  min={historyExportRange.start_date || undefined}
+                  onChange={(e) => setHistoryExportRange((r) => ({ ...r, end_date: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-700/60 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500/60 focus:ring-2 focus:ring-sky-500/20 transition-all"
+                />
+              </label>
+            </div>
+
+            {historyExportError && (
+              <div className="text-xs font-medium text-rose-300 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                {historyExportError}
+              </div>
+            )}
+            {historyExportSuccess && (
+              <div className="text-xs font-medium text-emerald-200 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                {historyExportSuccess}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-xl">
+              {[
+                { key: 'sessions', label: 'Sessions', helper: 'One row per session' },
+                { key: 'questions', label: 'Questions', helper: 'Aggregated per question' },
+                { key: 'choices', label: 'Choices', helper: 'Aggregated per option' }
+              ].map((file) => (
+                <button
+                  key={file.key}
+                  type="button"
+                  disabled={Boolean(historyExportLoadingFile)}
+                  onClick={() => downloadHistoryExport(file.key)}
+                  className="flex flex-col items-center gap-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-200 font-bold py-3 px-3 text-xs uppercase tracking-[0.15em] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {historyExportLoadingFile === file.key ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FileText className="w-4 h-4" />
+                  )}
+                  {file.label}
+                  <span className="text-[9px] font-medium normal-case tracking-normal text-emerald-300/70">{file.helper}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Payment Gateway Card */}
       <section className="mb-8 bg-slate-800/50 border border-slate-700/50 rounded-3xl p-6 shadow-xl">

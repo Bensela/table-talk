@@ -4,6 +4,27 @@ const db = require('../../db');
 
 jest.mock('../../db', () => {
   const mockQuery = jest.fn((text, params) => {
+    if (
+      text &&
+      text.includes('FROM restaurants') &&
+      text.includes('billing_status') &&
+      text.includes('WHERE slug = $1')
+    ) {
+      return Promise.resolve({
+        rows: [{
+          id: 'r1-uuid',
+          slug: params?.[0] || 'test-restaurant',
+          name: 'Test Restaurant',
+          billing_status: 'active',
+          contact_email: null,
+          contact_phone: null,
+          address: null,
+          latitude: null,
+          longitude: null,
+          manager_name: null
+        }]
+      });
+    }
     if (text && text.includes('SELECT id FROM restaurants')) {
       return Promise.resolve({ rows: [{ id: 'r1-uuid', slug: 'test-restaurant' }] });
     }

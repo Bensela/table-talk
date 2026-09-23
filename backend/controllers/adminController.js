@@ -2112,6 +2112,96 @@ async function exportSuperAdminMetrics(req, res) {
 }
 
 /**
+ * GET /api/admin/history-export
+ * CSV History Log Exports — MVP stand-in for the admin dashboard.
+ * One restaurant per export, filtered by date range. Three files:
+ *   file=sessions  — one row per session
+ *   file=questions — one row per question, aggregated across the period
+ *   file=choices   — one row per multiple-choice option, aggregated
+ *
+ * Query params:
+ *   restaurant_id  required, UUID
+ *   start_date     required, YYYY-MM-DD (restaurant local, inclusive)
+ *   end_date       required, YYYY-MM-DD (restaurant local, inclusive)
+ *   file           required, one of sessions|questions|choices
+ *
+ * Security:
+ *   SUPER_ADMIN may export any restaurant.
+ *   RESTAURANT_ADMIN may export only their own restaurant, and only when
+ *   restaurants.can_export_analytics is enabled.
+ * Contains no personal data: no names, no typed input, no IP addresses,
+ * no location, no device identifiers beyond device type.
+ */
+async function exportHistoryLogs(req, res) {
+  const historyExport = require('../services/historyExportService');
+  try {
+    const restaurantId = String(req.query.restaurant_id || '').trim();
+    const startDateStr = String(req.query.start_date || '').trim();
+    const endDateStr = String(req.query.end_date || '').trim();
+    const fileKind = String(req.query.file || '').trim().toLowerCase();
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: 'restaurant_id is required' });
+    }
+    if (!['sessions', 'questions', 'choices'].includes(fileKind)) {
+      return res.status(400).json({ error: 'file must be one of sessions, questions, choices' });
+    }
+    if (!historyExport.isValidDateStr(startDateStr) || !historyExport.isValidDateStr(endDateStr)) {
+      return res.status(400).json({ error: 'start_date and end_date are required as YYYY-MM-DD' });
+    }
+    if (endDateStr < startDateStr) {
+      return res.status(400).json({ error: 'end_date must be on or after start_date' });
+    }
+    const MAX_DAYS = 366;
+    const spanDays = (new Date(`${endDateStr}T00:00:00Z`) - new Date(`${startDateStr}T00:00:00Z`)) / (24 * 60 * 60 * 1000);
+    if (spanDays > MAX_DAYS) {
+      return res.status(400).json({ error: `Export window cannot exceed ${MAX_DAYS} days` });
+    }
+
+    const access = await historyExport.checkExportAccess(req.user, restaurantId);
+    if (!access.allowed) {
+      return res.status(403).json({ error: access.reason || 'Not authorized' });
+    }
+
+    const restaurantRes = await db.query(
+      'SELECT id, name, latitude, longitude FROM restaurants WHERE id = $1',
+      [restaurantId]
+    );
+    const restaurant = restaurantRes.rows[0];
+    if (!restaurant) {
+      return res.status(404).json({ error: 'Restaurant not found' });
+    }
+
+    const { timeZone, usedFallback } = historyExport.resolveRestaurantTimeZone(restaurant);
+    const { startAt, endAt } = historyExport.resolveDateRangeUtc(startDateStr, endDateStr, timeZone);
+
+    let csv;
+    if (fileKind === 'sessions') {
+      const rows = await historyExport.buildSessionsRows({ restaurantId, startAt, endAt, timeZone });
+      csv = historyExport.sessionsRowsToCsv(rows, { restaurant, timeZone });
+    } else if (fileKind === 'questions') {
+      const rows = await historyExport.buildQuestionsRows({ restaurantId, startAt, endAt });
+      csv = historyExport.questionsRowsToCsv(rows);
+    } else {
+      const rows = await historyExport.buildChoicesRows({ restaurantId, startAt, endAt });
+      csv = historyExport.choicesRowsToCsv(rows);
+    }
+
+    const filename = historyExport.exportFilename(fileKind, restaurantId, startDateStr, endDateStr);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Timezone-Used', timeZone);
+    if (usedFallback) {
+      res.setHeader('X-Timezone-Fallback', 'true');
+    }
+    return res.status(200).send(csv);
+  } catch (err) {
+    console.error('[admin history-export] failed:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
  * GET /api/admin/questions
  * Super Admin: list global/default question bank rows.
  */
@@ -2651,6 +2741,7 @@ module.exports = {
   deleteTenantPermanent,
   getSuperAdminMetrics,
   exportSuperAdminMetrics,
+  exportHistoryLogs,
   updateTenantProfile,
   getGlobalQuestions,
   updateGlobalQuestion,

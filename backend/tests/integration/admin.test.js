@@ -4,7 +4,43 @@ const db = require('../../db');
 const { signToken } = require('../../middleware/authMiddleware');
 
 jest.mock('../../db', () => {
-  const mockQuery = jest.fn();
+  const mockQuery = jest.fn((text, params) => {
+    if (
+      text &&
+      text.includes('information_schema.columns') &&
+      text.includes(`table_name = 'restaurants'`)
+    ) {
+      return Promise.resolve({
+        rows: [
+          { column_name: 'plan' },
+          { column_name: 'billing_status' },
+          { column_name: 'billing_provider' },
+          { column_name: 'trial_ends_at' },
+          { column_name: 'subscription_current_period_end' },
+          { column_name: 'subscription_cancel_at_period_end' },
+          { column_name: 'contact_email' },
+          { column_name: 'contact_phone' },
+          { column_name: 'address' },
+          { column_name: 'latitude' },
+          { column_name: 'longitude' },
+          { column_name: 'manager_name' }
+        ]
+      });
+    }
+
+    const nextMock = mockQuery._queue.shift();
+    if (nextMock) return nextMock;
+
+    return Promise.resolve({ rows: [] });
+  });
+
+  mockQuery._queue = [];
+
+  mockQuery.mockResolvedValueOnce = (val) => {
+    mockQuery._queue.push(Promise.resolve(val));
+    return mockQuery;
+  };
+
   return {
     query: mockQuery
   };
@@ -108,18 +144,19 @@ describe('Admin API & RBAC Security & Data Isolation', () => {
       );
     });
 
-    it('should generate table QR code referencing the correct slug when registering a table', async () => {
-      db.query
-        .mockResolvedValueOnce({ rows: [{ slug: 'rest-slug-1' }] }) // Slug fetch
-        .mockResolvedValueOnce({ rows: [{ id: 't-new', table_number: '12', qr_code_url: 'https://tabletalk.app/r/rest-slug-1?table=12' }] }); // Table insert
-
+    it('should deny Restaurant Admin table registration because provisioning is Super Admin only', async () => {
       const res = await request(app)
         .post('/api/tenant/tables')
         .set('Authorization', `Bearer ${restaurantAdminToken}`)
         .send({ table_number: '12' });
 
-      expect(res.statusCode).toBe(201);
-      expect(res.body.qr_code_url).toBe('https://tabletalk.app/r/rest-slug-1?table=12');
+      expect(res.statusCode).toBe(403);
+      expect(res.body.error).toContain('Super Admin');
+      const mutationCalls = db.query.mock.calls.filter(([sql]) =>
+        typeof sql === 'string' &&
+        /^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)
+      );
+      expect(mutationCalls).toHaveLength(0);
     });
   });
 });

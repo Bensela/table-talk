@@ -2,12 +2,23 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { io } from 'socket.io-client';
-import { createSession, getSession, updateSessionMode, joinDualSession } from '../api';
+import { createSession, getSession, updateSessionMode } from '../api';
 import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
 import { storeParticipant, getStoredParticipant, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 import useAnalytics from '../hooks/useAnalytics';
+
+const STAGE_TIMEOUT_MS = 20 * 1000;
+
+// Diagnostic only (History Log Exports device_type column) — never used for
+// fingerprinting or any authorization decision.
+function detectDeviceType() {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  if (/iPad|iPhone|iPod/i.test(ua)) return 'iOS';
+  if (/Android/i.test(ua)) return 'Android';
+  return null;
+}
 
 export default function ModeSelection() {
   const { tableToken, restaurantSlug, sessionId } = useParams(); // Support both new flow (tableToken) and legacy (sessionId)
@@ -69,6 +80,92 @@ export default function ModeSelection() {
     });
   }, [restaurantSlug, tableToken, context, sessionId, firePublic]);
 
+  // Startup-stage timeout: a phone may only sit on Mode Selection, still
+  // deciding, for 20 seconds before being bounced back to the scanner page.
+  // Does not run while a create-session request is in flight (loading) or
+  // once a dual pairing code is already being shown (view !== 'mode-select')
+  // — those have their own existing lifecycles. Releases this device's
+  // setup lock first, if held, so a waiting phone isn't stuck until the
+  // server-side lock TTL expires.
+  useEffect(() => {
+    if (!tableToken || view !== 'mode-select' || loading) return undefined;
+
+    const timer = setTimeout(async () => {
+      firePublic({
+        event_type: 'startup_stage_timeout',
+        event_data: {
+          stage: 'mode',
+          restaurant_slug: restaurantSlug || null,
+          table_token: tableToken || null
+        }
+      });
+
+      try {
+        const normalizedRestaurant = String(
+          restaurantSlug || sessionStorage.getItem('restaurant_slug') || ''
+        ).trim().toLowerCase();
+
+        if (normalizedRestaurant && tableToken) {
+          const setupLockKey = `setup_lock::${normalizedRestaurant}::${tableToken}`;
+          const lockToken = sessionStorage.getItem(setupLockKey);
+
+          if (lockToken) {
+            const apiUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api');
+            let socketOrigin = isDev ? 'http://localhost:5000' : window.location.origin;
+            let socketPath = '/socket.io/';
+
+            if (typeof apiUrl === 'string' && apiUrl.length > 0) {
+              if (apiUrl.startsWith('http')) {
+                const u = new URL(apiUrl);
+                socketOrigin = `${u.protocol}//${u.host}`;
+                const basePath = (u.pathname || '').replace(/\/$/, '');
+                if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+              } else if (apiUrl.startsWith('/')) {
+                socketOrigin = window.location.origin;
+                const basePath = apiUrl.replace(/\/$/, '');
+                if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+              }
+            }
+
+            const releaseSocket = io(socketOrigin, {
+              path: socketPath,
+              transports: ['websocket', 'polling']
+            });
+
+            await new Promise((resolve) => {
+              let settled = false;
+              const ackTimer = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              }, 1200);
+
+              releaseSocket.emit('release_setup', {
+                restaurantSlug: normalizedRestaurant,
+                tableToken,
+                lockToken
+              }, () => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(ackTimer);
+                resolve();
+              });
+            });
+
+            sessionStorage.removeItem(setupLockKey);
+            releaseSocket.disconnect();
+          }
+        }
+      } catch (_) {
+        // Best-effort only; the redirect below must still happen.
+      }
+
+      navigate('/');
+    }, STAGE_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [tableToken, restaurantSlug, view, loading, navigate, firePublic, isDev]);
+
   const handleSinglePhone = async () => {
     firePublic({
       event_type: 'mode_selected',
@@ -85,20 +182,13 @@ export default function ModeSelection() {
         table_token: tableToken,
         context: context,
         mode: 'single-phone',
-        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
+        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug'),
+        device_type: detectDeviceType()
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
-      
-      // Release setup lock and notify others so they can act automatically
-      if (socket && tableToken) {
-          console.log('[ModeSelection] Setup completed, notifying others');
-          socket.emit('setup_completed', { 
-              tableToken, 
-              mode: 'single-phone', 
-              sessionId: data.session_id 
-          });
-      }
+
+      await completeCommittedSetup('single-phone');
 
       navigate(`/session/${data.session_id}/game`);
     } catch (err) {
@@ -109,8 +199,9 @@ export default function ModeSelection() {
     }
   };
 
+  const [pairingCode, setPairingCode] = useState(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
-  const [createdSessionId, setCreatedSessionId] = useState(null); // Track session ID for websocket
+  const [createdSessionId, setCreatedSessionId] = useState(null); // Phone A waits here until B redeems the code
 
   const handleStartDual = async () => {
     firePublic({
@@ -128,23 +219,28 @@ export default function ModeSelection() {
         table_token: tableToken,
         context: context,
         mode: 'dual-phone',
-        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
+        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug'),
+        device_type: detectDeviceType()
       });
       storeParticipant(data.participant_id, data.session_id, data.participant_token);
       storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
       
-      // Release setup lock and notify others to auto-join
-      if (socket && tableToken) {
-          console.log('[ModeSelection] Setup completed, notifying others to auto-join');
-          socket.emit('setup_completed', { 
-              tableToken, 
-              mode: 'dual-phone', 
-              sessionId: data.session_id 
-          });
+      const pairingCode = String(data.pairing_code || '').toUpperCase();
+
+      if (!/^[ABCDEFGHJKLMNPRSTUVWXYZ]{4}$/.test(pairingCode)) {
+        throw new Error('Pairing code was missing or invalid.');
       }
 
-      // Directly navigate to game, waiting for partner to join via "One-Scan"
-      navigate(`/session/${data.session_id}/game`);
+      if (!data.pairing_expires_at) {
+        throw new Error('Pairing expiry was missing.');
+      }
+
+      await completeCommittedSetup('dual-phone');
+
+      setPairingCode(pairingCode);
+      setPairingExpiresAt(data.pairing_expires_at);
+      setCreatedSessionId(data.session_id);
+      setView('show-code');
     } catch (err) {
       console.error(err);
       setError('Failed to create session.');
@@ -152,6 +248,81 @@ export default function ModeSelection() {
       setLoading(false);
     }
   };
+
+  // Pre-session setup arbitration completion. Announces to waiting devices
+  // at this table that setup finished, only AFTER this phone's own session
+  // has been committed (and, for dual-phone, only after the pairing code
+  // has been validated above). Coordination only — never carries session,
+  // participant, or pairing identity. Best-effort: any failure here must
+  // never be interpreted as a session-creation failure or trigger a retry
+  // of createSession().
+  async function completeCommittedSetup(mode) {
+    try {
+      const normalizedRestaurant = String(
+        restaurantSlug || sessionStorage.getItem('restaurant_slug') || ''
+      ).trim().toLowerCase();
+      const currentTableToken = tableToken;
+
+      if (!normalizedRestaurant || !currentTableToken) return;
+
+      const setupLockKey = `setup_lock::${normalizedRestaurant}::${currentTableToken}`;
+      const lockToken = sessionStorage.getItem(setupLockKey);
+
+      if (!lockToken) return;
+
+      const apiUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:5000' : '/api');
+      let socketOrigin = isDev ? 'http://localhost:5000' : window.location.origin;
+      let socketPath = '/socket.io/';
+
+      if (typeof apiUrl === 'string' && apiUrl.length > 0) {
+        if (apiUrl.startsWith('http')) {
+          const u = new URL(apiUrl);
+          socketOrigin = `${u.protocol}//${u.host}`;
+          const basePath = (u.pathname || '').replace(/\/$/, '');
+          if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+        } else if (apiUrl.startsWith('/')) {
+          socketOrigin = window.location.origin;
+          const basePath = apiUrl.replace(/\/$/, '');
+          if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+        }
+      }
+
+      const setupSocket = io(socketOrigin, {
+        path: socketPath,
+        transports: ['websocket', 'polling']
+      });
+
+      const ack = await new Promise((resolve) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve({ status: 'timeout' });
+        }, 1500);
+
+        setupSocket.emit('setup_completed', {
+          restaurantSlug: normalizedRestaurant,
+          tableToken: currentTableToken,
+          lockToken,
+          mode
+        }, (response) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer);
+          resolve(response || { status: 'ignored' });
+        });
+      });
+
+      if (ack?.status === 'completed') {
+        sessionStorage.removeItem(setupLockKey);
+      }
+
+      setupSocket.disconnect();
+    } catch (_) {
+      // Best-effort coordination signal only; never affects the already
+      // committed session.
+    }
+  }
 
   // WebSocket Listener for Auto-Dismiss
   useEffect(() => {
@@ -201,7 +372,7 @@ export default function ModeSelection() {
 
 // ...
 
-function PairingCodeDisplay({ code, expiresAt, onContinue }) {
+function PairingCodeDisplay({ code, expiresAt }) {
     const [timeLeft, setTimeLeft] = useState(null);
 
     useEffect(() => {
@@ -218,20 +389,20 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
     }, [expiresAt]);
 
     return (
-      <div className="min-h-screen bg-white flex flex-col p-6 items-center justify-center font-sans">
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 items-center justify-center font-sans">
         <div className="max-w-md w-full text-center space-y-8">
-          <h2 className="text-3xl font-extrabold text-gray-900">Share This Code</h2>
+          <h2 className="text-3xl font-extrabold text-[#35332E]">Connect Your Partner</h2>
           
-          <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 shadow-xl">
-            <div className="text-6xl font-black tracking-widest text-blue-600 font-mono">
+          <div className="bg-[#FBF7EF] p-8 rounded-3xl border-2 border-[#DCD3C2] shadow-xl">
+            <div className="text-6xl font-black tracking-[0.18em] text-[#35332E] font-mono">
               {code}
             </div>
           </div>
 
           <div className="space-y-4">
             <p className="text-gray-600 text-lg">
-              Have your partner scan the same QR code and select <br/>
-              <span className="font-bold text-gray-900">"Join Dual-Phone Session"</span>
+              Have your partner scan the same table QR code, then enter <br/>
+              <span className="font-bold text-[#35332E]">this 4-letter code</span>
             </p>
             
             {timeLeft !== null && timeLeft > 0 ? (
@@ -245,55 +416,12 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
             )}
           </div>
 
-          <Button 
-            onClick={onContinue}
-            variant="primary"
-            size="xl"
-            fullWidth
-            className="mt-8"
-          >
-            Continue to Questions →
-          </Button>
         </div>
       </div>
     );
 }
 
 // ... in main render ...
-  const handleJoinDual = async () => {
-    if (joinCode.length !== 6) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data } = await joinDualSession({
-        table_token: tableToken,
-        code: joinCode,
-        restaurant_slug: restaurantSlug || sessionStorage.getItem('restaurant_slug')
-      });
-      storeParticipant(data.participant_id, data.session_id, data.participant_token);
-      navigate(`/session/${data.session_id}/game`);
-    } catch (err) {
-      console.error(err);
-      setError(err.response?.data?.error || 'Invalid code. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleContinueToGame = () => {
-    // For the creator of Dual Phone session, once they share code
-    // They navigate to game where they will wait for partner
-    // We already stored participant_id in handleStartDual
-    // We need the sessionId from somewhere... wait, we need to store it in state or session storage
-    const storedSessionId = sessionStorage.getItem('session_id');
-    if (storedSessionId) {
-      navigate(`/session/${storedSessionId}/game`);
-    } else {
-      setError("Session lost. Please restart.");
-      setView('mode-select');
-    }
-  };
-
   const container = {
     hidden: { opacity: 0 },
     show: { opacity: 1, transition: { staggerChildren: 0.1 } }
@@ -305,6 +433,15 @@ function PairingCodeDisplay({ code, expiresAt, onContinue }) {
   };
 
   // --- RENDER VIEWS ---
+
+  if (view === 'show-code') {
+    return (
+      <PairingCodeDisplay
+        code={pairingCode}
+        expiresAt={pairingExpiresAt}
+      />
+    );
+  }
 
   const modes = [
     {

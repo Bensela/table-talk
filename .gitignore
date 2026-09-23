@@ -3,3 +3,24 @@ dist
 .env
 .DS_Store
 coverage
+
+# IDE and tool artifacts
+.claude/
+.dbg/
+.serena/
+.trae/
+
+# Scratch, debug and patch candidate artifacts
+CATALYST_*
+Catalyst-*
+PATCH_*
+_patch_backups/
+_patch_candidates/
+backups/
+output/
+*backup*
+*.PRE-*
+**/*.PRE-*
+backend/index.js.PRE-*
+backend/tests/integration/patch2b-start-fresh-current-pairing.test.js
+debug-*.md

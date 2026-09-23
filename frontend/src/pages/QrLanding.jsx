@@ -339,16 +339,13 @@ export default function QrLanding() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-    readGeolocationPermissionState()
-      .then((s) => { if (!cancelled) setGeoPermissionState(s || 'prompt'); })
-      .catch(() => { if (!cancelled) setGeoPermissionState('unsupported'); });
+    // Guest geofencing is disabled for the current product flow.
+    // Keep legacy temporary-token cleanup without querying location.
     function onTempGeoExpired() { clearTempGeoAccessToken(); }
     if (typeof window !== 'undefined') {
       window.addEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
     }
     return () => {
-      cancelled = true;
       if (typeof window !== 'undefined') {
         window.removeEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
       }
@@ -373,42 +370,9 @@ export default function QrLanding() {
         // Coarse first (fast, low battery), upgraded to high-accuracy only if
         // the returned fix is worse than ~250m. Permission reads run in
         // parallel so we know how to tag geolocation_status in analytics.
-        setLoadingText('Checking location permission...');
-        const permissionPromise = readGeolocationPermissionState();
-        const positionPromise = requestCurrentPositionWithFallback({
-          acceptIfWithinMeters: 250,
-          dedupeKey: `qrlanding:${restaurantSlug || 'any'}:${tableParam || 'any'}`
-        });
-
-        const [permission, positionResult] = await Promise.all([permissionPromise, positionPromise]);
-        const locationPayload = positionResult.ok && positionResult.coords
-          ? { latitude: positionResult.coords.latitude, longitude: positionResult.coords.longitude }
-          : null;
-        if (positionResult.ok && positionResult.coords && typeof positionResult.coords.accuracy === 'number') {
-          setLastLocationAccuracyM(positionResult.coords.accuracy);
-        }
-        const geolocationStatus = positionResult.ok
-          ? 'granted'
-          : permission || (positionResult.status === 'denied' ? 'denied' : 'prompt');
-
-        firePublic({
-          event_type: 'qr_landing_geolocation_request',
-          event_data: {
-            restaurant_slug: restaurantSlug,
-            table_token: tableParam,
-            permission_state: permission,
-            position_status: positionResult.status,
-            accuracy_m: positionResult.coords?.accuracy ?? null
-          }
-        });
-
+        // Validate restaurant/table without requesting device location.
         setLoadingText('Verifying your table...');
-
-        // Phase 2 — public handshake with optional geolocation envelope.
-        const response = await publicHandshake(restaurantSlug, tableParam, {
-          location: locationPayload,
-          geolocationStatus
-        });
+        const response = await publicHandshake(restaurantSlug, tableParam);
         const { restaurant_name, session_token } = response.data;
 
         // Save session identifiers to localStorage

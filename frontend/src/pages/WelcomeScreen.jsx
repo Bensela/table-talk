@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../components/ui/Button';
 import { resolveSession, joinDualSession, publicHandshake, requestTempGeoAccess, clearTempGeoAccessToken, TEMP_GEO_EXPIRED_EVENT } from '../api';
 import { storeParticipant, getStoredParticipant, getDualSession, storeDualSession } from '../utils/sessionStorage';
-import { useSocket } from '../context/SocketContext';
 import { requestCurrentPositionWithFallback, requestHighAccuracyPosition, readGeolocationPermissionState } from '../utils/geolocation';
 import useAnalytics from '../hooks/useAnalytics';
 
@@ -68,11 +68,16 @@ export default function WelcomeScreen() {
 
   const activeRestaurantSlug = restaurantSlug || null;
 
-  const { socket, isConnected, ensureConnection } = useSocket();
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState(null);
-  const [setupStatus, setSetupStatus] = useState('available'); // 'available', 'busy', 'granted'
-  const [waitingForA, setWaitingForA] = useState(false);
+  const [joinCodeRequired, setJoinCodeRequired] = useState(false);
+  const [joinCodeChars, setJoinCodeChars] = useState(['', '', '', '']);
+  const [joinError, setJoinError] = useState(null);
+  const [joinAttempts, setJoinAttempts] = useState(0);
+  const [joinSubmitting, setJoinSubmitting] = useState(false);
+  const [rescanRequired, setRescanRequired] = useState(false);
+  const joinInputRefs = useRef([]);
+  const joinSubmittingRef = useRef(false);
   const [blockedError, setBlockedError] = useState(null);
   const [subscriptionError, setSubscriptionError] = useState(null); // 'suspended' | 'invalid' | 'geofence_denied'
   const [geofenceInfo, setGeofenceInfo] = useState(null);
@@ -81,11 +86,67 @@ export default function WelcomeScreen() {
   const [geoPermissionState, setGeoPermissionState] = useState(null); // 'granted' | 'prompt' | 'denied' | 'unsupported'
   const [tempAccessLoading, setTempAccessLoading] = useState(false);
   const [tempAccessBanner, setTempAccessBanner] = useState(null); // { expires_at_unix, expires_at_iso } | null
-  const setupCompletedRef = useRef(false);
   const validatedRef = useRef(false);
   const validationStartedRef = useRef(false);
   const renderedRef = useRef(false);
   const gpsUpgradeAttemptedRef = useRef(false);
+
+  // Pre-session setup arbitration. This credential coordinates
+  // setup ownership only; it never authorizes dual-session joining.
+  const [setupWaiting, setSetupWaiting] = useState(false);
+  const [setupError, setSetupError] = useState(null);
+  const setupSocketRef = useRef(null);
+  const setupResolutionRef = useRef(null);
+  const startNewInsteadRef = useRef(null);
+  const joinCodeRequiredRef = useRef(false);
+
+  const normalizedSetupRestaurant = String(activeRestaurantSlug || '').trim().toLowerCase();
+  const setupLockStorageKey = normalizedSetupRestaurant && tableToken
+    ? `setup_lock::${normalizedSetupRestaurant}::${tableToken}`
+    : null;
+
+  const readSetupLockToken = () => {
+    if (!setupLockStorageKey || typeof window === 'undefined') return null;
+    return window.sessionStorage.getItem(setupLockStorageKey);
+  };
+
+  const storeSetupLockToken = (lockToken) => {
+    if (!setupLockStorageKey || !lockToken || typeof window === 'undefined') return;
+    window.sessionStorage.setItem(setupLockStorageKey, lockToken);
+  };
+
+  const claimTableSetup = () => new Promise((resolve) => {
+    const socket = setupSocketRef.current;
+
+    if (!socket || !socket.connected || !normalizedSetupRestaurant || !tableToken) {
+      resolve({ status: 'unavailable' });
+      return;
+    }
+
+    let settled = false;
+    let timeout = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) window.clearTimeout(timeout);
+      resolve(result || { status: 'invalid' });
+    };
+
+    timeout = window.setTimeout(() => {
+      finish({ status: 'timeout' });
+    }, 5000);
+
+    socket.emit(
+      'claim_setup',
+      {
+        restaurantSlug: normalizedSetupRestaurant,
+        tableToken,
+        lockToken: readSetupLockToken()
+      },
+      finish
+    );
+  });
 
   async function attemptLowAccuracyBypass() {
     setChecking(true);
@@ -269,17 +330,22 @@ export default function WelcomeScreen() {
     validatedRef.current = false;
     renderedRef.current = false;
     gpsUpgradeAttemptedRef.current = false;
-    setupCompletedRef.current = false;
     setSubscriptionError(null);
     setGeofenceInfo(null);
     setLastLocationAccuracyM(null);
     setInitialValidationPending(true);
-    setWaitingForA(false);
     setBlockedError(null);
     setChecking(false);
-    setSetupStatus('available');
     setStatus(null);
     setTempAccessBanner(null);
+    setJoinCodeRequired(false);
+    setJoinCodeChars(['', '', '', '']);
+    setJoinError(null);
+    setJoinAttempts(0);
+    setJoinSubmitting(false);
+    setRescanRequired(false);
+    setSetupWaiting(false);
+    setSetupError(null);
     // Reset geo permission state to unknown on QR change; the validation
     // effect will re-read it via readGeolocationPermissionState on run.
     setGeoPermissionState(null);
@@ -287,33 +353,150 @@ export default function WelcomeScreen() {
 
   // ── Geo permission warm-read + temp-access expiry redirect ────────────────
   useEffect(() => {
-    let cancelled = false;
-    readGeolocationPermissionState().then((s) => {
-      if (!cancelled) setGeoPermissionState(s || 'prompt');
-    }).catch(() => { if (!cancelled) setGeoPermissionState('unsupported'); });
-
+    // Legacy temporary geo tokens may still exist in browser storage.
+    // Their expiry must not block guests while guest geofencing is off.
     function onTempGeoExpired() {
       clearTempGeoAccessToken();
       setTempAccessBanner(null);
-      // If user is still on WelcomeScreen, reset handshake so they see
-      // the geofence denied screen again instead of a stale "Continue".
-      if (validatedRef.current) {
-        validatedRef.current = false;
-        validationStartedRef.current = false;
-        setSubscriptionError('geofence_denied');
-        setInitialValidationPending(false);
-      }
     }
     if (typeof window !== 'undefined') {
       window.addEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
     }
     return () => {
-      cancelled = true;
       if (typeof window !== 'undefined') {
         window.removeEventListener(TEMP_GEO_EXPIRED_EVENT, onTempGeoExpired);
       }
     };
   }, [restaurantSlug, tableToken]);
+
+  // Dedicated pre-session setup coordination socket.
+  useEffect(() => {
+    if (!normalizedSetupRestaurant || !tableToken) return undefined;
+
+    const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '/api');
+    let socketOrigin = import.meta.env.DEV ? 'http://localhost:5000' : window.location.origin;
+    let socketPath = '/socket.io/';
+
+    if (typeof apiBase === 'string' && apiBase.length > 0) {
+      if (apiBase.startsWith('http')) {
+        const u = new URL(apiBase);
+        socketOrigin = `${u.protocol}//${u.host}`;
+        const basePath = (u.pathname || '').replace(/\/$/, '');
+        if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+      } else if (apiBase.startsWith('/')) {
+        socketOrigin = window.location.origin;
+        const basePath = apiBase.replace(/\/$/, '');
+        if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+      }
+    }
+
+    const socket = io(socketOrigin, {
+      path: socketPath,
+      transports: ['websocket', 'polling']
+    });
+
+    setupSocketRef.current = socket;
+
+    const joinSetupRoom = () => {
+      socket.emit('join_table_setup', {
+        restaurantSlug: normalizedSetupRestaurant,
+        tableToken,
+        lockToken: readSetupLockToken()
+      });
+    };
+
+    const matchesCurrentSetup = (payload = {}) => {
+      const eventRestaurant = String(payload.restaurantSlug || '').trim().toLowerCase();
+      return eventRestaurant === normalizedSetupRestaurant && payload.tableToken === tableToken;
+    };
+
+    // Re-resolution after a setup lifecycle change never auto-claims. A
+    // waiting device lands back on the normal interactive Welcome/Continue
+    // screen (or directly on enter_join_code if a dual pairing opportunity
+    // now exists — that branch is unconditional below). Claiming setup
+    // ownership only happens from an explicit user action: pressing
+    // Continue (handleContinue) or "Start a new session instead"
+    // (startNewInstead), both of which pass claimIfStartNew: true.
+    const reResolveAfterSetupChange = () => {
+      setSetupWaiting(false);
+      setSetupError(null);
+
+      if (typeof setupResolutionRef.current === 'function') {
+        setupResolutionRef.current({ claimIfStartNew: false });
+      }
+    };
+
+    const onSetupStatus = ({ status: setupStatus } = {}) => {
+      if (setupStatus === 'busy') {
+        setSetupWaiting(true);
+        setSetupError(null);
+        return;
+      }
+
+      if (setupStatus === 'available' || setupStatus === 'granted') {
+        setSetupWaiting(false);
+      }
+    };
+
+    const onSetupClaimed = (payload = {}) => {
+      if (!matchesCurrentSetup(payload)) return;
+
+      // The public event contains no secret. Only a browser that already
+      // holds the private scoped lock token is treated as the owner.
+      if (!readSetupLockToken()) {
+        setSetupWaiting(true);
+        setSetupError(null);
+      }
+    };
+
+    const onSetupReleased = (payload = {}) => {
+      if (!matchesCurrentSetup(payload)) return;
+      reResolveAfterSetupChange();
+    };
+
+    const onSetupCompleted = (payload = {}) => {
+      if (!matchesCurrentSetup(payload)) return;
+      reResolveAfterSetupChange();
+    };
+
+    // A dual pairing opportunity at this table was just redeemed by another
+    // device. Any phone still sitting on the code-entry screen for the SAME
+    // opportunity (and who hasn't already opted into starting their own
+    // session) auto-advances into starting a new session of their own,
+    // exactly as if they had pressed "Start a new session instead". No
+    // session/participant identity is carried on this event.
+    const onPairingOpportunityConsumed = (payload = {}) => {
+      if (!matchesCurrentSetup(payload)) return;
+      if (!joinCodeRequiredRef.current) return;
+      if (typeof startNewInsteadRef.current === 'function') {
+        startNewInsteadRef.current();
+      }
+    };
+
+    socket.on('connect', joinSetupRoom);
+    socket.on('setup_status', onSetupStatus);
+    socket.on('setup_claimed', onSetupClaimed);
+    socket.on('setup_released', onSetupReleased);
+    socket.on('setup_completed', onSetupCompleted);
+    socket.on('pairing_opportunity_consumed', onPairingOpportunityConsumed);
+
+    if (socket.connected) joinSetupRoom();
+
+    return () => {
+      socket.off('connect', joinSetupRoom);
+      socket.off('setup_status', onSetupStatus);
+      socket.off('setup_claimed', onSetupClaimed);
+      socket.off('setup_released', onSetupReleased);
+      socket.off('setup_completed', onSetupCompleted);
+      socket.off('pairing_opportunity_consumed', onPairingOpportunityConsumed);
+
+      if (setupSocketRef.current === socket) {
+        setupSocketRef.current = null;
+      }
+
+      socket.disconnect();
+    };
+  }, [normalizedSetupRestaurant, tableToken, setupLockStorageKey]);
 
   // Save the resolved restaurant slug to session state on mount / update
   useEffect(() => {
@@ -347,43 +530,11 @@ export default function WelcomeScreen() {
 
     async function validate() {
       validationStartedRef.current = true;
-      setStatus('Checking restaurant & location…');
+      setStatus('Checking restaurant...');
       try {
-        // Best-effort two-stage geolocation: coarse first, upgrade to
-        // high-accuracy only if coarse returned a fix worse than ~250m.
-        // Permission read runs in parallel so we can tag events correctly.
-        const [permission, positionResult] = await Promise.all([
-          readGeolocationPermissionState(),
-          requestCurrentPositionWithFallback({
-            acceptIfWithinMeters: 250,
-            dedupeKey: `welcome:${activeRestaurantSlug || 'any'}:${tableToken || 'any'}`
-          })
-        ]);
-        const locationPayload = positionResult.ok && positionResult.coords
-          ? { latitude: positionResult.coords.latitude, longitude: positionResult.coords.longitude }
-          : null;
-        if (positionResult.ok && positionResult.coords && typeof positionResult.coords.accuracy === 'number') {
-          setLastLocationAccuracyM(positionResult.coords.accuracy);
-        }
-        const geolocationStatus = positionResult.ok
-          ? 'granted'
-          : permission || (positionResult.status === 'denied' ? 'denied' : 'prompt');
-
-        firePublic({
-          event_type: 'welcome_geolocation_request',
-          event_data: {
-            restaurant_slug: activeRestaurantSlug,
-            table_token: tableToken,
-            permission_state: permission,
-            position_status: positionResult.status,
-            accuracy_m: positionResult.coords?.accuracy ?? null
-          }
-        });
-
-        const result = await publicHandshake(activeRestaurantSlug, tableToken, {
-          location: locationPayload,
-          geolocationStatus
-        });
+        // Preserve restaurant/table/subscription validation without
+        // requesting browser geolocation.
+        const result = await publicHandshake(activeRestaurantSlug, tableToken);
         // If handshake carries temp-access metadata (user had a temp token already
         // stored from a prior tab session and got scoped-access granted), surface
         // the banner so the expiry is visible.
@@ -510,11 +661,7 @@ export default function WelcomeScreen() {
     // dependency). Also register on-connect in case socket-ready timing
     // helps any downstream listeners we already had.
     validate();
-    if (socket && !isConnected) {
-      const onConnect = () => { /* no-op: validate already started above */ };
-      socket.once('connect', onConnect);
-    }
-  }, [isConnected, socket, tableToken, activeRestaurantSlug, firePublic]);
+  }, [tableToken, activeRestaurantSlug, firePublic]);
 
   // ── Geofence Retry ────────────────────────────────────────────────────────────
   // Asks for location again (handles user granting permission via browser prompt)
@@ -774,10 +921,9 @@ export default function WelcomeScreen() {
 
   const contextPath = `/r/${activeRestaurantSlug}/t/${tableToken}/context`;
 
-  // Join setup room on mount
+  // Active-session error still returns the guest to the scanner after a short delay.
   useEffect(() => {
     if (blockedError) {
-      // Auto-redirect after 3 seconds
       const timer = setTimeout(() => {
         setBlockedError(null);
         navigate('/');
@@ -785,250 +931,253 @@ export default function WelcomeScreen() {
       return () => clearTimeout(timer);
     }
   }, [blockedError, navigate]);
-  useEffect(() => {
-    if (tableToken && socket) {
-      ensureConnection();
-    }
-  }, [tableToken, socket, ensureConnection]);
 
-  useEffect(() => {
-    if (isConnected && socket && tableToken) {
-      console.log('[Welcome] Joining setup room for', tableToken);
-      const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
-      socket.emit('join_table_setup', { tableToken, lockToken: existingLock });
-
-      const handleStatus = (data) => {
-        console.log('[Welcome] Setup status:', data.status);
-        setSetupStatus(data.status);
-        if (data.status === 'busy') {
-          setWaitingForA(true);
-        }
-      };
-
-      const handleClaimed = (data) => {
-        // Since lockToken is managed internally or by session storage,
-        // we can just assume if we receive this, someone else claimed it.
-        // If WE claimed it, we would get the response via callback.
-        const myLock = sessionStorage.getItem(`table_lock_${tableToken}`);
-        if (data.lockToken !== myLock) {
-          setSetupStatus('busy');
-          setWaitingForA(true);
-        }
-      };
-
-      const handleReleased = () => {
-        setSetupStatus('available');
-        setWaitingForA(false);
-      };
-
-      const handleSetupCompleted = async (data) => {
-        console.log('[Welcome] Setup completed by partner:', data);
-        setupCompletedRef.current = true;
-        
-        if (data.mode === 'dual-phone') {
-          setStatus('Joining partner...');
-          try {
-            const joinRes = await joinDualSession({ session_id: data.sessionId, restaurant_slug: activeRestaurantSlug });
-            const { participant_id, participant_token, session_id } = joinRes.data;
-            storeParticipant(participant_id, session_id, participant_token);
-            storeDualSession(tableToken, session_id, participant_id, participant_token);
-            navigate(`/session/${session_id}/game`);
-          } catch (err) {
-            console.error('Auto-join failed:', err);
-            setWaitingForA(false);
-            setStatus(null);
-          }
-        } else {
-          // Phone A chose Single Mode. Phone B is released to start their own.
-          console.log('[Welcome] Partner chose Single Mode. Proceeding to create new session.');
-          setWaitingForA(false);
-          setStatus('Checking availability...');
-          setSetupStatus('available');
-          
-          // Duplicate start_new logic to safely claim lock for Phone B before proceeding
-          if (socket) {
-              const doClaim = () => {
-                  const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
-                  // Proceed with claim
-                  socket.emit('claim_setup', { tableToken, lockToken: existingLock }, (response) => {
-                      if (response.status === 'granted') {
-                          sessionStorage.setItem(`table_lock_${tableToken}`, response.lockToken);
-                          setStatus('Ready to start');
-                          navigate(contextPath);
-                      } else {
-                          setWaitingForA(true);
-                          setStatus(null);
-                      }
-                  });
-              };
-              
-              if (socket.connected) {
-                  doClaim();
-              } else {
-                  console.log('[Welcome] Socket disconnected, waiting to reconnect before claiming setup...');
-                  socket.connect();
-                  socket.once('connect', doClaim);
-              }
-          } else {
-              // If disconnected entirely, just navigate and let next page handle errors
-              navigate(contextPath);
-          }
-        }
-      };
-
-      socket.on('setup_status', handleStatus);
-      socket.on('setup_claimed', handleClaimed);
-      socket.on('setup_released', handleReleased);
-      socket.on('setup_completed', handleSetupCompleted);
-
-      return () => {
-        socket.off('setup_status', handleStatus);
-        socket.off('setup_claimed', handleClaimed);
-        socket.off('setup_released', handleReleased);
-        socket.off('setup_completed', handleSetupCompleted);
-      };
-    }
-  }, [isConnected, socket, tableToken, navigate]);
-
-  const handleContinue = async () => {
-    // Defense-in-depth: do not let the user proceed until the initial
-    // geofence + restaurant validation has completed. The loading gate
-    // already prevents this button from rendering during pending, but
-    // guard here anyway for fast-click / race cases.
+  const resolveWelcomeFlow = async ({ claimIfStartNew = true, fireContinueEvent = false, preferNewSession = false } = {}) => {
     if (initialValidationPending) return;
-    setChecking(true);
-    setStatus('Connecting...');
 
-    firePublic({
-      event_type: 'welcome_continue_clicked',
-      event_data: {
-        restaurant_slug: activeRestaurantSlug,
-        table_token: tableToken
-      }
-    });
-    
+    setChecking(true);
+    setSetupError(null);
+
+    if (fireContinueEvent) {
+      setStatus('Connecting...');
+      firePublic({
+        event_type: 'welcome_continue_clicked',
+        event_data: {
+          restaurant_slug: activeRestaurantSlug,
+          table_token: tableToken
+        }
+      });
+    }
+
     try {
-      // 1. Check for existing credentials (active or backup from dual mode)
       const stored = getStoredParticipant();
       const dualStored = getDualSession(tableToken);
-      
-      console.log("[Welcome] Stored Creds:", stored);
-      console.log("[Welcome] Dual Backup:", dualStored);
 
-      // Use active token first, fallback to backup token if we just "started fresh" but want to resume
+      console.log('[Welcome] Stored Creds:', stored);
+      console.log('[Welcome] Dual Backup:', dualStored);
+
       const deviceToken = stored.participantToken || dualStored?.participantToken;
-      
-      console.log("[Welcome] Using Device Token:", deviceToken);
 
-      // 2. Resolve Session State
-      const resolveRes = await resolveSession({ 
-          table_token: tableToken, 
-          device_token: deviceToken,
-          restaurant_slug: activeRestaurantSlug
+      console.log('[Welcome] Using Device Token:', deviceToken);
+
+      const resolveRes = await resolveSession({
+        table_token: tableToken,
+        device_token: deviceToken,
+        restaurant_slug: activeRestaurantSlug,
+        preferNewSession
       });
-      
-      const { action, session_id, participant_id, participant_token, mode, reason, role } = resolveRes.data;
+
+      const { action, session_id, participant_id } = resolveRes.data;
       console.log('[Welcome] Resolution Action:', action);
 
       if (action === 'blocked_active_session') {
-          setStatus(null);
-          // Show fine UI popup instead of alert
-          setBlockedError("You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.");
-          return;
+        setStatus(null);
+        setSetupWaiting(false);
+        setBlockedError(
+          'You have an active Dual session at another table. Wait for your partner to leave, or return to your original table.'
+        );
+        return;
       }
 
       if (action === 'resume') {
-          setStatus('Resuming session...');
-          // Restore credentials if we used backup token
-          if (!stored.participantToken && deviceToken) {
-              console.log('[Welcome] Restoring backup credentials to session storage');
-              storeParticipant(participant_id, session_id, deviceToken);
-          }
-          // Navigate to game directly
-          navigate(`/session/${session_id}/game`);
-          return;
+        setSetupWaiting(false);
+        setStatus('Resuming session...');
+
+        if (!stored.participantToken && deviceToken) {
+          console.log('[Welcome] Restoring backup credentials to session storage');
+          storeParticipant(participant_id, session_id, deviceToken);
+        }
+
+        navigate(`/session/${session_id}/game`);
+        return;
       }
 
-      if (action === 'join_dual' || action === 'reclaim_dual') {
-          setStatus('Joining partner...');
-          console.log(`[Welcome] Auto-joining dual session (${action}):`, session_id);
-          // Auto-join waiting session (Phone B joins Phone A) or Reclaim spot
-          const joinRes = await joinDualSession({ 
-              session_id,
-              reclaim_role: action === 'reclaim_dual' ? role : undefined,
-              restaurant_slug: activeRestaurantSlug
-          });
-          const { 
-              participant_id: newPid, 
-              participant_token: newToken, 
-              session_id: newSid 
-          } = joinRes.data;
-
-          // Store credentials
-          storeParticipant(newPid, newSid, newToken);
-          // Store backup for this new session
-          storeDualSession(tableToken, newSid, newPid, newToken);
-          
-          navigate(`/session/${newSid}/game`);
-          return;
+      if (action === 'enter_join_code') {
+        setStatus(null);
+        setSetupWaiting(false);
+        setJoinCodeRequired(true);
+        setJoinCodeChars(['', '', '', '']);
+        setJoinError(null);
+        setJoinAttempts(0);
+        setRescanRequired(false);
+        window.setTimeout(() => joinInputRefs.current[0]?.focus(), 0);
+        return;
       }
 
       if (action === 'start_new') {
-          // If we resolved to "Start New", it means we should go to context selection
-          // NEW LOGIC: Check Setup Lock
-          setStatus('Checking availability...');
-          
-          const claimPromise = new Promise((resolve) => {
-              if (socket) {
-                  const doClaim = () => {
-                      const existingLock = sessionStorage.getItem(`table_lock_${tableToken}`);
-                      socket.emit('claim_setup', { tableToken, lockToken: existingLock }, (response) => {
-                          if (response.status === 'granted') {
-                              sessionStorage.setItem(`table_lock_${tableToken}`, response.lockToken);
-                          }
-                          resolve(response);
-                      });
-                  };
-                  
-                  if (socket.connected) {
-                      doClaim();
-                  } else {
-                      console.log('[Welcome] Socket not connected, waiting for connection before claim...');
-                      socket.connect();
-                      socket.once('connect', doClaim);
-                  }
-                  // Timeout fallback
-                  setTimeout(() => resolve({ status: 'timeout' }), 4000);
-              } else {
-                  resolve({ status: 'offline' }); 
-              }
-          });
-          
-          const claimRes = await claimPromise;
-          console.log('[Welcome] Claim result:', claimRes);
-          
-          if (claimRes.status === 'granted') {
-              setStatus('Ready to start');
-              navigate(contextPath);
-          } else if (claimRes.status === 'offline') {
-              // Show error, don't bypass lock
-              alert("Connection issue. Please wait and try again.");
-              setStatus(null);
-          } else {
-              // Busy or timeout
-              setWaitingForA(true);
-              setStatus(null);
-          }
+        setStatus(null);
+
+        // Completion/release is only a signal that authoritative state
+        // changed. A waiter must re-resolve rather than trust event data.
+        if (!claimIfStartNew) {
+          setSetupWaiting(false);
           return;
+        }
+
+        const claim = await claimTableSetup();
+
+        if (claim.status === 'granted' && claim.lockToken) {
+          storeSetupLockToken(claim.lockToken);
+          setSetupWaiting(false);
+          setSetupError(null);
+          navigate(contextPath);
+          return;
+        }
+
+        if (claim.status === 'busy') {
+          setSetupWaiting(true);
+          setSetupError(null);
+          return;
+        }
+
+        setSetupWaiting(false);
+        setSetupError('We could not reserve this table setup right now. Please try again.');
+        return;
       }
 
+      setStatus(null);
+      setSetupWaiting(false);
+      setSetupError('We could not determine the current table session. Please try again.');
     } catch (err) {
       console.error('Resolution error:', err);
-      // Fallback: Start New Flow
-      navigate(contextPath);
+
+      // Fail closed: resolver/network failure never grants setup ownership.
+      setStatus(null);
+      setSetupWaiting(false);
+      setSetupError(
+        'We could not check this table right now. Please check your connection and try again.'
+      );
     } finally {
       setChecking(false);
     }
+  };
+
+  setupResolutionRef.current = resolveWelcomeFlow;
+  joinCodeRequiredRef.current = joinCodeRequired;
+
+  const handleContinue = async () => {
+    if (initialValidationPending) return;
+
+    await resolveWelcomeFlow({
+      claimIfStartNew: true,
+      fireContinueEvent: true
+    });
+  };
+
+  const handleJoinCodeChange = (index, rawValue) => {
+    if (joinSubmitting || rescanRequired) return;
+
+    const normalized = String(rawValue || '').toUpperCase();
+    const allowed = normalized.match(/[ABCDEFGHJKLMNPRSTUVWXYZ]/g);
+    const nextChar = allowed ? allowed[allowed.length - 1] : '';
+
+    const next = [...joinCodeChars];
+    next[index] = nextChar;
+    setJoinCodeChars(next);
+    setJoinError(null);
+
+    if (!nextChar) return;
+
+    if (index < 3) {
+      joinInputRefs.current[index + 1]?.focus();
+      return;
+    }
+
+    if (next.every(Boolean)) {
+      submitJoinCode(next);
+    }
+  };
+
+  const handleJoinCodeKeyDown = (index, event) => {
+    if (event.key === 'Backspace' && !joinCodeChars[index] && index > 0) {
+      joinInputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const startNewInstead = async () => {
+    setJoinCodeRequired(false);
+    setJoinCodeChars(['', '', '', '']);
+    setJoinError(null);
+    setJoinAttempts(0);
+    setRescanRequired(false);
+
+    await resolveWelcomeFlow({
+      preferNewSession: true,
+      claimIfStartNew: true,
+      fireContinueEvent: false
+    });
+  };
+
+  startNewInsteadRef.current = startNewInstead;
+
+  const submitJoinCode = async (chars = joinCodeChars) => {
+    if (joinSubmittingRef.current || rescanRequired) return;
+
+    const code = chars.join('').toUpperCase();
+
+    if (!/^[ABCDEFGHJKLMNPRSTUVWXYZ]{4}$/.test(code)) {
+      setJoinError("Enter the four-letter code from your partner's phone.");
+      return;
+    }
+
+    joinSubmittingRef.current = true;
+    setJoinSubmitting(true);
+    setJoinError(null);
+
+    try {
+      const { data } = await joinDualSession({
+        table_token: tableToken,
+        code,
+        restaurant_slug: activeRestaurantSlug
+      });
+
+      storeParticipant(data.participant_id, data.session_id, data.participant_token);
+      storeDualSession(tableToken, data.session_id, data.participant_id, data.participant_token);
+
+      navigate(`/session/${data.session_id}/game`);
+    } catch (err) {
+      const status = err?.response?.status;
+      const errorCode = err?.response?.data?.code;
+
+      if (errorCode === 'PAIRING_ALREADY_CLAIMED') {
+        // 409: the pairing opportunity was already claimed/full/raced.
+        // This is not a wrong-code attempt — do not count it toward the
+        // 5-attempt rescan threshold.
+        setJoinError('This pairing opportunity is no longer available. Please rescan the table QR code or start a new session.');
+        setJoinCodeChars(['', '', '', '']);
+        window.setTimeout(() => joinInputRefs.current[0]?.focus(), 0);
+        return;
+      }
+
+      if ((status === 400 || status === 404) && errorCode === 'PAIRING_CODE_INVALID') {
+        const attempts = joinAttempts + 1;
+        setJoinAttempts(attempts);
+        setJoinCodeChars(['', '', '', '']);
+
+        if (attempts >= 5) {
+          setRescanRequired(true);
+          setJoinError('Too many incorrect attempts. Please scan the table QR code again.');
+        } else {
+          setJoinError('That code did not match. Please try again.');
+          window.setTimeout(() => joinInputRefs.current[0]?.focus(), 0);
+        }
+        return;
+      }
+
+      setJoinError('We could not join this session right now. Please try again.');
+    } finally {
+      joinSubmittingRef.current = false;
+      setJoinSubmitting(false);
+    }
+  };
+
+  const rescanTableQr = () => {
+    setJoinCodeRequired(false);
+    setJoinCodeChars(['', '', '', '']);
+    setJoinError(null);
+    setJoinAttempts(0);
+    setRescanRequired(false);
+    navigate('/');
   };
 
   // Subscription Error: Service Suspended
@@ -1229,48 +1378,167 @@ export default function WelcomeScreen() {
     );
   }
 
-  // Waiting UI for Phone B
-  if (waitingForA) {
+  // Explicit Phone-B pairing. Scanning the QR only discovers that a pairing
+  // opportunity exists; possession of the four-letter code authorizes redemption.
+  if (joinCodeRequired) {
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
-        <div className="relative z-10">
-          <div className="w-20 h-20 bg-[#FBF7EF] rounded-full flex items-center justify-center mb-6 shadow-[inset_0_2px_6px_rgba(53,51,46,0.08)] relative mx-auto">
-            <div className="absolute inset-0 border-4 border-[#35332E] rounded-full border-t-transparent animate-spin opacity-60"></div>
-            <img src="/catalyst-logo.png" alt="" className="w-10 h-10 object-contain relative z-10" draggable={false} />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 12 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ duration: 0.45, ease: 'easeOut' }}
+          className="max-w-md w-full relative z-10"
+        >
+          <div className="w-24 h-24 mx-auto mb-7">
+            <img src="/catalyst-logo.png" alt="Catalyst" className="w-full h-full object-contain drop-shadow-lg" />
           </div>
 
-          <h2 className="text-2xl font-bold text-[#35332E] mb-4 tracking-tight">
-            Waiting for Partner
-          </h2>
-          <p className="text-[#6E6A60] max-w-xs mx-auto mb-10 leading-relaxed">
-            Partner will select Context and Mode to start session.
+          <h1 className="text-3xl md:text-4xl font-bold text-[#35332E] tracking-tight mb-3">
+            Join your partner
+          </h1>
+
+          <p className="text-[#6E6A60] leading-relaxed mb-8">
+            Enter the four-letter code shown on your partner's phone.
           </p>
 
-          <div className="space-y-4">
-            <div className="flex justify-center gap-2">
-              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></span>
-              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-              <span className="w-2 h-2 bg-[#35332E]/70 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
+          {!rescanRequired && (
+            <div className="flex justify-center gap-3 mb-6">
+              {joinCodeChars.map((char, index) => (
+                <input
+                  key={index}
+                  ref={(element) => { joinInputRefs.current[index] = element; }}
+                  value={char}
+                  onChange={(event) => handleJoinCodeChange(index, event.target.value)}
+                  onKeyDown={(event) => handleJoinCodeKeyDown(index, event)}
+                  disabled={joinSubmitting}
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  maxLength={1}
+                  aria-label={`Pairing code letter ${index + 1}`}
+                  className="w-14 h-16 sm:w-16 sm:h-18 rounded-2xl border-2 border-[#35332E]/20 bg-[#FBF7EF] text-center text-3xl font-bold uppercase text-[#35332E] outline-none transition-all focus:border-[#35332E] focus:ring-4 focus:ring-[#35332E]/10 disabled:opacity-60"
+                />
+              ))}
             </div>
+          )}
 
-            <button
-               onClick={() => setWaitingForA(false)}
-               className="text-sm font-semibold text-[#6E6A60] hover:text-[#35332E] transition-colors uppercase tracking-widest mt-8"
+          {joinSubmitting && (
+            <p className="text-sm font-medium text-[#6E6A60] mb-4">
+              Joining session...
+            </p>
+          )}
+
+          {joinError && (
+            <div className="rounded-2xl border border-[#926B1A]/25 bg-[#FBF7EF] px-4 py-3 mb-6 text-sm leading-relaxed text-[#6E6A60]" role="alert">
+              {joinError}
+            </div>
+          )}
+
+          {rescanRequired ? (
+            <Button
+              onClick={rescanTableQr}
+              variant="ink"
+              size="xl"
+              fullWidth
+              className="shadow-xl shadow-[#35332E]/10"
             >
-               Cancel
-            </button>
-          </div>
-        </div>
+              Scan table QR again
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => submitJoinCode()}
+                disabled={joinSubmitting || !joinCodeChars.every(Boolean)}
+                variant="ink"
+                size="xl"
+                fullWidth
+                className="shadow-xl shadow-[#35332E]/10"
+              >
+                {joinSubmitting ? 'Joining...' : 'Join session'}
+              </Button>
+
+              <button
+                type="button"
+                onClick={startNewInstead}
+                disabled={joinSubmitting}
+                className="mt-7 text-sm text-[#6E6A60] underline underline-offset-4 hover:text-[#35332E] transition-colors disabled:opacity-50"
+              >
+                Start a new session instead
+              </button>
+            </>
+          )}
+
+          {!rescanRequired && joinAttempts > 0 && (
+            <p className="mt-5 text-xs text-[#6E6A60]">
+              {5 - joinAttempts} {5 - joinAttempts === 1 ? 'attempt' : 'attempts'} remaining before a new QR scan is required.
+            </p>
+          )}
+        </motion.div>
       </div>
     );
   }
 
-  // Loading gate: show spinner until first-pass geofence + restaurant
+  if (setupWaiting) {
+    return (
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full"
+        >
+          <div className="w-20 h-20 bg-[#FBF7EF] rounded-full flex items-center justify-center mb-7 shadow-[inset_0_2px_6px_rgba(53,51,46,0.08)] relative mx-auto">
+            <div className="absolute inset-0 border-4 border-[#35332E]/30 rounded-full border-t-[#35332E] animate-spin"></div>
+            <img src="/catalyst-logo.png" alt="" className="w-10 h-10 object-contain relative z-10" draggable={false} />
+          </div>
+
+          <h1 className="text-3xl font-bold tracking-tight text-[#35332E] mb-4">
+            Your table is getting ready
+          </h1>
+
+          <p className="text-[#6E6A60] leading-relaxed">
+            Another phone is choosing how to start. We'll update this screen when the table is ready.
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (setupError) {
+    return (
+      <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6 text-center">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-white/70 border border-[#35332E]/10 rounded-3xl p-8 shadow-xl"
+        >
+          <h1 className="text-2xl font-bold text-[#35332E] mb-4">
+            Couldn't check this table
+          </h1>
+
+          <p className="text-[#6E6A60] leading-relaxed mb-7">
+            {setupError}
+          </p>
+
+          <Button
+            onClick={handleContinue}
+            disabled={checking}
+            variant="ink"
+            fullWidth
+          >
+            {checking ? 'Checking...' : 'Try Again'}
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Loading gate: show spinner until first-pass geofence + restaurant  // Loading gate: show spinner until first-pass geofence + restaurant
   // handshake completes (success OR error). The Welcome content (including
   // the Continue button) never renders before validation is resolved so the
   // user cannot click-through and create a session before geofence rejects.
   if ((initialValidationPending && !subscriptionError) || status) {
-    const spinnerText = status || 'Checking restaurant & location…';
+    const spinnerText = status || 'Checking restaurant...';
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col items-center justify-center p-6">
         <div className="text-center">
@@ -1365,7 +1633,6 @@ export default function WelcomeScreen() {
               <TempAccessBanner banner={tempAccessBanner} onExpire={() => {
                 clearTempGeoAccessToken();
                 setTempAccessBanner(null);
-                setSubscriptionError('geofence_denied');
               }} />
             </motion.div>
           )}
@@ -1431,7 +1698,7 @@ export default function WelcomeScreen() {
           </Button>
 
           <p className="mt-10 text-xs text-[#6E6A60] tracking-[0.2em] uppercase font-medium">
-            Anonymous Session · No Data Stored
+            Anonymous Session · Nothing Personal Stored
           </p>
         </motion.div>
       </motion.div>

@@ -11,6 +11,20 @@ const {
   invalidateCachedRestaurantGeo
 } = require('../services/geofenceService');
 
+/**
+ * Guest geofencing feature switch.
+ *
+ * Current Catalyst product policy does not require guest location.
+ * Missing/unknown values intentionally default to OFF.
+ *
+ * The geofence implementation is retained for safe future reactivation.
+ */
+function isGuestGeofenceEnabled() {
+  return String(process.env.GUEST_GEOFENCE_ENABLED || '')
+    .trim()
+    .toLowerCase() === 'true';
+}
+
 // Max duration of a temporary geolocation bypass. Short-lived so the user
 // cannot "permanently skip" the gate. Must be <= 10 minutes; we keep 5.
 const TEMP_GEO_ACCESS_TTL_SECONDS = 5 * 60;
@@ -639,6 +653,7 @@ async function getInviteByToken(token) {
  */
 async function handshake(req, res) {
   const { slug, table, client_lat, client_lng, geolocation_status } = req.query;
+  const guestGeofenceEnabled = isGuestGeofenceEnabled();
 
   if (!slug || !table) {
     logPublicAnalyticsEvent('qr_scan_rejected', {
@@ -664,21 +679,30 @@ async function handshake(req, res) {
   const knownGeoStatuses = ['granted', 'prompt', 'denied', 'unsupported'];
   const normalizedGeoStatus = knownGeoStatuses.includes(geoStatusRaw) ? geoStatusRaw : 'prompt';
 
-  let tempAccess; // { valid, payload, error, token_present, expires_at_iso, expires_at_unix }
-  try {
-    tempAccess = validateTempGeoAccessToken(req, {
-      restaurant_id: null, // restaurant_id unknown until loadRestaurantBySlug
-      table_token: String(table)
-    });
-  } catch (err) {
-    console.error('[handshake] temp-access validate threw:', err);
-    tempAccess = {
-      valid: false,
-      payload: null,
-      error: 'Invalid temporary access token',
-      error_code: 'TOKEN_INVALID',
-      token_present: true
-    };
+  let tempAccess = {
+    valid: false,
+    payload: null,
+    error: null,
+    error_code: null,
+    token_present: false
+  }; // { valid, payload, error, token_present, expires_at_iso, expires_at_unix }
+
+  if (guestGeofenceEnabled) {
+    try {
+      tempAccess = validateTempGeoAccessToken(req, {
+        restaurant_id: null, // restaurant_id unknown until loadRestaurantBySlug
+        table_token: String(table)
+      });
+    } catch (err) {
+      console.error('[handshake] temp-access validate threw:', err);
+      tempAccess = {
+        valid: false,
+        payload: null,
+        error: 'Invalid temporary access token',
+        error_code: 'TOKEN_INVALID',
+        token_present: true
+      };
+    }
   }
   let tempAccessBypassGranted = false;
   let tempAccessExpiresAtIso = null;
@@ -700,7 +724,7 @@ async function handshake(req, res) {
     // can bind it to the correct restaurant/table scope. Invalid tokens
     // (wrong restaurant, expired, tampered, etc.) are stripped silently
     // because the user should fall back to the normal GPS gate in that case.
-    if (tempAccess.token_present && !tempAccess.valid) {
+    if (guestGeofenceEnabled && tempAccess.token_present && !tempAccess.valid) {
       logPublicAnalyticsEvent('handshake_temp_access_invalid', {
         restaurant_id: restaurant.id,
         restaurant_slug: restaurant.slug,
@@ -720,7 +744,7 @@ async function handshake(req, res) {
         });
       }
     }
-    if (tempAccess.token_present) {
+    if (guestGeofenceEnabled && tempAccess.token_present) {
       const scoped = validateTempGeoAccessToken(req, {
         restaurant_id: restaurant.id,
         table_token: String(table)
@@ -751,7 +775,11 @@ async function handshake(req, res) {
     // geolocation permission and they do NOT have an active, scoped
     // temporary access token. "Prompt" or "unsupported" users fall through
     // to the grace paths below (temp-access CTA if enabled).
-    if (normalizedGeoStatus === 'denied' && !tempAccessBypassGranted) {
+    if (
+      guestGeofenceEnabled &&
+      normalizedGeoStatus === 'denied' &&
+      !tempAccessBypassGranted
+    ) {
       logPublicAnalyticsEvent('welcome_geofence_denied', {
         restaurant_id: restaurant.id,
         restaurant_slug: restaurant.slug,
@@ -807,9 +835,27 @@ async function handshake(req, res) {
     //          proves the client has already attempted a GPS upgrade and it
     //          failed — a desktop-with-no-GPS scenario. We pass *only* the
     //          geofence gate; table/billing validation still runs.
-    const geofence = evaluateGeofence(restaurant, clientLatParsed, clientLngParsed, {
-      effectiveRadiusOverride: radiusOpts.effectiveRadiusOverride
-    });
+    const geofence = guestGeofenceEnabled
+      ? evaluateGeofence(restaurant, clientLatParsed, clientLngParsed, {
+          effectiveRadiusOverride: radiusOpts.effectiveRadiusOverride
+        })
+      : {
+          inside: true,
+          distance_m: null,
+          configured_radius_m: Number(restaurant.geofence_radius_m || 100),
+          radius_m: Number(restaurant.geofence_radius_m || 100),
+          radius_overridden: false,
+          requires_geolocation: false,
+          suggest_high_accuracy: false,
+          restaurant_coords_present:
+            restaurant.latitude != null &&
+            restaurant.latitude !== '' &&
+            restaurant.longitude != null &&
+            restaurant.longitude !== '' &&
+            Number.isFinite(Number(restaurant.latitude)) &&
+            Number.isFinite(Number(restaurant.longitude)),
+          client_coords_present: false
+        };
     let lowAccuracyBypassGranted = false;
     if (radiusOpts.devGrace && geofence.radius_overridden) {
       logPublicAnalyticsEvent('geofence_localhost_grace_applied', {
@@ -918,33 +964,35 @@ async function handshake(req, res) {
       });
     }
 
-    if (geofence.requires_geolocation === false && geofence.inside === true) {
-      logPublicAnalyticsEvent('geofence_check_passed', {
-        restaurant_id: restaurant.id,
-        restaurant_slug: restaurant.slug,
-        table_number: table,
-        distance_m: geofence.distance_m,
-        configured_radius_m: geofence.configured_radius_m,
-        effective_radius_m: geofence.radius_m,
-        radius_overridden: geofence.radius_overridden === true
-      });
-    } else if (lowAccuracyBypassGranted || tempAccessBypassGranted) {
-      // already logged above
-    } else if (geofence.requires_geolocation === true) {
-      logPublicAnalyticsEvent(
-        normalizedGeoStatus === 'denied' ? 'geofence_check_location_denied' : 'geofence_check_pending_coords',
-        {
+    if (guestGeofenceEnabled) {
+      if (geofence.requires_geolocation === false && geofence.inside === true) {
+        logPublicAnalyticsEvent('geofence_check_passed', {
           restaurant_id: restaurant.id,
           restaurant_slug: restaurant.slug,
           table_number: table,
-          geolocation_status: normalizedGeoStatus,
-          restaurant_coords_present: geofence.restaurant_coords_present,
-          client_coords_present: geofence.client_coords_present,
+          distance_m: geofence.distance_m,
           configured_radius_m: geofence.configured_radius_m,
           effective_radius_m: geofence.radius_m,
           radius_overridden: geofence.radius_overridden === true
-        }
-      );
+        });
+      } else if (lowAccuracyBypassGranted || tempAccessBypassGranted) {
+        // already logged above
+      } else if (geofence.requires_geolocation === true) {
+        logPublicAnalyticsEvent(
+          normalizedGeoStatus === 'denied' ? 'geofence_check_location_denied' : 'geofence_check_pending_coords',
+          {
+            restaurant_id: restaurant.id,
+            restaurant_slug: restaurant.slug,
+            table_number: table,
+            geolocation_status: normalizedGeoStatus,
+            restaurant_coords_present: geofence.restaurant_coords_present,
+            client_coords_present: geofence.client_coords_present,
+            configured_radius_m: geofence.configured_radius_m,
+            effective_radius_m: geofence.radius_m,
+            radius_overridden: geofence.radius_overridden === true
+          }
+        );
+      }
     }
 
     // 4. Single-JOIN lookup: confirm table existence and carry restaurant row
@@ -1003,6 +1051,9 @@ async function handshake(req, res) {
         primary_color: '#06b6d4'
       },
       session_token: sessionToken,
+      features: {
+        guest_geofence_enabled: guestGeofenceEnabled
+      },
       geofence: {
         requires_geolocation: geofence.requires_geolocation,
         inside: geofence.inside,

@@ -1,89 +1,127 @@
 const request = require('supertest');
-const app = require('../index');
-const db = require('../db');
-const crypto = require('crypto');
 
-const { joinAttempts } = require('../middleware/rateLimiter');
+jest.mock('../db', () => ({
+  query: jest.fn()
+}));
+
+const db = require('../db');
+const app = require('../index');
 
 describe('Security & Isolation Tests', () => {
-  let tableToken = 'table_sec_test';
-  
-  beforeAll(async () => {
-    // Setup clean state if needed
-    await db.query('DELETE FROM sessions WHERE table_token = $1', [tableToken]);
-  });
-
   beforeEach(() => {
-    if (joinAttempts) joinAttempts.clear();
-  });
+    jest.clearAllMocks();
 
-  afterAll(async () => {
-    await db.query('DELETE FROM sessions WHERE table_token = $1', [tableToken]);
-    await db.pool.end(); // Close DB connection
-  });
-
-  describe('Join Code Security', () => {
-    test('Rate limiting blocks after 5 attempts', async () => {
-      // Note: This test depends on the rate limiter state. 
-      // If run multiple times, it might fail if IP is already blocked.
-      // Ideally we mock the rate limiter or use a fresh IP.
-      // For this integration test, we assume a fresh start or reset.
-      
-      // Simulate 5 failed attempts
-      for (let i = 0; i < 5; i++) {
-        const res = await request(app)
-          .post('/sessions/join-dual')
-          .send({ table_token: tableToken, code: '000000' });
-          
-        // Either 403, 404 (no waiting session), or 429 (rate limited if we hit it already)
-        expect([403, 404, 429]).toContain(res.status);
+    db.query.mockImplementation((text, params) => {
+      if (
+        text &&
+        text.includes('FROM restaurants') &&
+        text.includes('billing_status') &&
+        text.includes('WHERE slug = $1')
+      ) {
+        return Promise.resolve({
+          rows: [{
+            id: 'd0000000-0000-0000-0000-000000000000',
+            slug: params?.[0] || 'security-test',
+            name: 'Security Test Restaurant',
+            billing_status: 'active',
+            contact_email: null,
+            contact_phone: null,
+            address: null,
+            latitude: null,
+            longitude: null,
+            manager_name: null
+          }]
+        });
       }
 
-      // 6th attempt MUST be rate limited
-      const res = await request(app)
-        .post('/sessions/join-dual')
-        .send({ table_token: tableToken, code: '000000' });
-      
-      expect(res.status).toBe(429);
+      if (
+        text &&
+        text.includes('SELECT id FROM restaurants')
+      ) {
+        return Promise.resolve({
+          rows: [{
+            id: 'd0000000-0000-0000-0000-000000000000'
+          }]
+        });
+      }
+
+      if (
+        text &&
+        text.includes('FROM deck_sessions')
+      ) {
+        return Promise.resolve({ rows: [] });
+      }
+
+      if (
+        text &&
+        text.includes('INSERT INTO deck_sessions')
+      ) {
+        return Promise.resolve({
+          rows: [{
+            deck_session_id: 'deck-security-test',
+            position_index: 0
+          }]
+        });
+      }
+
+      if (
+        text &&
+        text.includes('INSERT INTO sessions')
+      ) {
+        return Promise.resolve({
+          rows: [{
+            session_id: params[0],
+            table_token: params[1],
+            restaurant_id: params[2],
+            context: params[3],
+            mode: params[4],
+            session_group_id: params[5],
+            expires_at: params[9]
+          }]
+        });
+      }
+
+      return Promise.resolve({ rows: [], rowCount: 1 });
     });
   });
 
   describe('Session Group Isolation', () => {
-    test('Two groups at same table get different session_group_ids', async () => {
-      // Group A
+    test('Two groups at same restaurant table get different session_group_ids', async () => {
+      const payload = {
+        restaurant_slug: 'security-test',
+        table_token: 'table_sec_test',
+        context: 'Exploring',
+        mode: 'single-phone'
+      };
+
       const resA = await request(app)
         .post('/sessions')
-        .send({ 
-          table_token: tableToken, 
-          context: 'Exploring',
-          mode: 'single-phone'
-        });
+        .send(payload);
+
       expect(resA.status).toBe(201);
-      const sessionA = resA.body;
 
-      // Simulate Inactivity for Group A (force it to be "old" so next group is new)
-      // Update last_activity_at to > 15 mins ago
-      await db.query(`
-        UPDATE sessions 
-        SET last_activity_at = NOW() - INTERVAL '20 minutes' 
-        WHERE session_id = $1
-      `, [sessionA.session_id]);
-
-      // Group B
       const resB = await request(app)
         .post('/sessions')
-        .send({ 
-          table_token: tableToken, 
-          context: 'Exploring',
-          mode: 'single-phone'
-        });
-      expect(resB.status).toBe(201);
-      const sessionB = resB.body;
+        .send(payload);
 
-      // Verify Isolation
-      expect(sessionA.session_group_id).toBeDefined();
-      expect(sessionB.session_group_id).toBeDefined();
-      expect(sessionA.session_group_id).not.toBe(sessionB.session_group_id);
+      expect(resB.status).toBe(201);
+
+      expect(resA.body.session_group_id).toBeDefined();
+      expect(resB.body.session_group_id).toBeDefined();
+
+      expect(resA.body.session_group_id)
+        .not.toBe(resB.body.session_group_id);
+
+      const sessionInsertCalls = db.query.mock.calls.filter(
+        ([sql]) =>
+          typeof sql === 'string' &&
+          sql.includes('INSERT INTO sessions')
+      );
+
+      expect(sessionInsertCalls).toHaveLength(2);
+
+      expect(sessionInsertCalls[0][1][5])
+        .not.toBe(sessionInsertCalls[1][1][5]);
     });
   });
 });

@@ -14,15 +14,12 @@ function notifySessionTermination(sessionRows) {
   if (!sessionRows || sessionRows.length === 0) return;
 
   try {
-    const { io, clearSetupLockForTable } = require('../index');
+    const { io } = require('../index');
     if (!io) return;
 
     sessionRows.forEach((row) => {
       if (row.session_id) {
         io.to(row.session_id).emit('dual_group_terminated');
-      }
-      if (row.table_token && clearSetupLockForTable) {
-        clearSetupLockForTable(row.table_token);
       }
     });
   } catch (err) {

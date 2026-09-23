@@ -12,6 +12,21 @@ const SESSION_DURATION_HOURS = 24;
 const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 
 /**
+ * Guest geofencing feature switch.
+ *
+ * Current product policy disables guest location enforcement.
+ * Missing/unknown values intentionally default to OFF.
+ *
+ * Existing geofence infrastructure remains available for safe
+ * future reactivation.
+ */
+function isGuestGeofenceEnabled() {
+  return String(process.env.GUEST_GEOFENCE_ENABLED || '')
+    .trim()
+    .toLowerCase() === 'true';
+}
+
+/**
  * Session-level temp-access geolocation gate. If the request carries a
  * temporary access token we verify it's scoped to the resolved restaurant
  * + table and hasn't expired. Expired tokens → explicit 410 so the frontend
@@ -22,6 +37,21 @@ const DEFAULT_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
  * Returns: { passed: boolean, response_body: object|null, status: number|null }
  */
 async function validateSessionTempGeoAccess(req, { table_token, restaurant_id, restaurant_slug }) {
+  // Guest location enforcement is disabled unless explicitly re-enabled.
+  //
+  // Ignore legacy temporary-geolocation tokens while disabled so stale,
+  // expired or previously issued geo tokens cannot block a valid session.
+  //
+  // This bypass affects only the legacy guest-location requirement.
+  // Normal session authentication/authorization remains unchanged.
+  if (!isGuestGeofenceEnabled()) {
+    return {
+      passed: true,
+      response_body: null,
+      status: null,
+      geofence_disabled: true
+    };
+  }
   // No token → pass through silently (rely on handshake + session JWT).
   const bodyTok =
     (req.body && (req.body.temp_access_token || req.body.tempGeoToken)) || null;
@@ -121,11 +151,15 @@ async function resolveRestaurantId(restaurant_id, restaurant_slug) {
 
 // --- Helper Functions ---
 
+const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+const PAIRING_CODE_LENGTH = 4;
+
 function generatePairingCode() {
-  // Generate cryptographically random 6-digit code
-  const buffer = crypto.randomBytes(3);
-  const code = parseInt(buffer.toString('hex'), 16) % 1000000;
-  return code.toString().padStart(6, '0');
+  let code = '';
+  for (let i = 0; i < PAIRING_CODE_LENGTH; i += 1) {
+    code += PAIRING_ALPHABET[crypto.randomInt(PAIRING_ALPHABET.length)];
+  }
+  return code;
 }
 
 function hashPairingCode(code, sessionId, salt = process.env.SECRET_SALT || 'default_salt') {
@@ -141,6 +175,9 @@ const createSession = async (req, res) => {
   const table_token = req.body.table_token;
   const { restaurant_id, context, mode } = req.body;
   const restaurant_slug = req.restaurant?.slug || req.body.restaurant_slug || restaurant_id;
+  // Diagnostic only (History Log Exports device_type column). Never used
+  // for fingerprinting, authorization, or any security decision.
+  const deviceType = ['iOS', 'Android'].includes(req.body.device_type) ? req.body.device_type : null;
 
   if (!table_token) {
     return res.status(400).json({ error: 'table_token is required' });
@@ -154,28 +191,39 @@ const createSession = async (req, res) => {
   // Note: a missing token is fine; only a present-but-invalid/expired token
   // is rejected here since it means the user previously fell back to temp
   // access and that window has lapsed.
-  let tempAccessInfo = { valid: false, token_present: false };
-  try {
-    tempAccessInfo = validateTempGeoAccessToken(req, {
-      restaurant_id: null, // resolved below
-      table_token: String(table_token)
-    });
-  } catch (e) {
-    tempAccessInfo = { valid: false, token_present: true, error_code: 'TOKEN_INVALID' };
-  }
-  if (tempAccessInfo.token_present && !tempAccessInfo.valid) {
-    if (tempAccessInfo.error_code === 'TOKEN_EXPIRED') {
-      return res.status(410).json({
-        error:
-          tempAccessInfo.error ||
-          'Temporary access window has expired. Please enable location services or request a new temporary access window.',
-        geofence_code: 'TEMP_ACCESS_EXPIRED',
-        temp_access_expired: true
+  let tempAccessInfo = {
+    valid: false,
+    token_present: false,
+    geofence_disabled: !isGuestGeofenceEnabled()
+  };
+
+  if (isGuestGeofenceEnabled()) {
+    try {
+      tempAccessInfo = validateTempGeoAccessToken(req, {
+        restaurant_id: null, // resolved below
+        table_token: String(table_token)
       });
+    } catch (e) {
+      tempAccessInfo = {
+        valid: false,
+        token_present: true,
+        error_code: 'TOKEN_INVALID'
+      };
     }
-    // Tampering: drop quietly so the user is routed through the normal
-    // handshake + GPS gate. We will re-validate with the resolved restaurant
-    // id below after lookup.
+
+    if (tempAccessInfo.token_present && !tempAccessInfo.valid) {
+      if (tempAccessInfo.error_code === 'TOKEN_EXPIRED') {
+        return res.status(410).json({
+          error:
+            tempAccessInfo.error ||
+            'Temporary access window has expired. Please enable location services or request a new temporary access window.',
+          geofence_code: 'TEMP_ACCESS_EXPIRED',
+          temp_access_expired: true
+        });
+      }
+
+      // Preserve legacy token validation when geofencing is explicitly ON.
+    }
   }
 
   // Optional: Validate context and mode if provided
@@ -192,7 +240,7 @@ const createSession = async (req, res) => {
 
     // Re-validate temp access with the resolved restaurant id so it can't
     // be reused across restaurants.
-    if (tempAccessInfo.token_present) {
+    if (isGuestGeofenceEnabled() && tempAccessInfo.token_present) {
       const scoped = validateTempGeoAccessToken(req, {
         restaurant_id: resolvedRestaurantId,
         table_token: String(table_token)
@@ -225,22 +273,25 @@ const createSession = async (req, res) => {
       0, 0, 0, 0
     ));
     
-    // Remove pairing code generation entirely per new requirements
-    const pairingCode = null;
-    const pairingCodeHash = null;
-    const pairingExpiresAt = null;
+    // Generate the session id before hashing pairing credentials.
+    const sessionId = crypto.randomUUID();
+
+    // Pairing credentials exist only for a newly-created dual-phone session.
+    // The raw four-letter code is returned once to Phone A; only its hash is stored.
+    let pairingCode = null;
+    let pairingCodeHash = null;
+    let pairingExpiresAt = null;
     let dualStatus = null;
 
     // 3. Handle Dual-Phone Logic
     let dualGroupId = null;
     if (mode === 'dual-phone') {
+      pairingCode = generatePairingCode();
+      pairingCodeHash = hashPairingCode(pairingCode, sessionId);
+      pairingExpiresAt = new Date(Date.now() + (5 * 60 * 1000));
       dualStatus = 'waiting';
-      // Create a new Dual Group ID for this new pair
       dualGroupId = crypto.randomUUID();
     }
-
-    // Generate explicit UUID for session to use in hash
-    const sessionId = crypto.randomUUID();
 
     // 4. Ensure deck session exists (seed generation)
     if (context) {
@@ -322,26 +373,8 @@ const createSession = async (req, res) => {
     await insertAnalyticsEvent({
       ...baseSession,
       event_type: 'session_created',
-      event_data: { context, mode, session_group_id: sessionGroupId, role: 'A' }
+      event_data: { context, mode, session_group_id: sessionGroupId, role: 'A', device_type: deviceType }
     });
-
-    // Notify Setup Channel that session is created
-    // This releases any waiting users (Phone B)
-    try {
-        const { io } = require('../index');
-        if (io) {
-            io.to(`setup_${table_token}`).emit('setup_completed', { 
-                mode, 
-                sessionId,
-                sessionGroupId 
-            });
-            // Note: The setup lock will be cleared when Phone A disconnects from setup room
-            // or we can explicitly clear it if we exposed a clearLock function.
-            // But relying on socket disconnect/release from client is fine.
-        }
-    } catch (e) {
-        console.warn('Could not emit setup_completed event:', e);
-    }
 
     // 8. Return Response
     const response = {
@@ -365,10 +398,20 @@ const createSession = async (req, res) => {
 };
 
 const joinDualPhoneSession = async (req, res) => {
-  const { table_token, restaurant_id, restaurant_slug, session_id, reclaim_role } = req.body;
+  const { table_token, restaurant_id, restaurant_slug, code } = req.body;
 
   try {
-    // Temp-access gate: if token is present/expired/invalid → explicit HTTP 410/401.
+    // Patch 2A: a new Phone B must redeem the four-letter code.
+    // session_id is intentionally not accepted as join authorization.
+    if (!table_token) {
+      return res.status(400).json({ error: 'table_token is required', code: 'PAIRING_TABLE_REQUIRED' });
+    }
+
+    const normalizedCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
+    if (!/^[ABCDEFGHJKLMNPRSTUVWXYZ]{4}$/.test(normalizedCode)) {
+      return res.status(400).json({ error: 'Invalid pairing code.', code: 'PAIRING_CODE_INVALID' });
+    }
+
     const geoGate = await validateSessionTempGeoAccess(req, {
       table_token,
       restaurant_id,
@@ -378,145 +421,165 @@ const joinDualPhoneSession = async (req, res) => {
       return res.status(geoGate.status || 410).json(geoGate.response_body);
     }
 
-    let validSession = null;
+    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
 
-    if (session_id) {
-      // Direct join by ID (preferred)
-      const result = await db.query(`
-        SELECT * FROM sessions 
-        WHERE session_id = $1 
-          AND (dual_status = 'waiting' OR (dual_status = 'paired' AND $2::text IS NOT NULL))
-          AND expires_at > NOW()
-      `, [session_id, reclaim_role || null]);
-      
-      if (result.rows.length > 0) validSession = result.rows[0];
-    } else if (table_token) {
-      const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
-      // Find latest waiting session
-      const result = await db.query(`
-        SELECT * FROM sessions
-        WHERE table_token = $1
-          AND restaurant_id = $2
+    // Candidate discovery is tenant + table scoped. dual_status='waiting' alone
+    // is NOT sufficient because Start Fresh also uses that state.
+    const candidates = await db.query(
+      `SELECT session_id, restaurant_id, table_token, context, mode,
+              session_group_id, dual_status, pairing_code_hash, pairing_expires_at
+         FROM sessions
+        WHERE restaurant_id = $1
+          AND table_token = $2
+          AND mode = 'dual-phone'
           AND dual_status = 'waiting'
+          AND pairing_code_hash IS NOT NULL
+          AND pairing_expires_at > NOW()
           AND expires_at > NOW()
-        ORDER BY created_at DESC LIMIT 1
-      `, [table_token, resolvedRestaurantId]);
+        ORDER BY created_at DESC`,
+      [resolvedRestaurantId, table_token]
+    );
 
-      if (result.rows.length > 0) validSession = result.rows[0];
-    }
+    let matchedSession = null;
+    let matchedHash = null;
 
-    if (!validSession) {
-      return res.status(404).json({ error: 'No waiting session found to join.' });
-    }
+    for (const candidate of candidates.rows) {
+      const candidateHash = hashPairingCode(normalizedCode, candidate.session_id);
+      const storedHash = String(candidate.pairing_code_hash || '');
 
-    // 3. Update Session Status
-    if (!reclaim_role) {
-        // Ensure we are the first to claim Role B
-        const updateResult = await db.query(`
-          UPDATE sessions 
-          SET dual_status = 'paired', pairing_code_hash = NULL, pairing_expires_at = NULL 
-          WHERE session_id = $1 AND dual_status = 'waiting'
-          RETURNING *
-        `, [validSession.session_id]);
+      if (candidateHash.length === storedHash.length) {
+        const supplied = Buffer.from(candidateHash, 'hex');
+        const stored = Buffer.from(storedHash, 'hex');
 
-        if (updateResult.rowCount === 0) {
-          // Race condition: Someone else grabbed it just now
-          return res.status(409).json({ error: 'SESSION_FULL' });
+        if (supplied.length === stored.length && crypto.timingSafeEqual(supplied, stored)) {
+          matchedSession = candidate;
+          matchedHash = candidateHash;
+          break;
         }
-    } else {
-        // We are reclaiming a disconnected role
-        // STRICT: Only delete rows that are STILL stale/disconnected at query time
-        // (disconnected_at IS NOT NULL AND last_seen_at >90s old OR NULL). Otherwise
-        // the real participant has already reconnected and cleared disconnected_at,
-        // so we must not steal their slot — return SESSION_FULL instead. Previously,
-        // the DELETE used only WHERE disconnected_at IS NOT NULL without rowCount
-        // verification, so if the real participant reconnected between resolveSession
-        // SELECT and this DELETE, we'd silently delete 0 rows then proceed to INSERT
-        // a colliding role or leak slots for Phone C.
-        const delRes = await db.query(`
-          DELETE FROM session_participants
-          WHERE session_id = $1 AND role = $2
-            AND disconnected_at IS NOT NULL
-            AND (last_seen_at IS NULL OR last_seen_at <= NOW() - INTERVAL '90 seconds')
-          RETURNING participant_id
-        `, [validSession.session_id, reclaim_role]);
-        if (delRes.rowCount === 0) {
-          return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'stale_reclaim_slot_gone' });
-        }
+      }
     }
 
-    // 4. Create Participant (Role B or Reclaimed Role)
-    const assignedRole = reclaim_role || 'B';
-    // Strict pre-check before INSERT: count participants to ensure < 2, regardless of
-    // race conditions between concurrent joins.
-    const preCheck = await db.query(`
-      SELECT count(*) as count FROM session_participants
-      WHERE session_id = $1 AND disconnected_at IS NULL
-    `, [validSession.session_id]);
-    if ((parseInt(preCheck.rows[0].count, 10) || 0) >= 2) {
-      return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'precheck_count_full' });
+    if (!matchedSession) {
+      // Deliberately avoid revealing whether a waiting session exists.
+      return res.status(404).json({ error: 'Invalid or expired pairing code.', code: 'PAIRING_CODE_INVALID' });
     }
+
     const participantId = crypto.randomUUID();
     const participantToken = crypto.randomBytes(32).toString('hex');
     const participantTokenHash = crypto.createHash('sha256').update(participantToken).digest('hex');
 
+    // Atomic single-use redemption.
+    // If another Phone B wins first, claimed returns zero rows and no participant
+    // is inserted. The existing UNIQUE(session_id, role) constraint is an
+    // additional database-level race defense.
+    let claimResult;
     try {
-      await db.query(
-        `INSERT INTO session_participants (participant_id, session_id, role, participant_token_hash, last_seen_at, disconnected_at)
-         VALUES ($1, $2, $3, $4, NOW(), NULL)`,
-        [participantId, validSession.session_id, assignedRole, participantTokenHash]
+      claimResult = await db.query(
+        `WITH claimed AS (
+            UPDATE sessions
+               SET dual_status = 'paired',
+                   pairing_code_hash = NULL,
+                   pairing_expires_at = NULL
+             WHERE session_id = $1
+               AND restaurant_id = $2
+               AND table_token = $3
+               AND mode = 'dual-phone'
+               AND dual_status = 'waiting'
+               AND pairing_code_hash = $4
+               AND pairing_code_hash IS NOT NULL
+               AND pairing_expires_at > NOW()
+               AND expires_at > NOW()
+             RETURNING session_id, restaurant_id, table_token, context, mode,
+                       session_group_id, dual_status
+          ), inserted AS (
+            INSERT INTO session_participants
+              (participant_id, session_id, role, participant_token_hash, last_seen_at, disconnected_at)
+            SELECT $5, session_id, 'B', $6, NOW(), NULL
+              FROM claimed
+            RETURNING session_id
+          )
+          SELECT claimed.*
+            FROM claimed
+            JOIN inserted USING (session_id)`,
+        [
+          matchedSession.session_id,
+          resolvedRestaurantId,
+          table_token,
+          matchedHash,
+          participantId,
+          participantTokenHash
+        ]
       );
     } catch (err) {
-      if (err.code === '23505') { // Unique constraint violation (session_id, role)
-         return res.status(409).json({ error: 'SESSION_FULL', reclaim: 'unique_role_violation' });
+      if (err.code === '23505') {
+        return res.status(409).json({ error: 'SESSION_FULL', code: 'PAIRING_ALREADY_CLAIMED' });
       }
       throw err;
     }
 
-    // 5. Log analytics
+    if (claimResult.rows.length === 0) {
+      return res.status(409).json({ error: 'SESSION_FULL', code: 'PAIRING_ALREADY_CLAIMED' });
+    }
+
+    const claimedSession = claimResult.rows[0];
+
+    // Best-effort, coordination-only notification: any other device still
+    // sitting on the code-entry screen for this SAME table's now-consumed
+    // pairing opportunity should stop waiting and move on. Carries no
+    // session/participant/pairing identity — this is not an authorization
+    // signal, just a UX nudge to the pre-session setup room.
+    try {
+      const io = require('../index').io;
+      if (io && restaurant_slug && table_token) {
+        const setupKey = String(restaurant_slug).trim().toLowerCase() + '::' + table_token;
+        io.to('setup_' + setupKey).emit('pairing_opportunity_consumed', {
+          restaurantSlug: String(restaurant_slug).trim().toLowerCase(),
+          tableToken: table_token
+        });
+      }
+    } catch (_) { /* best-effort only */ }
+
     await insertAnalyticsEvent({
-      session_id: validSession.session_id,
+      session_id: claimedSession.session_id,
       participant_id: participantId,
-      restaurant_id: validSession.restaurant_id,
-      table_token: validSession.table_token,
+      restaurant_id: claimedSession.restaurant_id,
+      table_token: claimedSession.table_token,
       event_type: 'session_paired',
-      event_data: { role: assignedRole, reclaim: Boolean(reclaim_role) }
+      event_data: { role: 'B', reclaim: false }
     });
 
     await insertAnalyticsEvent({
-      session_id: validSession.session_id,
+      session_id: claimedSession.session_id,
       participant_id: participantId,
-      restaurant_id: validSession.restaurant_id,
-      table_token: validSession.table_token,
+      restaurant_id: claimedSession.restaurant_id,
+      table_token: claimedSession.table_token,
       event_type: 'partner_connected',
-      event_data: { role: assignedRole }
+      event_data: { role: 'B' }
     });
 
     await insertAnalyticsEvent({
-      session_id: validSession.session_id,
+      session_id: claimedSession.session_id,
       participant_id: participantId,
-      restaurant_id: validSession.restaurant_id,
-      table_token: validSession.table_token,
-      event_type: 'auto_join_success',
-      event_data: { success: true, role: assignedRole }
+      restaurant_id: claimedSession.restaurant_id,
+      table_token: claimedSession.table_token,
+      event_type: 'pairing_code_redeemed',
+      event_data: { success: true, role: 'B' }
     });
 
     res.json({
-      session_id: validSession.session_id,
+      session_id: claimedSession.session_id,
       participant_id: participantId,
       participant_token: participantToken,
-      session_group_id: validSession.session_group_id,
-      context: validSession.context,
-      mode: validSession.mode,
+      session_group_id: claimedSession.session_group_id,
+      context: claimedSession.context,
+      mode: claimedSession.mode,
       dual_status: 'paired'
     });
-
   } catch (err) {
     console.error('Error joining dual session:', err);
     res.status(500).json({ error: 'Server error' });
   }
 };
-
 const getSession = async (req, res) => {
   const { session_id } = req.params;
   try {
@@ -911,7 +974,11 @@ const resumeSessionByQr = async (req, res) => {
 };
 
 const resolveSession = async (req, res) => {
-  const { restaurant_id, restaurant_slug, table_token, device_token } = req.body;
+  const { restaurant_id, restaurant_slug, table_token, device_token, prefer_new_session } = req.body;
+
+  // Strict explicit intent: only a literal boolean true activates the bypass.
+  // Strings such as "true" or numeric 1 must not enable it.
+  const preferNewSession = prefer_new_session === true;
 
   if (!table_token) {
     return res.status(400).json({ error: 'table_token is required' });
@@ -1275,82 +1342,53 @@ const resolveSession = async (req, res) => {
       }
     }
 
-    // 2. Check for Waiting OR Paired Dual Session (Auto-Join)
-    // Find active dual session for this table
-    const dualResult = await db.query(`
-      SELECT * FROM sessions
-      WHERE table_token = $1
-        AND restaurant_id = $2
-        AND mode = 'dual-phone'
-        AND dual_status != 'ended'
-        AND expires_at > NOW()
-      ORDER BY created_at DESC
-      LIMIT 1
-    `, [table_token, resolvedRestaurantId]);
+            // 2. Unknown-device Dual-Phone Discovery
+        //
+        // Unknown devices never receive a target session_id and never reclaim
+        // an existing participant role. Admission to Phone B requires the
+        // four-letter pairing code through /join-dual.
+        //
+        // A live pairing hash distinguishes an initial waiting session from
+        // Start Fresh, which may also temporarily use dual_status='waiting'.
+        const pairingOpportunity = await db.query(`
+          SELECT 1
+          FROM sessions
+          WHERE table_token = $1
+            AND restaurant_id = $2
+            AND mode = 'dual-phone'
+            AND dual_status = 'waiting'
+            AND pairing_code_hash IS NOT NULL
+            AND pairing_expires_at > NOW()
+            AND expires_at > NOW()
+          LIMIT 1
+        `, [table_token, resolvedRestaurantId]);
 
-    if (dualResult.rows.length > 0) {
-      const dualSession = dualResult.rows[0];
+        if (pairingOpportunity.rows.length > 0 && !preferNewSession) {
+          return res.json({
+            action: 'enter_join_code'
+          });
+        }
 
-      if (dualSession.dual_status === 'waiting') {
-        // A is waiting. B can join.
-        return res.json({
-          action: 'join_dual',
-          session_id: dualSession.session_id,
-          role: 'B'
-        });
-      } else if (dualSession.dual_status === 'paired') {
-        // A and B already exist.
-        // STRICT: Before considering ANY reclaim path, count active participants
-        // (disconnected_at IS NULL). If we already have 2 non-disconnected
-        // participants in DB, Phone C must never join this session — no matter
-        // what transient disconnected_at rows exist. This fixes the race where
-        // Phone B briefly flagged disconnected during a reconnect while Phone A
-        // (and Phone C) scanned Continue simultaneously: previously C was offered
-        // reclaim_dual on role B's stale disconnected row even though B already
-        // rejoined and cleared disconnected_at, producing 3 phones in one room.
-        const activeCountRes = await db.query(`
-          SELECT count(*) as count FROM session_participants
-          WHERE session_id = $1 AND disconnected_at IS NULL
-        `, [dualSession.session_id]);
-        const activeCount = parseInt(activeCountRes.rows[0].count, 10) || 0;
-        if (activeCount >= 2) {
+        // An unknown third phone cannot inherit/reclaim a participant seat.
+        // It may start its own independent session.
+        const activeDualSession = await db.query(`
+          SELECT 1
+          FROM sessions
+          WHERE table_token = $1
+            AND restaurant_id = $2
+            AND mode = 'dual-phone'
+            AND dual_status = 'paired'
+            AND expires_at > NOW()
+          LIMIT 1
+        `, [table_token, resolvedRestaurantId]);
+
+        if (activeDualSession.rows.length > 0) {
           return res.json({
             action: 'start_new',
             reason: 'dual_session_full'
           });
         }
-
-        // Still under 2 active -> maybe a role is genuinely abandoned.
-        // STRICT reclaim: only allow role reclaim if that role's participant row
-        // has BOTH disconnected_at IS NOT NULL AND a stale last_seen (>90 seconds
-        // ago). If the real participant is actually actively playing, last_seen
-        // will be current and we refuse to reclaim their seat.
-        const disconnectedRole = await db.query(`
-            SELECT role FROM session_participants
-            WHERE session_id = $1
-              AND disconnected_at IS NOT NULL
-              AND (last_seen_at IS NULL OR last_seen_at <= NOW() - INTERVAL '90 seconds')
-        `, [dualSession.session_id]);
-
-        if (disconnectedRole.rows.length > 0 && activeCount < 2) {
-            const roleToReclaim = disconnectedRole.rows[0].role;
-            console.log(`[API] Reclaiming STALE disconnected role ${roleToReclaim} for session ${dualSession.session_id}`);
-
-            return res.json({
-              action: 'reclaim_dual',
-              session_id: dualSession.session_id,
-              role: roleToReclaim
-            });
-        }
-
-        return res.json({
-          action: 'start_new',
-          reason: 'dual_session_full'
-        });
-      }
-    }
-
-    // 3. Start New Session
+// 3. Start New Session
     // No resume, no waiting dual session -> Start New
     return res.json({
       action: 'start_new'
@@ -1637,18 +1675,6 @@ const freshIntent = async (req, res) => {
             io.to(session_id).emit('dual_group_terminated');
         }
 
-        try {
-          const server = require('../index');
-          if (server?.clearSetupLockForTable && table_token) {
-            server.clearSetupLockForTable(table_token);
-          } else if (io && table_token) {
-            io.to(`setup_${table_token}`).emit('setup_released');
-          }
-        } catch (e) {
-          if (io && table_token) {
-            io.to(`setup_${table_token}`).emit('setup_released');
-          }
-        }
     } else {
         try {
           const s = await db.query(`SELECT mode, dual_status FROM sessions WHERE session_id = $1`, [session_id]);

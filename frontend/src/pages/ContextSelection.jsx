@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { io } from 'socket.io-client';
 import useAnalytics from '../hooks/useAnalytics';
+
+const STAGE_TIMEOUT_MS = 20 * 1000;
 
 export default function ContextSelection() {
   const { tableToken, restaurantSlug } = useParams();
@@ -20,6 +23,87 @@ export default function ContextSelection() {
       }
     });
   }, [restaurantSlug, tableToken, firePublic]);
+
+  // Startup-stage timeout: a phone may only sit on Context Selection for
+  // 20 seconds before being bounced back to the scanner page. If this
+  // device is holding the pre-session setup lock, release it first so any
+  // waiting phone isn't stuck until the server-side lock TTL expires.
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      firePublic({
+        event_type: 'startup_stage_timeout',
+        event_data: {
+          stage: 'context',
+          restaurant_slug: restaurantSlug || null,
+          table_token: tableToken || null
+        }
+      });
+
+      try {
+        const normalizedRestaurant = String(
+          restaurantSlug || sessionStorage.getItem('restaurant_slug') || ''
+        ).trim().toLowerCase();
+
+        if (normalizedRestaurant && tableToken) {
+          const setupLockKey = `setup_lock::${normalizedRestaurant}::${tableToken}`;
+          const lockToken = sessionStorage.getItem(setupLockKey);
+
+          if (lockToken) {
+            const apiUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '/api');
+            let socketOrigin = import.meta.env.DEV ? 'http://localhost:5000' : window.location.origin;
+            let socketPath = '/socket.io/';
+
+            if (typeof apiUrl === 'string' && apiUrl.length > 0) {
+              if (apiUrl.startsWith('http')) {
+                const u = new URL(apiUrl);
+                socketOrigin = `${u.protocol}//${u.host}`;
+                const basePath = (u.pathname || '').replace(/\/$/, '');
+                if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+              } else if (apiUrl.startsWith('/')) {
+                socketOrigin = window.location.origin;
+                const basePath = apiUrl.replace(/\/$/, '');
+                if (basePath && basePath !== '/') socketPath = `${basePath}/socket.io/`;
+              }
+            }
+
+            const releaseSocket = io(socketOrigin, {
+              path: socketPath,
+              transports: ['websocket', 'polling']
+            });
+
+            await new Promise((resolve) => {
+              let settled = false;
+              const ackTimer = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              }, 1200);
+
+              releaseSocket.emit('release_setup', {
+                restaurantSlug: normalizedRestaurant,
+                tableToken,
+                lockToken
+              }, () => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(ackTimer);
+                resolve();
+              });
+            });
+
+            sessionStorage.removeItem(setupLockKey);
+            releaseSocket.disconnect();
+          }
+        }
+      } catch (_) {
+        // Best-effort only; the redirect below must still happen.
+      }
+
+      navigate('/');
+    }, STAGE_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [restaurantSlug, tableToken, navigate, firePublic]);
 
   const handleSelectContext = (context) => {
     firePublic({

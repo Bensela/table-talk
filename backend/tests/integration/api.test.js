@@ -4,6 +4,27 @@ const db = require('../../db');
 
 jest.mock('../../db', () => {
   const mockQuery = jest.fn((text, params) => {
+    if (
+      text &&
+      text.includes('FROM restaurants') &&
+      text.includes('billing_status') &&
+      text.includes('WHERE slug = $1')
+    ) {
+      return Promise.resolve({
+        rows: [{
+          id: 'd0000000-0000-0000-0000-000000000000',
+          slug: params?.[0] || 'test-cafe',
+          name: 'Test Cafe',
+          billing_status: 'active',
+          contact_email: null,
+          contact_phone: null,
+          address: null,
+          latitude: null,
+          longitude: null,
+          manager_name: null
+        }]
+      });
+    }
     if (text && text.includes('SELECT id FROM restaurants')) {
       return Promise.resolve({ rows: [{ id: 'd0000000-0000-0000-0000-000000000000' }] });
     }
@@ -47,7 +68,8 @@ describe('API Endpoints', () => {
       // Mock db response for insert
       const mockSession = { 
         session_id: 'uuid-123', 
-        table_id: '123',
+        restaurant_id: 'd0000000-0000-0000-0000-000000000000',
+        table_token: '123',
         expires_at: new Date().toISOString()
       };
       db.query.mockResolvedValueOnce({ rows: [mockSession] });
@@ -56,18 +78,23 @@ describe('API Endpoints', () => {
 
       const res = await request(app)
         .post('/api/sessions')
-        .send({ table_id: '123' });
+        .send({
+          table_token: '123',
+          restaurant_slug: 'test-cafe',
+          context: 'Exploring',
+          mode: 'single-phone'
+        });
 
       expect(res.statusCode).toBe(201);
       expect(res.body.session_id).toBe('uuid-123');
-      expect(res.body.table_id).toBe('123');
+      expect(res.body.table_token).toBe('123');
       expect(res.body).toHaveProperty('participant_id');
       expect(res.body).toHaveProperty('participant_token');
     });
 
 
-    it('should return 400 if table_id missing', async () => {
-      const res = await request(app).post('/api/sessions').send({});
+    it('should return 400 if table_token missing', async () => {
+      const res = await request(app).post('/api/sessions').send({ restaurant_slug: 'test-cafe' });
       expect(res.statusCode).toBe(400);
     });
   });
