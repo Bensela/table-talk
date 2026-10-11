@@ -149,6 +149,15 @@ async function resolveRestaurantId(restaurant_id, restaurant_slug) {
   return DEFAULT_RESTAURANT_ID;
 }
 
+// The resolveRestaurant middleware authorizes exactly one tenant per request
+// (slug lookup + billing eligibility). A body-supplied restaurant_id must never
+// override that decision, otherwise a valid slug could be used to create or
+// join sessions inside a different (e.g. expired) tenant.
+async function resolveAuthorizedRestaurantId(req, restaurant_id, restaurant_slug) {
+  if (req.restaurant?.id) return req.restaurant.id;
+  return resolveRestaurantId(restaurant_id, restaurant_slug);
+}
+
 // --- Helper Functions ---
 
 const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPRSTUVWXYZ';
@@ -236,7 +245,7 @@ const createSession = async (req, res) => {
   }
 
   try {
-    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+    const resolvedRestaurantId = await resolveAuthorizedRestaurantId(req, restaurant_id, restaurant_slug);
 
     // Re-validate temp access with the resolved restaurant id so it can't
     // be reused across restaurants.
@@ -421,7 +430,7 @@ const joinDualPhoneSession = async (req, res) => {
       return res.status(geoGate.status || 410).json(geoGate.response_body);
     }
 
-    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+    const resolvedRestaurantId = await resolveAuthorizedRestaurantId(req, restaurant_id, restaurant_slug);
 
     // Candidate discovery is tenant + table scoped. dual_status='waiting' alone
     // is NOT sufficient because Start Fresh also uses that state.
@@ -935,7 +944,7 @@ const resumeSessionByQr = async (req, res) => {
     }
 
     const participantTokenHash = crypto.createHash('sha256').update(participant_token).digest('hex');
-    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+    const resolvedRestaurantId = await resolveAuthorizedRestaurantId(req, restaurant_id, restaurant_slug);
 
     // Find active session for this table where the participant belongs
     // Join sessions and session_participants
@@ -996,7 +1005,7 @@ const resolveSession = async (req, res) => {
       return res.status(geoGate.status || 410).json(geoGate.response_body);
     }
 
-    const resolvedRestaurantId = await resolveRestaurantId(restaurant_id, restaurant_slug);
+    const resolvedRestaurantId = await resolveAuthorizedRestaurantId(req, restaurant_id, restaurant_slug);
 
     // 1. Attempt Resume by Device Token
     if (device_token) {

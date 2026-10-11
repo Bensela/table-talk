@@ -4,6 +4,7 @@ const { signToken, verifyTokenDetailed, TOKEN_ERRORS } = require('../middleware/
 const { geocodeAddress } = require('../services/geocodeService');
 const { hashPassword } = require('./adminController');
 const { insertAnalyticsEvent } = require('../services/analyticsService');
+const { evaluateGuestAccess } = require('../services/guestAccessPolicy');
 const {
   evaluateGeofence,
   getCachedRestaurantGeo,
@@ -536,7 +537,7 @@ async function loadRestaurantBySlug(slug) {
     return cached._fullRow;
   }
   const res = await db.query(
-    'SELECT id, name, slug, billing_status, plan, trial_ends_at, latitude, longitude, geofence_radius_meters FROM restaurants WHERE slug = $1',
+    'SELECT id, name, slug, billing_status, plan, trial_ends_at, subscription_current_period_end, latitude, longitude, geofence_radius_meters FROM restaurants WHERE slug = $1',
     [slug]
   );
   if (res.rows.length === 0) return null;
@@ -800,14 +801,12 @@ async function handshake(req, res) {
       });
     }
 
-    // 2. Billing status (fail closed only for inactive non-trial tenants)
-    const isTrialPending =
-      restaurant.billing_status === 'pending' &&
-      restaurant.plan === 'trial' &&
-      restaurant.trial_ends_at &&
-      new Date(restaurant.trial_ends_at).getTime() > Date.now();
+    // 2. Billing eligibility — shared policy (same rule as resolveRestaurant):
+    //    suspended / expired trial / expired subscription are denied; active,
+    //    unexpired-trial and cancel-at-period-end tenants are allowed.
+    const guestAccess = evaluateGuestAccess(restaurant);
 
-    if (restaurant.billing_status !== 'active' && !isTrialPending) {
+    if (!guestAccess.allowed) {
       logPublicAnalyticsEvent('qr_scan_rejected', {
         reason: 'restaurant_inactive',
         restaurant_id: restaurant.id,
@@ -815,6 +814,7 @@ async function handshake(req, res) {
         restaurant_name: restaurant.name,
         restaurant_billing_status: restaurant.billing_status,
         restaurant_plan: restaurant.plan,
+        denial_reason: guestAccess.reason,
         table_number: table
       });
       return res.status(403).json({ error: 'Service is temporarily undergoing maintenance' });

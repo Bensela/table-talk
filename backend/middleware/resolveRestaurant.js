@@ -4,6 +4,7 @@
 // Multi-tenant flows require an explicit restaurant slug.
 
 const db = require('../db');
+const { evaluateGuestAccess } = require('../services/guestAccessPolicy');
 
 const resolveRestaurant = async (req, res, next) => {
   const slug =
@@ -16,7 +17,8 @@ const resolveRestaurant = async (req, res, next) => {
 
   try {
     const result = await db.query(
-      `SELECT id, slug, name, billing_status, contact_email, contact_phone,
+      `SELECT id, slug, name, billing_status, plan, trial_ends_at,
+              subscription_current_period_end, contact_email, contact_phone,
               address, latitude, longitude, manager_name
        FROM restaurants
        WHERE slug = $1`,
@@ -28,7 +30,7 @@ const resolveRestaurant = async (req, res, next) => {
     }
 
     const restaurant = result.rows[0];
-    const isActive = restaurant.billing_status === 'active';
+    const isActive = evaluateGuestAccess(restaurant).allowed;
 
     if (!isActive) {
       return res.status(403).json({ error: 'Restaurant account is inactive' });

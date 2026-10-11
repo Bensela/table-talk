@@ -469,8 +469,11 @@ export const getSessionByTable = (tableToken) => api.get(`/sessions/by-table/${t
  */
 export const publicHandshake = (slug, table, opts = {}) => {
   const params = new URLSearchParams();
-  params.set('slug', encodeURIComponent(slug));
-  params.set('table', encodeURIComponent(table));
+  // URLSearchParams percent-encodes values itself. Encoding here as well sent
+  // e.g. "Table 1" as "Table%25201", which the server decodes to "Table%201"
+  // and never matches the registered table → every such QR showed "Invalid".
+  params.set('slug', slug);
+  params.set('table', table);
   if (opts.location?.latitude != null && Number.isFinite(Number(opts.location.latitude))) {
     params.set('client_lat', String(opts.location.latitude));
   }
@@ -495,7 +498,7 @@ export const publicHandshake = (slug, table, opts = {}) => {
  */
 export const preflightGeofence = (slug, opts = {}) => {
   const params = new URLSearchParams();
-  params.set('slug', encodeURIComponent(slug));
+  params.set('slug', slug);
   if (opts.location?.latitude != null && Number.isFinite(Number(opts.location.latitude))) {
     params.set('client_lat', String(opts.location.latitude));
   }
