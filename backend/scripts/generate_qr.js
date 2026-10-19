@@ -1,9 +1,10 @@
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const { DEFAULT_PUBLIC_ORIGIN } = require('../services/publicUrlResolver');
 
 // Configuration
-const BASE_URL = 'https://tabletalk.app/t';
+const BASE_URL = `${process.env.FRONTEND_URL || DEFAULT_PUBLIC_ORIGIN}/t`;
 const OUTPUT_DIR = path.join(__dirname, '../qrcodes');
 const TABLES = [
   'table-001', 'table-002', 'table-003', 'table-004', 'table-005',

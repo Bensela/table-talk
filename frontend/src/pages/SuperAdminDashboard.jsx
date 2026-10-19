@@ -8,6 +8,7 @@ import MapDisplay from '../components/MapDisplay';
 import Modal from '../components/ui/Modal';
 import ThemeToggle from '../components/ui/ThemeToggle';
 import { contextLabel } from '../utils/contextLabels';
+import { getTenantToggleState } from '../utils/tenantBillingStatus';
 
 export default function SuperAdminDashboard() {
   const { checking, logout } = useAdminAuth();
@@ -989,7 +990,7 @@ export default function SuperAdminDashboard() {
   };
 
   const toggleBilling = async (tenant) => {
-    const nextStatus = tenant.billing_status === 'active' ? 'suspended' : 'active';
+    const { nextStatus } = getTenantToggleState(tenant);
 
     try {
       const response = await apiFetch(`/admin/tenants/${tenant.id}`, {
@@ -2691,15 +2692,15 @@ export default function SuperAdminDashboard() {
                             event.stopPropagation();
                             toggleBilling(tenant);
                           }}
-                          title={(tenant.computed_status || tenant.billing_status) === 'active' ? 'Suspend tenant' : 'Activate tenant'}
+                          title={getTenantToggleState(tenant).title}
                           className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border transition-colors duration-200 whitespace-nowrap ${
-                            (tenant.computed_status || tenant.billing_status) === 'active'
+                            getTenantToggleState(tenant).isActive
                               ? 'border-rose-500/30 hover:bg-rose-500/10 text-rose-400'
                               : 'border-emerald-500/30 hover:bg-emerald-500/10 text-emerald-400'
                           }`}
                         >
-                          {(tenant.computed_status || tenant.billing_status) === 'active' ? <Ban className="w-3 h-3" /> : <Check className="w-3 h-3" />}
-                          {(tenant.computed_status || tenant.billing_status) === 'active' ? 'Suspend' : 'Activate'}
+                          {getTenantToggleState(tenant).isActive ? <Ban className="w-3 h-3" /> : <Check className="w-3 h-3" />}
+                          {getTenantToggleState(tenant).label}
                         </button>
                         <button
                           onClick={(event) => {

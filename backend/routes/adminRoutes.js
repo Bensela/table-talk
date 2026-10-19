@@ -3,6 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const billingService = require('../services/billingService');
 const platformSettings = require('../services/platformSettingsService');
+const { hasTrustedOrigin } = require('../services/publicUrlResolver');
 const { insertAnalyticsEvent } = require('../services/analyticsService');
 const { authenticateToken, requireRole, verifyTenantAccess } = require('../middleware/authMiddleware');
 
@@ -509,10 +510,14 @@ router.post('/billing/checkout', authenticateToken, requireRole(['RESTAURANT_ADM
     if (!planObj || !planObj.public) {
       return res.status(400).json({ error: 'Invalid plan for checkout' });
     }
-    const safeSuccessUrl = successUrl && /^https?:\/\//.test(successUrl)
+    // Only honor a caller-supplied redirect when its origin matches our own
+    // configured domain — a bare "is this an http(s) URL" check would let a
+    // compromised/forged request redirect a payer to an arbitrary host
+    // straight out of a Stripe Checkout session.
+    const safeSuccessUrl = successUrl && hasTrustedOrigin(successUrl, [frontendUrl])
       ? successUrl
       : `${frontendUrl}/dashboard?billing=success`;
-    const safeCancelUrl = cancelUrl && /^https?:\/\//.test(cancelUrl)
+    const safeCancelUrl = cancelUrl && hasTrustedOrigin(cancelUrl, [frontendUrl])
       ? cancelUrl
       : `${frontendUrl}/dashboard?billing=canceled`;
     const result = await billingService.createStripeCheckoutSession({
@@ -534,7 +539,7 @@ router.post('/billing/portal', authenticateToken, requireRole(['RESTAURANT_ADMIN
     if (!restaurantId) return res.status(400).json({ error: 'User is not associated with any restaurant' });
     const frontendUrl = await billingService.getFrontendUrl();
     const { returnUrl } = req.body || {};
-    const safeReturn = returnUrl && /^https?:\/\//.test(returnUrl)
+    const safeReturn = returnUrl && hasTrustedOrigin(returnUrl, [frontendUrl])
       ? returnUrl
       : `${frontendUrl}/dashboard?billing=portal`;
     const result = await billingService.createStripeBillingPortalSession({

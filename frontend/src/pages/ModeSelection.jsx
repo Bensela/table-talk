@@ -8,6 +8,7 @@ import Button from '../components/ui/Button';
 import { storeParticipant, getStoredParticipant, storeDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 import useAnalytics from '../hooks/useAnalytics';
+import StageCountdown from '../components/ui/StageCountdown';
 
 const STAGE_TIMEOUT_MS = 20 * 1000;
 
@@ -32,6 +33,12 @@ export default function ModeSelection() {
   // View State: 'mode-select' only now
   const [view, setView] = useState('mode-select');
   const [error, setError] = useState(null);
+  // Display-only mirror of the timeout effect's own deadline below — never
+  // used to decide when to redirect, only to drive the countdown UI. A
+  // brand-new deadline every time the effect legitimately re-arms (e.g.
+  // after a failed create-session attempt clears `loading`) is correct:
+  // that is a genuinely new 20s window, not a reset of the current one.
+  const [stageDeadlineMs, setStageDeadlineMs] = useState(null);
 
   // Get context from previous step (if in new flow)
   const context = location.state?.context;
@@ -88,7 +95,15 @@ export default function ModeSelection() {
   // setup lock first, if held, so a waiting phone isn't stuck until the
   // server-side lock TTL expires.
   useEffect(() => {
-    if (!tableToken || view !== 'mode-select' || loading) return undefined;
+    if (!tableToken || view !== 'mode-select' || loading) {
+      setStageDeadlineMs(null);
+      return undefined;
+    }
+
+    // Captured in the same tick as the setTimeout below, so it marks exactly
+    // the deadline that timer will fire at — the countdown UI reads this
+    // value only; it never arms or clears the real timer.
+    setStageDeadlineMs(Date.now() + STAGE_TIMEOUT_MS);
 
     const timer = setTimeout(async () => {
       firePublic({
@@ -160,10 +175,13 @@ export default function ModeSelection() {
         // Best-effort only; the redirect below must still happen.
       }
 
-      navigate('/');
+      navigate('/', { state: { timedOutStage: 'mode' } });
     }, STAGE_TIMEOUT_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      setStageDeadlineMs(null);
+    };
   }, [tableToken, restaurantSlug, view, loading, navigate, firePublic, isDev]);
 
   const handleSinglePhone = async () => {
@@ -460,6 +478,10 @@ function PairingCodeDisplay({ code, expiresAt }) {
 
   return (
     <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 relative overflow-hidden selection:bg-[#35332E]/10 selection:text-[#35332E]">
+
+      <div className="pt-2 relative z-10">
+        <StageCountdown deadlineMs={stageDeadlineMs} totalMs={STAGE_TIMEOUT_MS} />
+      </div>
 
       <header className="mb-12 mt-10 text-left relative z-10 max-w-md mx-auto w-full">
         <motion.div

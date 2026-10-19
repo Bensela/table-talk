@@ -1,7 +1,8 @@
 const db = require('../db');
 const platformSettings = require('./platformSettingsService');
+const publicUrlResolver = require('./publicUrlResolver');
 
-const ENV_FRONTEND_URL = (process.env.FRONTEND_URL || 'https://tabletalk.app').replace(/\/+$/, '');
+const ENV_FRONTEND_URL = publicUrlResolver.normalizeOrigin(process.env.FRONTEND_URL) || publicUrlResolver.DEFAULT_PUBLIC_ORIGIN;
 const ENV_STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const ENV_STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 
@@ -130,7 +131,7 @@ async function getPublishableKey() {
 async function getFrontendUrl() {
   try {
     const info = await platformSettings.getPaymentGatewayPublic();
-    return (info.frontend_url || ENV_FRONTEND_URL).replace(/\/+$/, '');
+    return publicUrlResolver.normalizeOrigin(info.frontend_url) || ENV_FRONTEND_URL;
   } catch (_) {
     return ENV_FRONTEND_URL;
   }

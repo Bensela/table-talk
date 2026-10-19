@@ -11,6 +11,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const db  = require('../db');
 const crypto = require('crypto');
+const { DEFAULT_PUBLIC_ORIGIN } = require('../services/publicUrlResolver');
 
 const args = Object.fromEntries(
   process.argv.slice(2)
@@ -24,7 +25,7 @@ const args = Object.fromEntries(
 const name       = args.name    || 'New Restaurant';
 const slug       = (args.slug   || name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 const tableCount = parseInt(args.tables  || '10', 10);
-const baseUrl    = args.baseUrl || process.env.FRONTEND_URL || 'https://tabletalk.app';
+const baseUrl    = args.baseUrl || process.env.FRONTEND_URL || DEFAULT_PUBLIC_ORIGIN;
 
 (async () => {
   const secretKey = crypto.randomBytes(32).toString('hex');

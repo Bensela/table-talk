@@ -7,7 +7,6 @@ const billingService = require('../services/billingService');
 const { geocodeAddress } = require('../services/geocodeService');
 const { invalidateCachedRestaurantGeo } = require('../services/geofenceService');
 
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://tabletalk.app').replace(/\/+$/, '');
 const GLOBAL_RESTAURANT_ID = 'd0000000-0000-0000-0000-000000000000';
 const INVITE_EXPIRY_DAYS = Number.parseInt(process.env.RESTAURANT_INVITE_EXPIRY_DAYS || '14', 10);
 const TRIAL_DURATION_DAYS = Number.parseInt(process.env.RESTAURANT_TRIAL_DAYS || '14', 10);
@@ -568,8 +567,9 @@ async function requestPasswordReset(req, res) {
     };
 
     if (process.env.NODE_ENV !== 'production' && updated.rows.length > 0) {
+      const frontendUrl = await billingService.getFrontendUrl();
       response.reset_token = token;
-      response.reset_url = `${FRONTEND_URL}/admin/login?reset=${encodeURIComponent(token)}`;
+      response.reset_url = `${frontendUrl}/admin/login?reset=${encodeURIComponent(token)}`;
       response.expires_at = expiresAt.toISOString();
     }
 
@@ -826,7 +826,8 @@ async function createTenantInvite(req, res) {
 
     await db.query('COMMIT');
 
-    const inviteUrl = `${FRONTEND_URL}/subscribe/${token}`;
+    const frontendUrl = await billingService.getFrontendUrl();
+    const inviteUrl = `${frontendUrl}/subscribe/${token}`;
     const emailPackage = buildInviteEmail(trimmedName, trimmedEmail, inviteUrl);
     const qrCodeDataUrl = await QRCode.toDataURL(inviteUrl, {
       width: 600,

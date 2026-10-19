@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { io } from 'socket.io-client';
 import useAnalytics from '../hooks/useAnalytics';
+import StageCountdown from '../components/ui/StageCountdown';
 
 const STAGE_TIMEOUT_MS = 20 * 1000;
 
@@ -11,6 +12,9 @@ export default function ContextSelection() {
   const navigate = useNavigate();
   const { firePublic } = useAnalytics();
   const renderedRef = useRef(false);
+  // Display-only mirror of the timeout effect's own deadline below — never
+  // used to decide when to redirect, only to drive the countdown UI.
+  const [stageDeadlineMs, setStageDeadlineMs] = useState(null);
 
   useEffect(() => {
     if (renderedRef.current) return;
@@ -29,6 +33,11 @@ export default function ContextSelection() {
   // device is holding the pre-session setup lock, release it first so any
   // waiting phone isn't stuck until the server-side lock TTL expires.
   useEffect(() => {
+    // Captured in the same tick as the setTimeout below, so it marks exactly
+    // the deadline that timer will fire at — the countdown UI reads this
+    // value only; it never arms or clears the real timer.
+    setStageDeadlineMs(Date.now() + STAGE_TIMEOUT_MS);
+
     const timer = setTimeout(async () => {
       firePublic({
         event_type: 'startup_stage_timeout',
@@ -99,10 +108,13 @@ export default function ContextSelection() {
         // Best-effort only; the redirect below must still happen.
       }
 
-      navigate('/');
+      navigate('/', { state: { timedOutStage: 'context' } });
     }, STAGE_TIMEOUT_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      setStageDeadlineMs(null);
+    };
   }, [restaurantSlug, tableToken, navigate, firePublic]);
 
   const handleSelectContext = (context) => {
@@ -152,6 +164,10 @@ export default function ContextSelection() {
 
   return (
     <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 relative overflow-hidden selection:bg-[#35332E]/10 selection:text-[#35332E]">
+
+      <div className="pt-2 relative z-10">
+        <StageCountdown deadlineMs={stageDeadlineMs} totalMs={STAGE_TIMEOUT_MS} />
+      </div>
 
       <header className="mb-12 mt-10 text-left relative z-10 max-w-md mx-auto w-full">
         <motion.div

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import QRScanner from '../components/QRScanner';
 import Button from '../components/ui/Button';
@@ -7,17 +7,42 @@ import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import useAnalytics from '../hooks/useAnalytics';
 
+const STAGE_TIMEOUT_EXPLANATIONS = {
+  context: "That took a bit too long, so we reset your table setup. Scan the QR code again to pick a conversation style — it only takes a few seconds.",
+  mode: "That took a bit too long, so we reset your table setup. Scan the QR code again to choose single or dual phone — it only takes a few seconds."
+};
+
 export default function Home() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { firePublic } = useAnalytics();
 
-  // If there's an error passed in state (e.g. from WelcomeScreen blocked session), show it
-  // Wait, navigate state isn't currently used, we're using a raw alert in WelcomeScreen.
-  // Actually, alert() blocks the UI thread which is fine for a simple MVP.
-  
   const [tableInput, setTableInput] = useState('');
   const [showScanner, setShowScanner] = useState(false);
   const [scanError, setScanError] = useState('');
+  // Non-blocking, dismissible explanation when we're bounced back here after
+  // a startup-stage 20s timeout (Context Selection or Mode Selection). Purely
+  // informational — scanning works identically whether this is shown or not.
+  const [timeoutNotice, setTimeoutNotice] = useState(
+    () => STAGE_TIMEOUT_EXPLANATIONS[location.state?.timedOutStage] || null
+  );
+
+  // Consume the one-time navigation state right after reading it: a plain
+  // `navigate('/', { state })` PUSHES a history entry, so without this the
+  // state stays attached to that entry forever. Browser Back/Forward (or
+  // React remounting Home at that same history position) would otherwise
+  // re-read it via the lazy initializer above and resurrect an outdated
+  // notice. `replace` rewrites this entry in place — it does not add a new
+  // one and does not touch any other navigation/business logic.
+  useEffect(() => {
+    if (location.state?.timedOutStage) {
+      navigate(location.pathname + location.search, { replace: true, state: null });
+    }
+    // Intentionally run once per mount only — this mirrors the lazy
+    // useState initializer above, which also reads location.state exactly
+    // once. Re-running on every location change is not the goal here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const extractTenantQrTarget = (value) => {
     const rawValue = String(value || '').trim();
@@ -133,6 +158,22 @@ export default function Home() {
             transition={{ duration: 0.6, delay: 0.2 }}
             className="flex flex-col items-center gap-6 scroll-mt-32"
           >
+            {timeoutNotice && (
+              <div
+                role="status"
+                className="max-w-xl w-full flex items-start justify-between gap-3 rounded-2xl border border-[#926B1A]/25 bg-[#FBF7EF] px-4 py-3 text-left"
+              >
+                <p className="text-sm text-[#35332E] leading-relaxed">{timeoutNotice}</p>
+                <button
+                  type="button"
+                  onClick={() => setTimeoutNotice(null)}
+                  aria-label="Dismiss"
+                  className="shrink-0 text-[#6E6A60] hover:text-[#35332E] leading-none text-lg px-1"
+                >
+                  ×
+                </button>
+              </div>
+            )}
             <Button
               onClick={() => setShowScanner(true)}
               variant="ink"

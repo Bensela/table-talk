@@ -156,12 +156,12 @@ jobs:
 # Custom domains (Optional)
 # Uncomment and update with your domain after initial deployment
 # domains:
-#   - domain: tabletalk.app
+#   - domain: catalyst.madetoconnect.co
 #     type: PRIMARY
-#     zone: tabletalk.app
-#   - domain: www.tabletalk.app
+#     zone: madetoconnect.co
+#   - domain: www.catalyst.madetoconnect.co
 #     type: ALIAS
-#     zone: tabletalk.app
+#     zone: madetoconnect.co
 
 # Notes:
 # - Update the GitHub repo reference (Bensela/table-talk) to your fork

@@ -10,6 +10,8 @@ const router = express.Router();
 const db = require('../db');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
+const billingService = require('../services/billingService');
+const { isTrustedOrigin, normalizeOrigin } = require('../services/publicUrlResolver');
 
 // ── Admin auth middleware ──────────────────────────────────────────────────────
 const adminAuth = async (req, res, next) => {
@@ -136,15 +138,26 @@ router.get('/:slug/sessions', adminAuth, async (req, res) => {
 });
 
 // ── Admin: generate QR codes ──────────────────────────────────────────────────
-// POST /restaurants/:slug/qr  { tables: ['table-001', ...], baseUrl }
+// POST /restaurants/:slug/qr  { tables: ['table-001', ...], baseUrl? }
+// `baseUrl` is optional and, if supplied, is only honored when it matches
+// the resolved canonical public origin — a caller cannot point generated QR
+// codes at an arbitrary host (this previously defaulted an unset baseUrl to
+// the unrelated tabletalk.app domain, and trusted any caller-supplied value
+// unconditionally).
 router.post('/:slug/qr', adminAuth, async (req, res) => {
-  const {
-    tables,
-    baseUrl = process.env.FRONTEND_URL || 'https://tabletalk.app'
-  } = req.body;
+  const { tables, baseUrl: requestedBaseUrl } = req.body;
 
   if (!tables || !Array.isArray(tables) || tables.length === 0) {
     return res.status(400).json({ error: 'tables[] array required' });
+  }
+
+  const canonicalOrigin = await billingService.getFrontendUrl();
+  let baseUrl = canonicalOrigin;
+  if (requestedBaseUrl !== undefined) {
+    if (!isTrustedOrigin(requestedBaseUrl, [canonicalOrigin])) {
+      return res.status(400).json({ error: 'baseUrl must match the configured application domain' });
+    }
+    baseUrl = normalizeOrigin(requestedBaseUrl);
   }
 
   try {
