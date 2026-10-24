@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 // Removed local io import to use global provider
 import api, { createSession } from '../api';
 import QuestionCard from '../components/QuestionCard';
@@ -2061,26 +2061,17 @@ export default function SessionGame() {
         </div>
       )}
 
-      {/* Conversation in Progress overlay: blurred backdrop + bottom caption ONLY (no center pill, no spinner, no Table Talk card) */}
-      <AnimatePresence>
-        {Boolean(conversationProgressVisible && (mode === 'dual-phone' || modeRef.current === 'dual-phone')) && (
-          <motion.div
-            key="conversation-progress-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="fixed inset-0 z-40 flex flex-col items-center bg-[#111111]/35 backdrop-blur-[1.5px]"
-            style={{ touchAction: 'none', pointerEvents: 'none' }}
-          >
-            <div className="mt-auto mb-12 flex flex-col items-center gap-1">
-              <div className="text-[14px] font-semibold tracking-wide text-[#FBF7EF] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]">
-                Conversation in Progress…
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* The full-screen blurred "Conversation in Progress…" backdrop that used to render
+          here (position: fixed; inset: 0) has been removed: it dimmed the entire viewport,
+          including the Next Question button, so it looked disabled even though
+          pointer-events:none technically let clicks through. The faded/blurred
+          "Conversation in Progress…" treatment is restored, but now bounded to just the
+          question card via position:absolute inside that card's own `relative
+          overflow-hidden` (see the overlay rendered inside the question card in
+          components/QuestionCard.jsx), driven by the same `conversationStarted` prop
+          already passed to QuestionCard below. The action bar / Next Question button
+          stays a separate sibling outside that card, so it is never part of the overlay's
+          bounds. */}
 
     </div>
   );

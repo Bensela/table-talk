@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import Button from './ui/Button';
 
 export default function QuestionCard({
@@ -30,6 +30,7 @@ export default function QuestionCard({
   }
 
   const isDualMode = mode === 'dual-phone' || mode === 'dual';
+  const shouldReduceMotion = useReducedMotion();
   const isMultipleChoice = question.question_type === 'multiple-choice';
   const questionHasHint = Boolean(
     !isMultipleChoice &&
@@ -266,6 +267,35 @@ export default function QuestionCard({
               Tap card to reveal hint
             </span>
           </div>
+        )}
+
+        {/* Conversation in Progress overlay — faded/blurred backdrop + caption,
+            bounded to THIS card only (anchored by the card's own `relative
+            overflow-hidden`, not position:fixed/inset-0 on the viewport). The
+            action bar (Next Question button) below is a SEPARATE sibling
+            element entirely outside this card, so it is never dimmed, blurred,
+            or covered by this overlay — it keeps its normal background,
+            contrast, and clickability regardless of this overlay's state. */}
+        {isDualMode && (
+          <AnimatePresence>
+            {state === 2 && (
+              <motion.div
+                key="conversation-progress-overlay"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.15 }}
+                className="absolute inset-0 z-30 flex flex-col items-center bg-[#111111]/35 backdrop-blur-[1.5px]"
+                style={{ touchAction: 'none', pointerEvents: 'none' }}
+              >
+                <div className="mt-auto mb-12 flex flex-col items-center gap-1">
+                  <div className="text-[14px] font-semibold tracking-wide text-[#FBF7EF] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]">
+                    Conversation in Progress…
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         )}
       </motion.div>
 

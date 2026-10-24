@@ -1056,7 +1056,8 @@ const resolveSession = async (req, res) => {
            // Relies on existing fresh_intent_at/fresh_intent_a/b columns — no schema.
            if (activeSession.mode === 'dual-phone') {
              const stale = await db.query(
-               `SELECT fresh_intent_a, fresh_intent_b, fresh_intent_at, dual_group_id, restaurant_id
+               `SELECT fresh_intent_a, fresh_intent_b, fresh_intent_at, dual_group_id, restaurant_id,
+                       pairing_code_hash, pairing_expires_at
                 FROM sessions WHERE session_id = $1`,
                [activeSession.session_id]
              );
@@ -1064,9 +1065,22 @@ const resolveSession = async (req, res) => {
              if (sf) {
                const onlyOne = Boolean(sf.fresh_intent_a) !== Boolean(sf.fresh_intent_b);
                const over = sf.fresh_intent_at && (Date.now() - new Date(sf.fresh_intent_at).getTime() >= 20 * 1000);
-               if (onlyOne && over) {
+               // An unredeemed pairing attempt (Phone B never joined) whose own
+               // 5-minute pairing_expires_at has passed is equally stale, even
+               // though no fresh_intent was ever pressed. Without this check a
+               // rescan in the gap before the cleanup cron tick runs would
+               // resume the dead pairing-code/"waiting" screen.
+               const pairingNeverRedeemed = Boolean(sf.pairing_code_hash);
+               const pairingExpired = pairingNeverRedeemed && sf.pairing_expires_at &&
+                 new Date(sf.pairing_expires_at).getTime() <= Date.now();
+               if ((onlyOne && over) || pairingExpired) {
                  try {
-                   await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE session_id = $1`, [activeSession.session_id]);
+                   await db.query(`
+                     UPDATE sessions
+                     SET dual_status = 'ended', expires_at = NOW(),
+                         pairing_code_hash = NULL, pairing_expires_at = NULL
+                     WHERE session_id = $1
+                   `, [activeSession.session_id]);
                    if (sf.dual_group_id) {
                      try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [sf.dual_group_id]); } catch (_) {}
                      try { await db.query(`UPDATE sessions SET dual_status = 'ended', expires_at = NOW() WHERE dual_group_id = $1`, [sf.dual_group_id]); } catch (_) {}
@@ -1108,11 +1122,16 @@ const resolveSession = async (req, res) => {
              `, [activeSession.session_id]);
            }
 
+           // Exclude 'ended' here on purpose: the stale-intent/stale-pairing
+           // block just above may have ended this very session a moment ago,
+           // and that must fall through to the start_new path below instead
+           // of resuming the now-dead session.
            const resumeResult = await db.query(`
             SELECT s.session_id, s.mode, s.context, s.created_at, sp.participant_id, sp.role, s.dual_group_id, s.dual_status
             FROM sessions s
             JOIN session_participants sp ON s.session_id = sp.session_id
             WHERE s.session_id = $1 AND sp.participant_token_hash = $2
+              AND (s.dual_status IS NULL OR s.dual_status != 'ended')
            `, [activeSession.session_id, participantTokenHash]);
            
            if (resumeResult.rows.length > 0) {
@@ -1716,6 +1735,113 @@ const freshIntent = async (req, res) => {
   }
 };
 
+// Explicit "Cancel & Return to Scanner" for an unredeemed dual-phone pairing
+// attempt (Phone B never joined). Also invoked by the frontend's own
+// 5-minute pairing countdown on expiry, so this must be idempotent and safe
+// to call more than once. Scoped strictly to sessions still in the
+// pre-pairing 'waiting' state with a live pairing hash — once Phone B has
+// redeemed the code (dual_status = 'paired', pairing_code_hash cleared by
+// the atomic redemption), this is a no-op, so a stale cancel/timeout can
+// never terminate an already-paired session.
+const cancelPairing = async (req, res) => {
+  const { session_id } = req.params;
+  const { participant_id } = req.body;
+
+  if (!participant_id) {
+    return res.status(400).json({ error: 'participant_id is required' });
+  }
+
+  try {
+    const geoPreGate = await validateSessionTempGeoAccess(req, {
+      table_token: null,
+      restaurant_id: null,
+      restaurant_slug: null
+    });
+    if (!geoPreGate.passed) {
+      return res.status(geoPreGate.status || 410).json(geoPreGate.response_body);
+    }
+
+    const sesh = await db.query(
+      `SELECT table_token, restaurant_id FROM sessions WHERE session_id = $1`,
+      [session_id]
+    );
+
+    if (sesh.rows.length === 0) {
+      return res.status(200).json({ success: true, cancelled: false, reason: 'not_found' });
+    }
+
+    const geoScoped = await validateSessionTempGeoAccess(req, {
+      table_token: sesh.rows[0].table_token,
+      restaurant_id: sesh.rows[0].restaurant_id,
+      restaurant_slug: null
+    });
+    if (!geoScoped.passed) {
+      return res.status(geoScoped.status || 410).json(geoScoped.response_body);
+    }
+
+    const participant = await db.query(
+      `SELECT role FROM session_participants WHERE session_id = $1 AND participant_id = $2`,
+      [session_id, participant_id]
+    );
+    if (participant.rows.length === 0) {
+      return res.status(404).json({ error: 'Participant not found in session' });
+    }
+
+    // Ownership check and mutation happen atomically: the UPDATE itself is
+    // also scoped to a participant row that belongs to this session, so a
+    // caller can never cancel a pairing attempt it does not own.
+    const cancelled = await db.query(`
+      UPDATE sessions
+      SET dual_status = 'ended', expires_at = NOW(),
+          pairing_code_hash = NULL, pairing_expires_at = NULL
+      WHERE session_id = $1
+        AND mode = 'dual-phone'
+        AND dual_status = 'waiting'
+        AND pairing_code_hash IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM session_participants sp
+          WHERE sp.session_id = sessions.session_id AND sp.participant_id = $2
+        )
+      RETURNING dual_group_id, restaurant_id, table_token
+    `, [session_id, participant_id]);
+
+    if (cancelled.rowCount === 0) {
+      // Already paired, already ended, or never a live pairing attempt —
+      // nothing to cancel. Idempotent no-op (also protects a paired session
+      // from a stale timeout/cancel that arrives just after Phone B joins).
+      return res.json({ success: true, cancelled: false });
+    }
+
+    const row = cancelled.rows[0];
+
+    if (row.dual_group_id) {
+      try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
+    }
+
+    try {
+      const server = require('../index');
+      const io = server?.io;
+      if (io) {
+        io.to(session_id).emit('dual_group_terminated');
+      }
+    } catch (_) {}
+
+    await insertAnalyticsEvent({
+      session_id,
+      participant_id: participant_id || null,
+      restaurant_id: row.restaurant_id || null,
+      table_token: row.table_token || null,
+      event_type: 'pairing_cancelled',
+      event_data: { source: 'user_cancel_or_client_timeout' }
+    });
+
+    res.json({ success: true, cancelled: true });
+  } catch (err) {
+    console.error('Error cancelling pairing attempt:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const upgradeToDual = async (req, res) => {
   const { session_id } = req.params;
   const { participant_id } = req.body;
@@ -1926,4 +2052,4 @@ const postSessionEvent = async (req, res) => {
   }
 };
 
-module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent, upgradeToDual, postSessionEvent };
+module.exports = { createSession, joinDualPhoneSession, resumeSessionByQr, getSession, updateSession, endSession, getSessionByTable, heartbeat, resolveSession, getSessionState, freshIntent, cancelPairing, upgradeToDual, postSessionEvent };

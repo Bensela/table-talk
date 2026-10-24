@@ -449,6 +449,9 @@ export const createSession = ({ table_token, context, mode, restaurant_slug, dev
 export const joinDualSession = ({ table_token, code, restaurant_slug }) =>
   api.post('/sessions/join-dual', { table_token, code, restaurant_slug });
 
+export const cancelPairing = ({ session_id, participant_id }) =>
+  api.post(`/sessions/${session_id}/cancel-pairing`, { participant_id });
+
 export const resolveSession = ({ restaurant_id, restaurant_slug, table_token, device_token, preferNewSession = false }) =>
   api.post('/sessions/resolve', { restaurant_id, restaurant_slug, table_token, device_token, prefer_new_session: preferNewSession === true });
 

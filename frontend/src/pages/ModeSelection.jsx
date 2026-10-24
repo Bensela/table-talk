@@ -2,10 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { io } from 'socket.io-client';
-import { createSession, getSession, updateSessionMode } from '../api';
+import { createSession, getSession, updateSessionMode, cancelPairing } from '../api';
 import SelectionCard from '../components/ui/SelectionCard';
 import Button from '../components/ui/Button';
-import { storeParticipant, getStoredParticipant, storeDualSession } from '../utils/sessionStorage';
+import { storeParticipant, getStoredParticipant, storeDualSession, clearStoredParticipant, clearDualSession } from '../utils/sessionStorage';
 import { useSocket } from '../context/SocketContext';
 import useAnalytics from '../hooks/useAnalytics';
 import StageCountdown from '../components/ui/StageCountdown';
@@ -220,6 +220,33 @@ export default function ModeSelection() {
   const [pairingCode, setPairingCode] = useState(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState(null);
   const [createdSessionId, setCreatedSessionId] = useState(null); // Phone A waits here until B redeems the code
+  const pairingEndedRef = useRef(false);
+
+  // Shared cleanup once the pairing attempt is over: the Cancel button was
+  // pressed, the 5-minute countdown reached zero, or the backend told us
+  // (via socket) that it already ended — e.g. the cron tick beat the local
+  // timer to it. Idempotent so the socket event and the local timer racing
+  // each other only clean up and navigate once.
+  const handlePairingEnded = async ({ alreadyCancelledOnServer = false } = {}) => {
+    if (pairingEndedRef.current) return;
+    pairingEndedRef.current = true;
+
+    const stored = getStoredParticipant();
+    if (!alreadyCancelledOnServer && createdSessionId && stored.participantId) {
+      try {
+        await cancelPairing({ session_id: createdSessionId, participant_id: stored.participantId });
+      } catch (_) {
+        // Best-effort only; the redirect below must still happen.
+      }
+    }
+
+    clearStoredParticipant();
+    if (tableToken) {
+      clearDualSession(tableToken);
+    }
+
+    navigate('/');
+  };
 
   const handleStartDual = async () => {
     firePublic({
@@ -380,37 +407,52 @@ export default function ModeSelection() {
       }
     };
 
+    const onPairingTerminated = () => {
+      // Backend already ended this pairing attempt (5-minute cron expiry,
+      // or a cancel issued from elsewhere) — it has already cleared the
+      // session server-side, so skip the redundant cancel-pairing call.
+      handlePairingEnded({ alreadyCancelledOnServer: true });
+    };
+
     socket.on('dual_partner_joined', onPartnerJoined);
+    socket.on('dual_group_terminated', onPairingTerminated);
 
     return () => {
       socket.off('dual_partner_joined', onPartnerJoined);
+      socket.off('dual_group_terminated', onPairingTerminated);
       socket.disconnect();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, createdSessionId, navigate, isDev]);
 
 // ...
 
-function PairingCodeDisplay({ code, expiresAt }) {
+function PairingCodeDisplay({ code, expiresAt, onCancel, onExpire }) {
     const [timeLeft, setTimeLeft] = useState(null);
+    const expiredFiredRef = useRef(false);
 
     useEffect(() => {
       const timer = setInterval(() => {
         const seconds = Math.floor((new Date(expiresAt) - new Date()) / 1000);
         setTimeLeft(seconds);
-        
+
         if (seconds <= 0) {
           clearInterval(timer);
+          if (!expiredFiredRef.current) {
+            expiredFiredRef.current = true;
+            onExpire?.();
+          }
         }
       }, 1000);
 
       return () => clearInterval(timer);
-    }, [expiresAt]);
+    }, [expiresAt, onExpire]);
 
     return (
       <div className="min-h-screen bg-[#F3EDE1] flex flex-col p-6 items-center justify-center font-sans">
         <div className="max-w-md w-full text-center space-y-8">
           <h2 className="text-3xl font-extrabold text-[#35332E]">Connect Your Partner</h2>
-          
+
           <div className="bg-[#FBF7EF] p-8 rounded-3xl border-2 border-[#DCD3C2] shadow-xl">
             <div className="text-6xl font-black tracking-[0.18em] text-[#35332E] font-mono">
               {code}
@@ -422,17 +464,25 @@ function PairingCodeDisplay({ code, expiresAt }) {
               Have your partner scan the same table QR code, then enter <br/>
               <span className="font-bold text-[#35332E]">this 4-letter code</span>
             </p>
-            
+
             {timeLeft !== null && timeLeft > 0 ? (
                 <p className="text-sm text-gray-400 font-medium uppercase tracking-wide">
                 Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
                 </p>
             ) : (
                  <p className="text-sm text-red-500 font-bold uppercase tracking-wide">
-                 Code expired. Please start a new session.
+                 Code expired. Returning to scanner...
                  </p>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full py-3 text-base font-semibold text-[#35332E] underline bg-transparent border-0 rounded-none hover:opacity-80 transition-opacity"
+          >
+            Cancel &amp; Return to Scanner
+          </button>
 
         </div>
       </div>
@@ -457,6 +507,8 @@ function PairingCodeDisplay({ code, expiresAt }) {
       <PairingCodeDisplay
         code={pairingCode}
         expiresAt={pairingExpiresAt}
+        onCancel={() => handlePairingEnded()}
+        onExpire={() => handlePairingEnded()}
       />
     );
   }

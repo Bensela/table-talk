@@ -845,10 +845,17 @@ io.on('connection', (socket) => {
       ts: Date.now()
     });
     io.to(socket.sessionId).emit('next_intent_update', { count, required: 2, selfRole: role });
-    await logSocketEvent(socket, 'next_question_intent', {
+    // Fire-and-forget: the analytics write must never become an `await` point
+    // that sits between the Set mutation above and the size check below. If
+    // it did, two near-simultaneous dual_next_intent calls (one per phone)
+    // could both pause here, and whichever resumes second would re-check
+    // `state.nextIntent.size` against a Set the OTHER call's branch may have
+    // already cleared — the exact double-fire race described in advance_turn
+    // below. Keeping this synchronous all the way to the decision closes it.
+    logSocketEvent(socket, 'next_question_intent', {
       count,
       required: 2
-    });
+    }).catch(() => {});
     if (state.nextIntent.size >= 2) {
       io.to(socket.sessionId).emit('conversation_start');
       await logSocketEvent(socket, 'conversation_start', {});
@@ -903,10 +910,27 @@ io.on('connection', (socket) => {
       turn_count_after: turnCount
     });
     io.to(socket.sessionId).emit('advance_intent_update', { count: turnCount, required: 2, selfRole: role });
-    await logSocketEvent(socket, 'advance_turn_intent', {
+    // Fire-and-forget (see the matching comment in dual_next_intent above):
+    // awaiting this analytics write here was a real double-advance bug when
+    // both phones click "Next Question" close together. Session state is a
+    // single shared object mutated in place (clearSessionState() clears it,
+    // it never swaps to a new object), so if this call stayed `await`ed,
+    // the FIRST click's handler could still be paused here when the SECOND
+    // click's handler ran to completion — advancing the deck and clearing
+    // state.advanceIntent back to empty. The first click's handler would
+    // then resume, re-check `state.advanceIntent.size >= 2` against that
+    // now-cleared (but still-shared) Set... except by then a THIRD click on
+    // the brand-new question could have already re-added to it, so the
+    // first click's stale resume could misfire a second advance for a round
+    // nobody actually both-clicked. Keeping this synchronous up to the
+    // decision below makes the check atomic per Node's run-to-completion
+    // semantics: once a handler resumes past its one earlier `await
+    // resolveSocketRole(...)`, nothing else can run until its own next
+    // `await`, which here is now AFTER the decision is made.
+    logSocketEvent(socket, 'advance_turn_intent', {
       count: turnCount,
       required: 2
-    });
+    }).catch(() => {});
     if (state.advanceIntent.size >= 2) {
       const res = await db.query('SELECT * FROM sessions WHERE session_id = $1', [socket.sessionId]);
       if (res.rows[0]) {

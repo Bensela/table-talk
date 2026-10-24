@@ -61,6 +61,44 @@ async function cleanupSessions(source = 'scheduled_cron') {
         }
     }
 
+    // Rule 1b: Authoritatively expire an UNREDEEMED pairing-code attempt at
+    // its own 5-minute pairing_expires_at mark (distinct from Rule 1's
+    // 30-minute "waiting" cleanup, which only ever catches sessions whose
+    // pairing hash is already gone). Backend-authoritative even if Phone A's
+    // browser sleeps, refreshes, or disconnects before its own client timer
+    // would have fired.
+    const expiredPairing = await db.query(`
+      UPDATE sessions
+      SET dual_status = 'ended',
+          expires_at = NOW(),
+          pairing_code_hash = NULL,
+          pairing_expires_at = NULL
+      WHERE dual_status = 'waiting'
+        AND mode = 'dual-phone'
+        AND pairing_code_hash IS NOT NULL
+        AND pairing_expires_at <= NOW()
+        AND expires_at > NOW()
+      RETURNING session_id, table_token, restaurant_id, dual_group_id
+    `);
+    if (expiredPairing && expiredPairing.rowCount > 0) {
+        console.log(`[CLEANUP] Expired ${expiredPairing.rowCount} unredeemed pairing-code attempts`);
+        for (const row of expiredPairing.rows) {
+          if (row.dual_group_id) {
+            try { await db.query(`UPDATE dual_groups SET terminated_at = NOW() WHERE dual_group_id = $1`, [row.dual_group_id]); } catch (_) {}
+          }
+        }
+        notifySessionTermination(expiredPairing.rows);
+        for (const row of expiredPairing.rows) {
+          await insertAnalyticsEvent({
+            session_id: row.session_id,
+            restaurant_id: row.restaurant_id || null,
+            table_token: row.table_token || null,
+            event_type: 'pairing_code_expired_unredeemed',
+            event_data: { reason: 'pairing_window_elapsed_no_partner', source: 'cleanup_job' }
+          });
+        }
+    }
+
     // Rule 2: Clear unconfirmed Start Fresh intents after 5 minutes
     const expiredFreshIntents = await db.query(`
       UPDATE sessions
@@ -141,6 +179,7 @@ async function cleanupSessions(source = 'scheduled_cron') {
 
     // Log cleanup analytics
     const eWaitingCount = expiredWaiting ? expiredWaiting.rowCount : 0;
+    const ePairingCount = expiredPairing ? expiredPairing.rowCount : 0;
     const dSessionsCount = deletedSessions ? deletedSessions.rowCount : 0;
     const eFreshCount = expiredFreshIntents ? expiredFreshIntents.rowCount : 0;
     const eSessionsCount = extendedSessions ? extendedSessions.rowCount : 0;
@@ -153,6 +192,7 @@ async function cleanupSessions(source = 'scheduled_cron') {
         scheduled: source === 'scheduled_cron',
         duration_ms: durationMs,
         expired_waiting: eWaitingCount,
+        expired_pairing: ePairingCount,
         deleted_sessions: dSessionsCount,
         expired_fresh: eFreshCount,
         extended_sessions: eSessionsCount
